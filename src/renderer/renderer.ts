@@ -11,6 +11,9 @@ import type {
   SlicerStatus,
   ConfigState,
   SlicelyApi,
+  SettingsState,
+  EffortLevel,
+  UploadResult,
 } from "../shared/types";
 
 declare global {
@@ -31,6 +34,13 @@ const stopBtn = $<HTMLButtonElement>("stop");
 const bannerEl = $<HTMLDivElement>("banner");
 const statusDot = $<HTMLSpanElement>("statusDot");
 const statusText = $<HTMLSpanElement>("statusText");
+const settingsBtn = $<HTMLButtonElement>("settingsBtn");
+const settingsEl = $<HTMLElement>("settings");
+const modelListEl = $<HTMLDivElement>("modelList");
+const effortSegEl = $<HTMLDivElement>("effortSeg");
+const effortHintEl = $<HTMLParagraphElement>("effortHint");
+const attachBtn = $<HTMLButtonElement>("attach");
+const dropzoneEl = $<HTMLDivElement>("dropzone");
 
 let busy = false;
 /** The bot bubble currently being streamed into (text deltas append here). */
@@ -39,11 +49,14 @@ let activeBotBubble: HTMLDivElement | null = null;
 const activeChips = new Map<string, HTMLDivElement>();
 /** Path of the most-recently downloaded/sliced model, for action buttons. */
 let activeModelPath: string | null = null;
+/** Latest settings snapshot (model catalog + current selection). */
+let settings: SettingsState | null = null;
 
 // ── Bootstrapping ────────────────────────────────────────────────────────
 showEmptyState();
 void refreshStatus();
 void checkConfig();
+void loadSettings();
 
 api.onAgentEvent(handleAgentEvent);
 
@@ -56,6 +69,36 @@ inputEl.addEventListener("keydown", (e) => {
 });
 sendBtn.addEventListener("click", submit);
 stopBtn.addEventListener("click", () => api.cancel());
+settingsBtn.addEventListener("click", toggleSettings);
+attachBtn.addEventListener("click", pickFiles);
+
+// ── Drag-and-drop CAD upload ─────────────────────────────────────────────
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  dragDepth++;
+  dropzoneEl.classList.remove("hidden");
+});
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("dragleave", (e) => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropzoneEl.classList.add("hidden");
+});
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropzoneEl.classList.add("hidden");
+  const files = e.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  // Electron exposes the real filesystem path on dropped File objects.
+  const paths: string[] = [];
+  for (const f of Array.from(files)) {
+    const p = (f as File & { path?: string }).path;
+    if (p) paths.push(p);
+  }
+  if (paths.length > 0) void uploadPaths(paths);
+});
 
 // ── Config & status ───────────────────────────────────────────────────────
 async function checkConfig(): Promise<void> {
@@ -103,6 +146,141 @@ function applyStatus(s: SlicerStatus): void {
     statusDot.className = "dot warn";
     statusText.textContent = `PrusaSlicer ${s.version ?? "ready"}`.trim();
   }
+}
+
+// ── Settings panel (model + effort) ──────────────────────────────────────
+async function loadSettings(): Promise<void> {
+  try {
+    settings = await api.getSettings();
+    renderSettings();
+  } catch {
+    /* settings panel just stays empty */
+  }
+}
+
+function toggleSettings(): void {
+  const open = settingsEl.classList.toggle("hidden") === false;
+  settingsBtn.classList.toggle("open", open);
+  scheduleResize();
+}
+
+function renderSettings(): void {
+  if (!settings) return;
+  const { current, models, efforts } = settings;
+
+  // Model radio list.
+  modelListEl.innerHTML = "";
+  for (const m of models) {
+    const opt = el("div", `model-opt${m.id === current.model ? " active" : ""}`);
+    opt.appendChild(el("div", "radio"));
+    const text = el("div", "mtext");
+    const name = el("div", "mname");
+    name.textContent = m.label;
+    const blurb = el("div", "mblurb");
+    blurb.textContent = m.blurb;
+    text.appendChild(name);
+    text.appendChild(blurb);
+    opt.appendChild(text);
+    opt.onclick = () => void changeSettings({ model: m.id });
+    modelListEl.appendChild(opt);
+  }
+
+  // Effort segmented control — tiers the chosen model can't use are disabled.
+  const chosen = models.find((m) => m.id === current.model);
+  effortSegEl.innerHTML = "";
+  for (const lvl of efforts) {
+    const b = el("button") as HTMLButtonElement;
+    b.textContent = lvl;
+    const disabled = effortDisabled(lvl, chosen);
+    b.disabled = disabled;
+    if (lvl === current.effort && !disabled) b.classList.add("active");
+    b.onclick = () => {
+      if (!b.disabled) void changeSettings({ effort: lvl });
+    };
+    effortSegEl.appendChild(b);
+  }
+
+  effortHintEl.textContent = chosen
+    ? chosen.supportsEffort
+      ? "Higher effort = better tool decisions, more tokens, slower."
+      : `${chosen.label} runs at a fixed speed — effort tiers don't apply.`
+    : "";
+}
+
+function effortDisabled(
+  lvl: EffortLevel,
+  m: SettingsState["models"][number] | undefined,
+): boolean {
+  if (!m) return false;
+  if (!m.supportsEffort) return true;
+  if (lvl === "xhigh" && !m.supportsXHigh) return true;
+  if (lvl === "max" && !m.supportsMax) return true;
+  return false;
+}
+
+async function changeSettings(
+  patch: Partial<{ model: string; effort: EffortLevel }>,
+): Promise<void> {
+  try {
+    settings = await api.updateSettings(patch);
+    renderSettings();
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── CAD file upload ──────────────────────────────────────────────────────
+async function pickFiles(): Promise<void> {
+  try {
+    const results = await api.pickFile();
+    if (results.length > 0) onUploaded(results);
+  } catch (err) {
+    renderError((err as Error).message ?? "Upload failed.");
+  }
+}
+
+async function uploadPaths(paths: string[]): Promise<void> {
+  try {
+    const results = await api.uploadFiles(paths);
+    if (results.length > 0) onUploaded(results);
+    else
+      renderError(
+        "That file type isn't supported. Use STL, 3MF, OBJ, AMF, or STEP.",
+      );
+  } catch (err) {
+    renderError((err as Error).message ?? "Upload failed.");
+  }
+}
+
+/** A file landed in the workspace: show it, set it active, and kick the agent. */
+function onUploaded(results: UploadResult[]): void {
+  clearEmptyState();
+  const active = results.find((r) => r.sliceable) ?? results[0];
+  activeModelPath = active.localPath;
+
+  for (const r of results) renderUploadChip(r);
+
+  // Tell the agent — it'll inspect/recommend/slice the active (now-default) file.
+  const label =
+    results.length === 1
+      ? `Uploaded ${active.fileName}`
+      : `Uploaded ${results.length} files`;
+  addUserMessage(label);
+  startTurn();
+  const instruction = active.sliceable
+    ? `I just uploaded a 3D model file named "${active.fileName}" — it's now the active model. Inspect it, report its dimensions, recommend optimal slicing settings, and offer to slice it.`
+    : `I just uploaded "${active.fileName}" (a ${active.ext} CAD file). It's the active model. Note that STEP files should be opened in PrusaSlicer to convert them — offer to open it in the slicer, and inspect it if possible.`;
+  void api.sendMessage(instruction);
+}
+
+function renderUploadChip(r: UploadResult): void {
+  const chip = el("div", "tool-chip done enter") as HTMLDivElement;
+  prependIcon(chip, "📦");
+  const txt = el("span");
+  txt.textContent = `Added ${r.fileName} (${formatBytes(r.sizeBytes)})`;
+  chip.appendChild(txt);
+  messagesEl.appendChild(chip);
+  scrollToBottom();
 }
 
 // ── Submit / send ──────────────────────────────────────────────────────────
@@ -473,4 +651,19 @@ function scrollToBottom(): void {
   requestAnimationFrame(() => {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
+}
+
+function scheduleResize(): void {
+  // Ask the main process to grow the window when the settings panel opens, so
+  // it doesn't steal space from the transcript. rAF lets layout settle first.
+  requestAnimationFrame(() => {
+    const total = document.getElementById("app")?.scrollHeight ?? 0;
+    if (total > 0) api.resizeWindow(total);
+  });
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

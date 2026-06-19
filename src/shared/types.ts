@@ -109,6 +109,10 @@ export const IPC = {
   getConfigState: "slicely:getConfigState",
   revealPath: "slicely:revealPath",
   openSlicer: "slicely:openSlicer",
+  getSettings: "slicely:getSettings",
+  updateSettings: "slicely:updateSettings",
+  uploadFiles: "slicely:uploadFiles",
+  pickFile: "slicely:pickFile",
 } as const;
 
 /** Reports which credentials are present, so the UI can warn the user. */
@@ -118,6 +122,52 @@ export interface ConfigState {
   model: string;
   workdir: string;
 }
+
+/** A reasoning-effort tier the user can pick. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** A model the UI offers in its picker, with capability flags for the UI. */
+export interface ModelChoice {
+  id: string;
+  label: string;
+  blurb: string;
+  supportsEffort: boolean;
+  supportsXHigh: boolean;
+  supportsMax: boolean;
+}
+
+/** The user's live model + effort selection. */
+export interface UserSettings {
+  model: string;
+  effort: EffortLevel;
+}
+
+/** Settings payload sent to the renderer: current selection + the catalog. */
+export interface SettingsState {
+  current: UserSettings;
+  models: ModelChoice[];
+  efforts: EffortLevel[];
+}
+
+/** Result of accepting a user-supplied CAD/mesh file into the workspace. */
+export interface UploadResult {
+  localPath: string;
+  fileName: string;
+  sizeBytes: number;
+  ext: string;
+  /** Files PrusaSlicer can slice directly vs. ones it can only import/convert. */
+  sliceable: boolean;
+}
+
+/** Mesh/CAD extensions Slicely accepts from the user. */
+export const ACCEPTED_UPLOAD_EXTS = [
+  ".stl",
+  ".3mf",
+  ".obj",
+  ".amf",
+  ".step",
+  ".stp",
+] as const;
 
 /**
  * The API surface the preload bridge exposes to the renderer as
@@ -137,5 +187,13 @@ export interface SlicelyApi {
   revealPath(path: string): Promise<void>;
   /** Launch the PrusaSlicer GUI with a model/gcode file loaded. */
   openSlicer(path: string): Promise<void>;
+  /** Get the current model/effort selection and the available catalog. */
+  getSettings(): Promise<SettingsState>;
+  /** Persist a model/effort change; returns the updated selection. */
+  updateSettings(patch: Partial<UserSettings>): Promise<SettingsState>;
+  /** Open a native file picker for CAD/mesh files; returns accepted uploads. */
+  pickFile(): Promise<UploadResult[]>;
+  /** Accept dropped files by absolute path; returns accepted uploads. */
+  uploadFiles(paths: string[]): Promise<UploadResult[]>;
   resizeWindow(height: number): void;
 }

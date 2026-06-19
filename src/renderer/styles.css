@@ -613,3 +613,251 @@ body {
 .empty .ex:hover::before {
   opacity: 1;
 }
+
+/* ── Title-bar right cluster + icon buttons ────────────────────────────── */
+.title-right {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.icon-btn {
+  -webkit-app-region: no-drag;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 0.5px solid var(--border);
+  background: var(--panel);
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, transform 0.4s var(--ease),
+    border-color 0.15s;
+}
+.icon-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+.icon-btn:active {
+  transform: scale(0.9);
+}
+#settingsBtn.open {
+  color: var(--accent);
+  transform: rotate(60deg);
+  border-color: var(--accent-glow);
+}
+
+/* ── Settings panel ────────────────────────────────────────────────────── */
+.settings {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--bg-1);
+  animation: settings-open 0.34s var(--ease);
+}
+@keyframes settings-open {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 400px;
+  }
+}
+.set-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.set-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+}
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.model-opt {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--border);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s var(--ease);
+}
+.model-opt:hover {
+  background: var(--panel-2);
+  transform: translateX(2px);
+}
+.model-opt.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.model-opt .radio {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-faint);
+  flex: 0 0 auto;
+  transition: border-color 0.15s;
+  position: relative;
+}
+.model-opt.active .radio {
+  border-color: var(--accent);
+}
+.model-opt.active .radio::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.model-opt .mtext {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.model-opt .mname {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.model-opt .mblurb {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+/* Segmented effort control */
+.seg {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+}
+.seg button {
+  -webkit-app-region: no-drag;
+  flex: 1 1 0;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+  padding: 6px 4px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.18s var(--ease), color 0.18s;
+}
+.seg button:hover:not(.active):not(:disabled) {
+  color: var(--text);
+}
+.seg button.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #1a1006;
+  box-shadow: 0 2px 8px rgba(255, 122, 69, 0.3);
+}
+.seg button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.set-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
+  min-height: 14px;
+}
+
+/* ── Attach button in composer ─────────────────────────────────────────── */
+.icon-btn.attach {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 20px;
+  font-weight: 300;
+  background: var(--panel-2);
+}
+.icon-btn.attach:hover {
+  background: var(--panel-hover);
+  color: var(--accent);
+}
+
+/* ── Drag-drop overlay ─────────────────────────────────────────────────── */
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(18, 18, 22, 0.82);
+  backdrop-filter: blur(8px);
+  animation: dz-in 0.18s var(--ease);
+}
+@keyframes dz-in {
+  from {
+    opacity: 0;
+  }
+}
+.dz-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 44px;
+  border: 2px dashed var(--accent-glow);
+  border-radius: 20px;
+  background: var(--accent-soft);
+  animation: dz-pop 0.28s var(--ease);
+}
+@keyframes dz-pop {
+  from {
+    transform: scale(0.92);
+  }
+}
+.dz-ico {
+  font-size: 34px;
+  color: var(--accent);
+  animation: dz-bounce 1.2s ease-in-out infinite;
+}
+@keyframes dz-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(5px);
+  }
+}
+.dz-text {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+.dz-sub {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+
+/* Upload confirmation chip uses the existing .tool-chip styling */

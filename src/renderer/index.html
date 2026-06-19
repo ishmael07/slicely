@@ -17,11 +17,27 @@
           <span class="logo">◆</span>
           <span class="name">Slicely</span>
         </div>
-        <div class="status" id="slicerStatus" title="PrusaSlicer status">
-          <span class="dot" id="statusDot"></span>
-          <span id="statusText">checking…</span>
+        <div class="title-right">
+          <div class="status" id="slicerStatus" title="PrusaSlicer status">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">checking…</span>
+          </div>
+          <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
         </div>
       </header>
+
+      <!-- Slide-in settings panel: model + reasoning effort -->
+      <section id="settings" class="settings hidden">
+        <div class="set-group">
+          <label class="set-label">Model</label>
+          <div id="modelList" class="model-list"></div>
+        </div>
+        <div class="set-group">
+          <label class="set-label">Reasoning effort</label>
+          <div id="effortSeg" class="seg"></div>
+          <p id="effortHint" class="set-hint"></p>
+        </div>
+      </section>
 
       <!-- Config warning banner (shown if keys missing) -->
       <div id="banner" class="banner hidden"></div>
@@ -31,15 +47,27 @@
 
       <!-- Composer -->
       <footer id="composer">
+        <button id="attach" class="icon-btn attach" title="Upload a 3D model (STL, 3MF, OBJ, STEP)">
+          ＋
+        </button>
         <textarea
           id="input"
           rows="1"
-          placeholder="e.g. I want to 3D print a model car"
+          placeholder="Ask, or drop an STL to slice…"
           autofocus
         ></textarea>
         <button id="send" title="Send (Enter)">↑</button>
         <button id="stop" class="hidden" title="Stop">■</button>
       </footer>
+
+      <!-- Full-window drag-drop overlay -->
+      <div id="dropzone" class="dropzone hidden">
+        <div class="dz-inner">
+          <span class="dz-ico">⬇</span>
+          <span class="dz-text">Drop your 3D model</span>
+          <span class="dz-sub">STL · 3MF · OBJ · AMF · STEP</span>
+        </div>
+      </div>
     </div>
     <script type="module" src="renderer.js"></script>
   </body>

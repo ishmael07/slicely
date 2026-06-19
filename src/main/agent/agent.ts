@@ -3,6 +3,7 @@
 // runs the marketplace + PrusaSlicer tools until the model is done.
 import Anthropic from "@anthropic-ai/sdk";
 import { getConfig } from "../config";
+import { getSettings, buildModelRequestParams } from "../settings";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
 
 const SYSTEM_PROMPT = `You are Slicely, a friendly, concise assistant that helps people find free, open-source 3D-printable models online and slice them with PrusaSlicer on their Mac.
@@ -12,6 +13,8 @@ What you can do, via tools:
 - import_model: download a Thingiverse model's STL/3MF directly into the user's workspace.
 - open_in_browser: hand off Printables/MakerWorld models (their downloads are login-gated) to the browser.
 - get_slicer_status / inspect_model / recommend_settings / slice_model / open_in_slicer: drive PrusaSlicer.
+
+The user can ALSO upload their own CAD/mesh file (STL, 3MF, OBJ, AMF, STEP) by dragging it in or picking it. When they do, that file becomes the active model automatically — so inspect_model / recommend_settings / slice_model with NO path argument operate on it. Treat an uploaded file exactly like an imported one: offer to analyze its dimensions and slice it. STL/3MF/OBJ/AMF slice directly; STEP files should be opened in PrusaSlicer (open_in_slicer) since the GUI converts them — don't try to headlessly slice a STEP.
 
 How to behave:
 - When the user wants to print something ("I want to 3D print a model car"), call search_models and present the best options briefly. Note which are directly importable vs. open-in-browser.
@@ -30,8 +33,6 @@ type ContentParam = Anthropic.ContentBlockParam;
 
 export class SlicelyAgent {
   private readonly client: Anthropic;
-  private readonly model: string;
-  private readonly effort: string;
   private history: Anthropic.MessageParam[] = [];
   private cancelled = false;
 
@@ -43,8 +44,6 @@ export class SlicelyAgent {
       );
     }
     this.client = new Anthropic({ apiKey: cfg.anthropicApiKey });
-    this.model = cfg.model;
-    this.effort = cfg.effort;
   }
 
   cancel(): void {
@@ -108,18 +107,25 @@ export class SlicelyAgent {
     assistantContent: ContentParam[];
     toolUses: Anthropic.ToolUseBlock[];
   }> {
-    const stream = this.client.messages.stream({
-      model: this.model,
+    // Read the user's live model + effort choice every turn, and build only the
+    // request fields that model actually accepts (no effort on Haiku, no xhigh
+    // on Sonnet, no adaptive thinking on pre-4.6, etc).
+    const { model, effort } = getSettings();
+    const { outputConfig, thinking } = buildModelRequestParams(model, effort);
+
+    const params: Record<string, unknown> = {
+      model,
       max_tokens: 16000,
       system: SYSTEM_PROMPT,
-      thinking: { type: "adaptive" },
-      // effort is nested under output_config (GA, no beta header).
-      output_config: {
-        effort: this.effort as "low" | "medium" | "high" | "xhigh" | "max",
-      },
       tools: TOOLS,
       messages: this.history,
-    } as Anthropic.MessageStreamParams);
+    };
+    if (thinking) params.thinking = thinking;
+    if (outputConfig) params.output_config = outputConfig;
+
+    const stream = this.client.messages.stream(
+      params as unknown as Anthropic.MessageStreamParams,
+    );
 
     // Stream text deltas to the UI as they arrive.
     stream.on("text", (delta) => {

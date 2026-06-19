@@ -1,14 +1,21 @@
 // Electron main process. Creates the frameless "chat rectangle" window, wires
 // IPC between the renderer and the Slicely agent, and bridges browser/slicer
 // side effects.
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
 import { join } from "node:path";
 import { IPC } from "../shared/types";
-import type { AgentEvent } from "../shared/types";
+import type { AgentEvent, UserSettings, SettingsState } from "../shared/types";
 import { configState } from "./config";
 import { sessionState } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
 import { getStatus, openInGui } from "./prusaslicer";
+import {
+  getSettings,
+  updateSettings,
+  MODEL_CATALOG,
+  EFFORT_LEVELS,
+} from "./settings";
+import { acceptUploads, pickerExtensions } from "./uploads";
 
 let win: BrowserWindow | null = null;
 let agent: SlicelyAgent | null = null;
@@ -64,6 +71,33 @@ function getAgent(): SlicelyAgent {
   return agent;
 }
 
+function settingsState(): SettingsState {
+  return {
+    current: getSettings(),
+    models: MODEL_CATALOG.map((m) => ({
+      id: m.id,
+      label: m.label,
+      blurb: m.blurb,
+      supportsEffort: m.supportsEffort,
+      supportsXHigh: m.supportsXHigh,
+      supportsMax: m.supportsMax,
+    })),
+    efforts: EFFORT_LEVELS,
+  };
+}
+
+/** Accept incoming files and make the newest one the active model so the
+ *  agent's inspect/recommend/slice tools target it without a path argument. */
+async function acceptIncoming(paths: string[]) {
+  const results = await acceptUploads(paths);
+  // Prefer a directly-sliceable file as the active model; fall back to the last.
+  const active =
+    [...results].reverse().find((r) => r.sliceable) ??
+    results[results.length - 1];
+  if (active) sessionState.lastModelPath = active.localPath;
+  return results;
+}
+
 function registerIpc(): void {
   // Renderer → agent: a user message. Streams events back via IPC.agentEvent.
   ipcMain.handle(IPC.sendMessage, async (_e, message: string) => {
@@ -101,6 +135,35 @@ function registerIpc(): void {
   // Reveal a sliced G-code file in Finder.
   ipcMain.handle(IPC.revealPath, async (_e, path: string) => {
     if (path) shell.showItemInFolder(path);
+  });
+
+  // ── Settings: model + reasoning effort ──────────────────────────────────
+  ipcMain.handle(IPC.getSettings, async () => settingsState());
+  ipcMain.handle(
+    IPC.updateSettings,
+    async (_e, patch: Partial<UserSettings>): Promise<SettingsState> => {
+      updateSettings(patch);
+      return settingsState();
+    },
+  );
+
+  // ── User CAD uploads: native picker + dropped paths ─────────────────────
+  ipcMain.handle(IPC.pickFile, async () => {
+    if (!win) return [];
+    const res = await dialog.showOpenDialog(win, {
+      title: "Choose a 3D model to slice",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "3D models", extensions: pickerExtensions() },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (res.canceled || res.filePaths.length === 0) return [];
+    return acceptIncoming(res.filePaths);
+  });
+
+  ipcMain.handle(IPC.uploadFiles, async (_e, paths: string[]) => {
+    return acceptIncoming(Array.isArray(paths) ? paths : []);
   });
 
   // Renderer asks the window to grow/shrink to fit its content.
