@@ -107,6 +107,8 @@ export const IPC = {
   importModel: "slicely:importModel",
   resizeWindow: "slicely:resizeWindow",
   getConfigState: "slicely:getConfigState",
+  revealPath: "slicely:revealPath",
+  openSlicer: "slicely:openSlicer",
 } as const;
 
 /** Reports which credentials are present, so the UI can warn the user. */
@@ -131,5 +133,9 @@ export interface SlicelyApi {
   getConfigState(): Promise<ConfigState>;
   openExternal(url: string): Promise<void>;
   openInSlicer(path: string): Promise<void>;
+  /** Reveal a local file (e.g. sliced G-code) in Finder. */
+  revealPath(path: string): Promise<void>;
+  /** Launch the PrusaSlicer GUI with a model/gcode file loaded. */
+  openSlicer(path: string): Promise<void>;
   resizeWindow(height: number): void;
 }

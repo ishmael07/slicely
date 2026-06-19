@@ -267,8 +267,9 @@ export async function executeTool(
 
     case "slice_model": {
       const path = resolvePath(input.path);
-      const params: SliceParams = {
-        ...sessionState.lastRecommendation,
+
+      // Did the model pass any explicit setting on this call?
+      const explicit: SliceParams = {
         ...numParam(input, "layerHeightMm"),
         ...numParam(input, "fillDensityPct"),
         ...numParam(input, "brimWidthMm"),
@@ -277,10 +278,34 @@ export async function executeTool(
           ? { supportMaterial: input.supportMaterial }
           : {}),
       };
+      const hasExplicit = Object.keys(explicit).length > 0;
+
+      // Establish a recommended baseline so "just slice it" always uses sensible
+      // geometry-aware settings — even if recommend_settings was never called.
+      let baseline = sessionState.lastRecommendation;
+      if (!baseline || Object.keys(baseline).length === 0) {
+        const info = await getModelInfo(path);
+        emit({ type: "info", info });
+        baseline = recommendSettings(info).params;
+        sessionState.lastRecommendation = baseline;
+      }
+
+      const params: SliceParams = { ...baseline, ...explicit };
       const metrics = await slice(path, params);
       emit({ type: "metrics", metrics });
+
+      const usedLine =
+        `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
+        `${params.fillDensityPct ?? "default"}% infill, ` +
+        `supports ${params.supportMaterial ? "on" : "off"}, ` +
+        `brim ${params.brimWidthMm ?? 0} mm` +
+        (hasExplicit ? " (your overrides applied)" : " (recommended)") +
+        ".";
+
       return (
         `Sliced successfully → ${metrics.gcodePath}\n` +
+        usedLine +
+        "\n" +
         (metrics.estimatedPrintTime
           ? `  print time: ${metrics.estimatedPrintTime}\n`
           : "") +

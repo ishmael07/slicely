@@ -15,7 +15,9 @@
 //        "; total filament cost = ..."  ; layer count = count of ";LAYER_CHANGE"
 //   • Version: first line of `--help` banner ("PrusaSlicer-<ver> ...")
 //   • Open in GUI: `open -a PrusaSlicer model.stl`
-//   • Running check: `pgrep -x PrusaSlicer`
+//   • Running check: we track our OWN headless spawns and exclude them so a
+//        slice-in-progress isn't mistaken for the user having the GUI open;
+//        LaunchServices (`lsappinfo`) is the authoritative GUI-app signal.
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -29,6 +31,17 @@ import type {
 import { getConfig } from "./config";
 
 const APP_NAME = "PrusaSlicer";
+/** macOS LaunchServices bundle id for PrusaSlicer (used by lsappinfo). */
+const BUNDLE_ID = "com.prusa3d.slic3r.gui";
+
+/** PIDs of headless slicer processes WE spawned (--info / --export-gcode).
+ *  Excluded from "is the user's GUI open?" checks so a slice in progress is
+ *  never mistaken for the user having PrusaSlicer open. */
+const ownPids = new Set<number>();
+
+/** Cached version string — resolving it spawns the binary, so do it once. */
+let cachedVersion: string | undefined;
+let versionResolved = false;
 
 interface RunResult {
   code: number;
@@ -36,11 +49,14 @@ interface RunResult {
   stderr: string;
 }
 
-/** Spawn a process, capture stdout/stderr, resolve on exit (never rejects). */
+/** Spawn a process, capture stdout/stderr, resolve on exit (never rejects).
+ *  When `track` is set, the child's PID is recorded as one of our own
+ *  headless slicer processes for the duration of the run. */
 function run(
   cmd: string,
   args: string[],
   timeoutMs = 120_000,
+  track = false,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = "";
@@ -48,26 +64,28 @@ function run(
     let settled = false;
     const child = spawn(cmd, args, { windowsHide: true });
 
+    if (track && typeof child.pid === "number") {
+      ownPids.add(child.pid);
+    }
+
+    const finish = (result: RunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (track && typeof child.pid === "number") ownPids.delete(child.pid);
+      resolve(result);
+    };
+
     const timer = setTimeout(() => {
-      if (!settled) {
-        child.kill("SIGKILL");
-      }
+      if (!settled) child.kill("SIGKILL");
     }, timeoutMs);
 
     child.stdout?.on("data", (d) => (stdout += d.toString()));
     child.stderr?.on("data", (d) => (stderr += d.toString()));
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code: -1, stdout, stderr: stderr + "\n" + err.message });
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout, stderr });
-    });
+    child.on("error", (err) =>
+      finish({ code: -1, stdout, stderr: stderr + "\n" + err.message }),
+    );
+    child.on("close", (code) => finish({ code: code ?? -1, stdout, stderr }));
   });
 }
 
@@ -75,35 +93,74 @@ function binaryPath(): string {
   return getConfig().prusaSlicerPath;
 }
 
-/** Resolve install + running state + version. */
+/** Resolve install + running state + version. Cheap enough to poll on a timer:
+ *  install is a stat, running is a fast `pgrep`/`lsappinfo`, version is cached. */
 export async function getStatus(): Promise<SlicerStatus> {
   const bin = binaryPath();
   const installed = existsSync(bin);
-  const running = await isRunning();
-  let version: string | undefined;
-
-  if (installed) {
-    version = await getVersion(bin);
-  }
+  const running = installed ? await isGuiRunning() : false;
+  const version = installed ? await getVersion(bin) : undefined;
 
   return { installed, running, binaryPath: bin, version, appName: APP_NAME };
 }
 
-async function isRunning(): Promise<boolean> {
+/** True only when the user has the PrusaSlicer GUI open — NOT when we're
+ *  running a headless slice. Combines two signals:
+ *    1. PrusaSlicer process PIDs minus the ones we spawned ourselves.
+ *    2. LaunchServices' list of GUI apps (only consulted when we're not
+ *       mid-slice, so our own invocation can't false-positive it). */
+async function isGuiRunning(): Promise<boolean> {
+  const pids = await pgrepPids(APP_NAME);
+  const external = pids.filter((p) => !ownPids.has(p));
+  if (external.length > 0) return true;
+
+  // No external process match. If we're not slicing, double-check LaunchServices
+  // (covers any case where the process name doesn't match `pgrep -x`).
+  if (ownPids.size === 0) return await lsappinfoRunning();
+  return false;
+}
+
+function pgrepPids(name: string): Promise<number[]> {
   return new Promise((resolve) => {
-    execFile("pgrep", ["-x", APP_NAME], (err, stdout) => {
+    execFile("pgrep", ["-x", name], { timeout: 4000 }, (err, stdout) => {
       // pgrep exits 1 with no match; that's "not running", not an error.
-      resolve(!err && stdout.trim().length > 0);
+      if (err || !stdout.trim()) return resolve([]);
+      resolve(
+        stdout
+          .trim()
+          .split(/\s+/)
+          .map(Number)
+          .filter((n) => Number.isFinite(n)),
+      );
+    });
+  });
+}
+
+/** Ask LaunchServices whether a PrusaSlicer GUI app is registered as running.
+ *  `lsappinfo` only knows about real application instances, so a bare CLI
+ *  invocation of the binary does not show up here. Returns false on any error. */
+function lsappinfoRunning(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("lsappinfo", ["list"], { timeout: 4000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      if (err || !stdout) return resolve(false);
+      resolve(
+        new RegExp(`${APP_NAME}|${BUNDLE_ID.replace(/\./g, "\\.")}`, "i").test(
+          stdout,
+        ),
+      );
     });
   });
 }
 
 async function getVersion(bin: string): Promise<string | undefined> {
-  const { stdout, stderr } = await run(bin, ["--help"], 15_000);
+  if (versionResolved) return cachedVersion;
+  const { stdout, stderr } = await run(bin, ["--help"], 15_000, true);
   const banner = (stdout + stderr).split("\n", 1)[0] ?? "";
   // First line looks like: "PrusaSlicer-2.9.0+... based on Slic3r ..."
   const m = banner.match(/PrusaSlicer-([^\s]+)/i);
-  return m ? m[1] : undefined;
+  cachedVersion = m ? m[1] : undefined;
+  versionResolved = true;
+  return cachedVersion;
 }
 
 function assertInstalled(): string {
@@ -122,7 +179,12 @@ export async function getModelInfo(stlPath: string): Promise<ModelInfo> {
   if (!existsSync(stlPath)) {
     throw new Error(`Model file not found: ${stlPath}`);
   }
-  const { code, stdout, stderr } = await run(bin, ["--info", stlPath], 60_000);
+  const { code, stdout, stderr } = await run(
+    bin,
+    ["--info", stlPath],
+    60_000,
+    true, // our own spawn — exclude from GUI-running detection
+  );
   if (code !== 0 && !stdout.includes("size_x")) {
     throw new Error(
       `PrusaSlicer --info failed: ${stderr.trim() || stdout.trim() || "unknown error"}`,
@@ -191,7 +253,7 @@ export async function slice(
     args.push("--nozzle-diameter", String(params.nozzleDiameterMm));
   }
 
-  const { code, stdout, stderr } = await run(bin, args, 300_000);
+  const { code, stdout, stderr } = await run(bin, args, 300_000, true);
 
   if (!existsSync(gcodePath)) {
     const reason =

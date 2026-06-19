@@ -17,6 +17,8 @@ const api: SlicelyApi = {
   getConfigState: () => ipcRenderer.invoke(IPC.getConfigState),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
   openInSlicer: (path) => ipcRenderer.invoke(IPC.importModel, path),
+  revealPath: (path) => ipcRenderer.invoke(IPC.revealPath, path),
+  openSlicer: (path) => ipcRenderer.invoke(IPC.openSlicer, path),
   resizeWindow: (height) => ipcRenderer.send(IPC.resizeWindow, height),
 };
 

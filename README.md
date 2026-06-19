@@ -16,8 +16,9 @@ Tell Slicely what you want to print ("I want to 3D print a model car"). It searc
 | ⬇️ **Import** | Downloads a Thingiverse model's STL/3MF directly into `~/Slicely/downloads`. (Printables/MakerWorld → opens the page in your browser.) |
 | 📐 **Inspect** | Runs `PrusaSlicer --info` for real dimensions, volume, triangle count, watertightness. |
 | 🎛️ **Recommend settings** | Suggests layer height / infill / supports / brim based on the model's geometry, with a plain-language rationale. |
-| 🍰 **Slice** | Slices to G-code with PrusaSlicer and reports estimated print time, filament used (g / m), cost, and layer count. |
-| 🖥️ **Hand off** | Opens any model in the PrusaSlicer GUI so you can take over manually. |
+| 🍰 **Slice** | Slices to G-code with PrusaSlicer and reports estimated print time, filament used (g / m), cost, and layer count. "Just slice it" auto-applies the recommended settings — no extra step needed. |
+| 🟢 **Live slicer status** | A status pill shows in real time whether PrusaSlicer is installed and whether you have it **open** — and it doesn't confuse Slicely's own background slices for the app being open. |
+| 🖥️ **Hand off** | Opens any model (or the sliced G-code) in the PrusaSlicer GUI, or reveals the G-code in Finder. |
 
 ---
 

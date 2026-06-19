@@ -90,9 +90,17 @@ function registerIpc(): void {
     if (/^https?:\/\//.test(url)) await shell.openExternal(url);
   });
 
-  // Direct "Import / Open in slicer" actions from a model card button.
+  // Direct "Open in slicer" actions from a card / metric-panel button.
   ipcMain.handle(IPC.importModel, async (_e, path: string) => {
     await openInGui(path);
+  });
+  ipcMain.handle(IPC.openSlicer, async (_e, path: string) => {
+    await openInGui(path);
+  });
+
+  // Reveal a sliced G-code file in Finder.
+  ipcMain.handle(IPC.revealPath, async (_e, path: string) => {
+    if (path) shell.showItemInFolder(path);
   });
 
   // Renderer asks the window to grow/shrink to fit its content.
@@ -107,13 +115,41 @@ function registerIpc(): void {
   });
 }
 
+// Poll PrusaSlicer status and push to the renderer only when it changes, so
+// the UI's status pill reflects the user opening/closing PrusaSlicer live.
+let lastStatusKey = "";
+let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+function startStatusPolling(): void {
+  const tick = async () => {
+    if (!win) return;
+    try {
+      const status = await getStatus();
+      const key = `${status.installed}|${status.running}|${status.version ?? ""}`;
+      if (key !== lastStatusKey) {
+        lastStatusKey = key;
+        emitToRenderer({ type: "status", status });
+      }
+    } catch {
+      /* transient; try again next tick */
+    }
+  };
+  void tick();
+  statusTimer = setInterval(tick, 4000);
+}
+
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  startStatusPolling();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on("before-quit", () => {
+  if (statusTimer) clearInterval(statusTimer);
 });
 
 app.on("window-all-closed", () => {

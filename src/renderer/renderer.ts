@@ -1,6 +1,8 @@
 // Slicely renderer. Talks to the main process exclusively through the typed
 // `window.slicely` bridge exposed by preload.ts. Renders the chat transcript,
-// model cards, and slice-metric panels from streamed agent events.
+// model cards, and slice-metric panels from streamed agent events — with
+// entrance animations, a live streaming caret, and a live PrusaSlicer status
+// pill driven by pushed status events.
 import type {
   AgentEvent,
   ModelResult,
@@ -35,6 +37,8 @@ let busy = false;
 let activeBotBubble: HTMLDivElement | null = null;
 /** Active tool chips by tool name, so tool_end can finalize the right one. */
 const activeChips = new Map<string, HTMLDivElement>();
+/** Path of the most-recently downloaded/sliced model, for action buttons. */
+let activeModelPath: string | null = null;
 
 // ── Bootstrapping ────────────────────────────────────────────────────────
 showEmptyState();
@@ -69,31 +73,35 @@ async function checkConfig(): Promise<void> {
   }
   if (!cfg.hasThingiverseToken) {
     warnings.push(
-      "No THINGIVERSE_APP_TOKEN — search still works via Printables/MakerWorld, but in-app downloads need a (free) Thingiverse token.",
+      "No Thingiverse token — search still works, but in-app downloads need a free THINGIVERSE_APP_TOKEN.",
     );
   }
   if (warnings.length > 0) {
-    bannerEl.textContent = warnings.join(" ");
+    bannerEl.textContent = warnings.join("  ·  ");
     bannerEl.classList.remove("hidden");
+  } else {
+    bannerEl.classList.add("hidden");
   }
 }
 
 async function refreshStatus(): Promise<void> {
-  let s: SlicerStatus;
   try {
-    s = await api.getStatus();
+    applyStatus(await api.getStatus());
   } catch {
-    return;
+    /* poller will retry */
   }
+}
+
+function applyStatus(s: SlicerStatus): void {
   if (!s.installed) {
     statusDot.className = "dot err";
     statusText.textContent = "PrusaSlicer not found";
   } else if (s.running) {
     statusDot.className = "dot ok";
-    statusText.textContent = `PrusaSlicer ${s.version ?? ""} · running`;
+    statusText.textContent = `PrusaSlicer ${s.version ?? ""} · open`.trim();
   } else {
     statusDot.className = "dot warn";
-    statusText.textContent = `PrusaSlicer ${s.version ?? "ready"}`;
+    statusText.textContent = `PrusaSlicer ${s.version ?? "ready"}`.trim();
   }
 }
 
@@ -105,16 +113,28 @@ function submit(): void {
   addUserMessage(text);
   inputEl.value = "";
   autoGrow();
+  startTurn();
+  void api.sendMessage(text);
+}
+
+/** Send a synthesized instruction (from a card button) as if the user asked. */
+function sendInstruction(displayText: string, instruction: string): void {
+  if (busy) return;
+  clearEmptyState();
+  addUserMessage(displayText);
+  startTurn();
+  void api.sendMessage(instruction);
+}
+
+function startTurn(): void {
   setBusy(true);
   activeBotBubble = null;
-  void api.sendMessage(text);
 }
 
 function setBusy(b: boolean): void {
   busy = b;
   sendBtn.classList.toggle("hidden", b);
   stopBtn.classList.toggle("hidden", !b);
-  inputEl.disabled = false; // allow typing the next message while streaming
 }
 
 // ── Event handling ──────────────────────────────────────────────────────────
@@ -133,6 +153,7 @@ function handleAgentEvent(event: AgentEvent): void {
       renderCards(event.models);
       break;
     case "download":
+      activeModelPath = event.result.localPath;
       renderDownloadNote(event.model, event.result.fileName);
       break;
     case "info":
@@ -142,15 +163,15 @@ function handleAgentEvent(event: AgentEvent): void {
       renderMetrics(event.metrics);
       break;
     case "status":
-      void refreshStatus();
+      applyStatus(event.status);
       break;
     case "error":
       renderError(event.message);
       break;
     case "done":
+      finishStreaming();
       setBusy(false);
       activeBotBubble = null;
-      void refreshStatus();
       break;
   }
   scrollToBottom();
@@ -158,7 +179,7 @@ function handleAgentEvent(event: AgentEvent): void {
 
 // ── Rendering helpers ────────────────────────────────────────────────────────
 function addUserMessage(text: string): void {
-  const wrap = el("div", "msg user");
+  const wrap = el("div", "msg user enter");
   const bubble = el("div", "bubble");
   bubble.textContent = text;
   wrap.appendChild(bubble);
@@ -167,23 +188,30 @@ function addUserMessage(text: string): void {
 
 function appendBotText(delta: string): void {
   if (!activeBotBubble) {
-    const wrap = el("div", "msg bot");
-    activeBotBubble = el("div", "bubble") as HTMLDivElement;
+    const wrap = el("div", "msg bot enter");
+    activeBotBubble = el("div", "bubble streaming") as HTMLDivElement;
     wrap.appendChild(activeBotBubble);
     messagesEl.appendChild(wrap);
   }
   activeBotBubble.textContent = (activeBotBubble.textContent ?? "") + delta;
 }
 
+/** Stop the blinking caret on whatever bubble was last streamed. */
+function finishStreaming(): void {
+  activeBotBubble?.classList.remove("streaming");
+}
+
 function startToolChip(tool: string, label: string): void {
   // A new tool call ends the current text bubble so following text starts fresh.
+  finishStreaming();
   activeBotBubble = null;
-  const chip = el("div", "tool-chip") as HTMLDivElement;
+  const chip = el("div", "tool-chip enter") as HTMLDivElement;
   chip.appendChild(el("span", "spin"));
   const txt = el("span");
   txt.textContent = label;
   chip.appendChild(txt);
   messagesEl.appendChild(chip);
+  // If the same tool fires twice, keep only the latest reference.
   activeChips.set(tool, chip);
 }
 
@@ -191,26 +219,30 @@ function endToolChip(tool: string, ok: boolean, summary?: string): void {
   const chip = activeChips.get(tool);
   if (!chip) return;
   chip.classList.add("done");
+  chip.querySelector(".spin")?.remove();
   if (!ok) {
     chip.classList.add("err");
     const txt = chip.querySelector("span:last-child");
     if (txt) txt.textContent = summary ? `Failed: ${summary}` : "Failed";
+    prependIcon(chip, "✕");
   } else {
-    chip.querySelector(".spin")?.remove();
-    const check = el("span");
-    check.textContent = "✓";
-    chip.insertBefore(check, chip.firstChild);
+    prependIcon(chip, "✓");
   }
   activeChips.delete(tool);
 }
 
+function prependIcon(chip: HTMLDivElement, glyph: string): void {
+  const ico = el("span", "ico");
+  ico.textContent = glyph;
+  chip.insertBefore(ico, chip.firstChild);
+}
+
 function renderCards(models: ModelResult[]): void {
+  finishStreaming();
   activeBotBubble = null;
   if (models.length === 0) return;
   const wrap = el("div", "cards");
-  for (const m of models) {
-    wrap.appendChild(buildCard(m));
-  }
+  for (const m of models) wrap.appendChild(buildCard(m));
   messagesEl.appendChild(wrap);
 }
 
@@ -222,9 +254,8 @@ function buildCard(m: ModelResult): HTMLDivElement {
     img.className = "thumb";
     img.src = m.thumbnail;
     img.referrerPolicy = "no-referrer";
-    img.onerror = () => {
-      img.replaceWith(placeholderThumb());
-    };
+    img.loading = "lazy";
+    img.onerror = () => img.replaceWith(placeholderThumb());
     card.appendChild(img);
   } else {
     card.appendChild(placeholderThumb());
@@ -239,39 +270,31 @@ function buildCard(m: ModelResult): HTMLDivElement {
   const src = el("span", "src");
   src.textContent = m.source;
   sub.appendChild(src);
-  sub.appendChild(
-    document.createTextNode(
-      m.creator ? `by ${m.creator}` : "open-source model",
-    ),
-  );
+  const by = el("span");
+  by.textContent = m.creator ? `by ${m.creator}` : "open-source";
+  sub.appendChild(by);
   meta.appendChild(sub);
 
   if (m.license) {
-    const lic = el("div", "sub");
+    const lic = el("div", "lic");
     lic.textContent = m.license;
+    lic.title = m.license;
     meta.appendChild(lic);
   }
 
   const actions = el("div", "actions");
   if (m.downloadable) {
-    const importBtn = el("button", "primary") as HTMLButtonElement;
-    importBtn.textContent = "Import";
-    importBtn.onclick = () => {
-      // Ask the agent to import — keeps the conversation coherent and reuses
-      // the same import → inspect → slice flow.
-      if (busy) return;
-      clearEmptyState();
-      addUserMessage(`Import "${m.title}"`);
-      setBusy(true);
-      activeBotBubble = null;
-      void api.sendMessage(
-        `Import the ${m.source} model id ${m.id} ("${m.title}"), then tell me its dimensions and recommend slicing settings.`,
+    const importBtn = el("button", "btn primary") as HTMLButtonElement;
+    importBtn.textContent = "Import & analyze";
+    importBtn.onclick = () =>
+      sendInstruction(
+        `Import "${m.title}"`,
+        `Import the ${m.source} model id ${m.id} ("${m.title}"), then report its dimensions and recommend optimal slicing settings.`,
       );
-    };
     actions.appendChild(importBtn);
   }
 
-  const openBtn = el("button") as HTMLButtonElement;
+  const openBtn = el("button", "btn") as HTMLButtonElement;
   openBtn.textContent = m.downloadable ? "View page" : "Open in browser";
   openBtn.onclick = () => void api.openExternal(m.webUrl);
   actions.appendChild(openBtn);
@@ -288,11 +311,10 @@ function placeholderThumb(): HTMLDivElement {
 }
 
 function renderDownloadNote(model: ModelResult, fileName: string): void {
+  finishStreaming();
   activeBotBubble = null;
-  const chip = el("div", "tool-chip done") as HTMLDivElement;
-  const check = el("span");
-  check.textContent = "⬇";
-  chip.appendChild(check);
+  const chip = el("div", "tool-chip done enter") as HTMLDivElement;
+  prependIcon(chip, "⬇");
   const txt = el("span");
   txt.textContent = `Downloaded ${fileName} from ${model.source}`;
   chip.appendChild(txt);
@@ -300,7 +322,12 @@ function renderDownloadNote(model: ModelResult, fileName: string): void {
 }
 
 function renderInfo(info: ModelInfo): void {
+  finishStreaming();
   activeBotBubble = null;
+  if (info.filePath) activeModelPath = info.filePath;
+
+  const panel = el("div", "panel");
+  panel.appendChild(panelHead("◳", "Model"));
   const grid = el("div", "metrics");
   addMetric(grid, "Width", `${info.sizeX.toFixed(1)} mm`);
   addMetric(grid, "Depth", `${info.sizeY.toFixed(1)} mm`);
@@ -314,17 +341,22 @@ function renderInfo(info: ModelInfo): void {
   if (info.manifold !== undefined) {
     addMetric(grid, "Watertight", info.manifold ? "yes" : "no");
   }
-  messagesEl.appendChild(grid);
+  panel.appendChild(grid);
+  messagesEl.appendChild(panel);
 }
 
 function renderMetrics(m: SliceMetrics): void {
+  finishStreaming();
   activeBotBubble = null;
+  const panel = el("div", "panel");
+  panel.appendChild(panelHead("✦", "Slice result"));
+
   const grid = el("div", "metrics");
   if (m.estimatedPrintTime) {
     addMetric(grid, "Print time", m.estimatedPrintTime, true, true);
   }
   if (m.filamentUsedG !== undefined) {
-    addMetric(grid, "Filament", `${m.filamentUsedG.toFixed(1)} g`, true);
+    addMetric(grid, "Filament", `${m.filamentUsedG.toFixed(1)} g`, false, true);
   }
   if (m.filamentUsedMm !== undefined) {
     addMetric(grid, "Length", `${(m.filamentUsedMm / 1000).toFixed(2)} m`);
@@ -335,7 +367,36 @@ function renderMetrics(m: SliceMetrics): void {
   if (m.filamentCost !== undefined) {
     addMetric(grid, "Est. cost", m.filamentCost.toFixed(2));
   }
-  messagesEl.appendChild(grid);
+  panel.appendChild(grid);
+
+  // Action row: open the sliced result / reveal the G-code file.
+  const actions = el("div", "actions");
+  const openBtn = el("button", "btn primary") as HTMLButtonElement;
+  openBtn.textContent = "Open in PrusaSlicer";
+  openBtn.onclick = () => {
+    const p = activeModelPath ?? m.gcodePath;
+    void api.openSlicer(p);
+  };
+  actions.appendChild(openBtn);
+
+  const revealBtn = el("button", "btn") as HTMLButtonElement;
+  revealBtn.textContent = "Reveal G-code";
+  revealBtn.onclick = () => void api.revealPath(m.gcodePath);
+  actions.appendChild(revealBtn);
+
+  panel.appendChild(actions);
+  messagesEl.appendChild(panel);
+}
+
+function panelHead(icon: string, label: string): HTMLDivElement {
+  const head = el("div", "panel-head") as HTMLDivElement;
+  const pico = el("span", "pico");
+  pico.textContent = icon;
+  head.appendChild(pico);
+  const t = el("span");
+  t.textContent = label;
+  head.appendChild(t);
+  return head;
 }
 
 function addMetric(
@@ -356,11 +417,10 @@ function addMetric(
 }
 
 function renderError(message: string): void {
+  finishStreaming();
   activeBotBubble = null;
-  const chip = el("div", "tool-chip err done") as HTMLDivElement;
-  const x = el("span");
-  x.textContent = "⚠";
-  chip.appendChild(x);
+  const chip = el("div", "tool-chip err done enter") as HTMLDivElement;
+  prependIcon(chip, "⚠");
   const txt = el("span");
   txt.textContent = message;
   chip.appendChild(txt);
@@ -372,7 +432,7 @@ function showEmptyState(): void {
   const empty = el("div", "empty");
   empty.id = "emptyState";
   empty.innerHTML =
-    '<span class="big">◆</span>Hi, I\'m <b>Slicely</b>.<br/>Tell me what you want to 3D print and I\'ll find free models and slice them in PrusaSlicer.';
+    '<span class="big">◆</span>Hi, I\'m <b>Slicely</b>.<br/>Tell me what you want to 3D print — I\'ll find free models and slice them in PrusaSlicer.';
   const examples = el("div", "examples");
   for (const ex of [
     "I want to 3D print a model car",
@@ -409,5 +469,8 @@ function autoGrow(): void {
 }
 
 function scrollToBottom(): void {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  // rAF so layout settles (animations/images) before we measure scrollHeight.
+  requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
 }
