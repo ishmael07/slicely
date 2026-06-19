@@ -2,7 +2,12 @@
 // against the providers / PrusaSlicer modules. The agent loop streams the
 // structured results back to the UI in addition to feeding them to the model.
 import type Anthropic from "@anthropic-ai/sdk";
-import type { AgentEvent, SliceParams } from "../../shared/types";
+import type {
+  AgentEvent,
+  SliceParams,
+  PrintGoal,
+  PrintMaterial,
+} from "../../shared/types";
 import { searchModels, downloadModel, type SourceFilter } from "../providers";
 import {
   getStatus,
@@ -10,8 +15,45 @@ import {
   slice,
   openInGui,
   recommendSettings,
+  type RecommendInput,
 } from "../prusaslicer";
+import {
+  getProfileState,
+  resolveSliceConfig,
+  KNOWN_PRINTERS,
+} from "../profiles";
 import { sessionState } from "./state";
+
+const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
+const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
+
+/** Build a RecommendInput from tool input, defaulting gracefully. Pulls the
+ *  bed size + nozzle from the session's chosen printer so the bed-fit check and
+ *  layer-height bounds match the user's actual machine. */
+function recommendInput(input: Record<string, unknown>): RecommendInput {
+  const out: RecommendInput = {};
+  if (typeof input.goal === "string" && (GOALS as string[]).includes(input.goal)) {
+    out.goal = input.goal as PrintGoal;
+  }
+  if (
+    typeof input.material === "string" &&
+    (MATERIALS as string[]).includes(input.material)
+  ) {
+    out.material = input.material as PrintMaterial;
+  }
+
+  // Printer geometry: explicit nozzle wins, else the chosen printer's nozzle.
+  const printer = sessionState.printerKey
+    ? KNOWN_PRINTERS[sessionState.printerKey]
+    : undefined;
+  if (typeof input.nozzleMm === "number") out.nozzleMm = input.nozzleMm;
+  else if (typeof input.nozzleDiameterMm === "number")
+    out.nozzleMm = input.nozzleDiameterMm;
+  else if (printer) out.nozzleMm = printer.nozzleMm;
+  if (printer) out.bed = printer.bed;
+
+  return out;
+}
 
 /** Emit a structured side-channel event to the renderer. */
 export type Emit = (event: AgentEvent) => void;
@@ -86,6 +128,33 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "check_printer_setup",
+    description:
+      "Check whether the user has a usable PrusaSlicer printer profile configured (they ran the setup " +
+      "wizard / exported a config). Use this BEFORE the first slice for a new user. If they have nothing " +
+      "set up, ask which printer they have and call set_printer — otherwise slices use generic defaults and " +
+      "estimates won't match their machine. Returns the config state plus the list of printers Slicely knows.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_printer",
+    description:
+      "Set the user's printer when they don't have a PrusaSlicer profile configured. Slicely synthesizes a " +
+      "config (bed size + nozzle) so slices are realistic for their machine. Use the printer key from " +
+      "check_printer_setup, or 'generic' if unknown.",
+    input_schema: {
+      type: "object",
+      properties: {
+        printerKey: {
+          type: "string",
+          description:
+            "A printer key from check_printer_setup (e.g. 'prusa-mk4', 'ender-3', 'bambu-a1', 'generic').",
+        },
+      },
+      required: ["printerKey"],
+    },
+  },
+  {
     name: "inspect_model",
     description:
       "Get the physical dimensions (mm), volume, triangle count, and manifold status of a downloaded " +
@@ -105,16 +174,33 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "recommend_settings",
     description:
-      "Get recommended slicing settings (layer height, infill, supports, brim) for a model based on its " +
-      "dimensions, with a plain-language rationale. Use this to advise the user on optimal settings. " +
-      "Inspects the model first if needed.",
+      "Analyze a model's geometry and recommend accurate, print-safe slicing settings (layer height, " +
+      "infill density + pattern, walls, solid layers, supports, brim) with a plain-language rationale AND " +
+      "warnings (bed fit, non-watertight mesh, material gotchas). Pass the user's goal/material/nozzle when " +
+      "known — they materially change the result. Inspects the model first if needed. Use this before slicing " +
+      "so you can explain WHY the settings fit the print.",
     input_schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description:
-            "Absolute path to a downloaded model file. Omit to use the most recently imported model.",
+            "Absolute path to a model file. Omit to use the active (imported/uploaded) model.",
+        },
+        goal: {
+          type: "string",
+          enum: ["draft", "quality", "functional"],
+          description:
+            "What the print is for: draft = fast/rough, quality = looks/detail, functional = strong/load-bearing. Default quality.",
+        },
+        material: {
+          type: "string",
+          enum: ["PLA", "PETG", "ABS"],
+          description: "Filament family. Default PLA.",
+        },
+        nozzleMm: {
+          type: "number",
+          description: "Nozzle diameter in mm (default 0.4). Bounds the layer height.",
         },
       },
     },
@@ -122,24 +208,40 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "slice_model",
     description:
-      "Slice a downloaded model into G-code with PrusaSlicer and return real metrics: estimated print " +
-      "time, filament used (mm and grams), filament cost, and layer count. Provide any settings the user " +
-      "wants; omit a setting to use the recommended/default value.",
+      "Slice the active model into G-code with PrusaSlicer and return real metrics: estimated print time, " +
+      "filament used (mm and grams), filament cost, and layer count. If no settings are given it auto-applies " +
+      "the geometry/goal-aware recommended settings, so 'just slice it' always works. Pass goal/material to " +
+      "shape the recommendation, or explicit values to override individual settings.",
     input_schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description:
-            "Absolute path to the model file. Omit to use the most recently imported model.",
+            "Absolute path to the model file. Omit to use the active (imported/uploaded) model.",
         },
-        layerHeightMm: { type: "number", description: "e.g. 0.2" },
+        goal: {
+          type: "string",
+          enum: ["draft", "quality", "functional"],
+          description: "Print goal driving the recommended baseline. Default quality.",
+        },
+        material: {
+          type: "string",
+          enum: ["PLA", "PETG", "ABS"],
+          description: "Filament family. Default PLA.",
+        },
+        layerHeightMm: { type: "number", description: "Override, e.g. 0.2" },
         fillDensityPct: {
           type: "number",
-          description: "Infill density as a percent, 0–100 (e.g. 20).",
+          description: "Override infill density as a percent, 0–100 (e.g. 20).",
         },
-        supportMaterial: { type: "boolean" },
-        brimWidthMm: { type: "number", description: "0 for no brim." },
+        fillPattern: {
+          type: "string",
+          description: "Override infill pattern, e.g. gyroid, rectilinear, grid, honeycomb.",
+        },
+        perimeters: { type: "integer", description: "Override wall count." },
+        supportMaterial: { type: "boolean", description: "Override supports on/off." },
+        brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
         nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
       },
     },
@@ -229,6 +331,43 @@ export async function executeTool(
       }.`;
     }
 
+    case "check_printer_setup": {
+      const state = getProfileState();
+      const printerList = Object.entries(KNOWN_PRINTERS)
+        .map(([key, p]) => `  ${key}: ${p.label}`)
+        .join("\n");
+      if (sessionState.printerKey) {
+        const p = KNOWN_PRINTERS[sessionState.printerKey];
+        return `Printer already set this session: ${p?.label ?? sessionState.printerKey}. Good to slice.`;
+      }
+      if (state.userConfigIni) {
+        return `The user has their own exported PrusaSlicer config (PRUSASLICER_CONFIG_INI) — slices will use it. No setup needed.`;
+      }
+      if (state.hasUsablePrinter) {
+        return `The user has PrusaSlicer profiles configured${
+          state.selectedPrinter ? ` (selected: "${state.selectedPrinter}")` : ""
+        }. You can slice; results use PrusaSlicer's own defaults. If estimates seem off, offer to set their exact printer.`;
+      }
+      return (
+        `The user has NO usable PrusaSlicer printer profile (never ran the setup wizard). ` +
+        `Ask which printer they have, then call set_printer so slices are realistic. Known printers:\n` +
+        printerList +
+        `\nIf they don't know, use 'generic'.`
+      );
+    }
+
+    case "set_printer": {
+      const key = String(input.printerKey ?? "");
+      if (!KNOWN_PRINTERS[key]) {
+        return `Unknown printer "${key}". Valid keys: ${Object.keys(KNOWN_PRINTERS).join(", ")}.`;
+      }
+      sessionState.printerKey = key;
+      // Invalidate any cached recommendation — nozzle/bed may have changed.
+      sessionState.lastRecommendation = {};
+      const p = KNOWN_PRINTERS[key];
+      return `Printer set to ${p.label} (${p.bed.x}×${p.bed.y}×${p.bed.z} mm bed, ${p.nozzleMm} mm nozzle). Slices will now match this machine.`;
+    }
+
     case "inspect_model": {
       const path = resolvePath(input.path);
       const info = await getModelInfo(path);
@@ -253,54 +392,74 @@ export async function executeTool(
       const path = resolvePath(input.path);
       const info = await getModelInfo(path);
       emit({ type: "info", info });
-      const rec = recommendSettings(info);
+      const rec = recommendSettings(info, recommendInput(input));
       sessionState.lastRecommendation = rec.params;
+      const a = rec.assumptions;
       return (
-        `Recommended settings for this model:\n` +
+        `Recommended for a ${a.goal} ${a.material} print (${a.nozzleMm} mm nozzle):\n` +
         `  layer height: ${rec.params.layerHeightMm} mm\n` +
-        `  infill: ${rec.params.fillDensityPct}%\n` +
-        `  supports: ${rec.params.supportMaterial ? "yes" : "no"}\n` +
+        `  infill: ${rec.params.fillDensityPct}% ${rec.params.fillPattern}\n` +
+        `  walls: ${rec.params.perimeters}, solid top/bottom: ${rec.params.topSolidLayers}/${rec.params.bottomSolidLayers}\n` +
+        `  supports: ${rec.params.supportMaterial ? `yes (${rec.params.supportThresholdDeg}° threshold)` : "no"}\n` +
         `  brim: ${rec.params.brimWidthMm} mm\n` +
-        `Rationale:\n- ${rec.rationale.join("\n- ")}`
+        `Rationale:\n- ${rec.rationale.join("\n- ")}` +
+        (rec.warnings.length
+          ? `\nWarnings:\n- ${rec.warnings.join("\n- ")}`
+          : "")
       );
     }
 
     case "slice_model": {
       const path = resolvePath(input.path);
 
-      // Did the model pass any explicit setting on this call?
+      // Explicit per-setting overrides the user/agent passed on this call.
       const explicit: SliceParams = {
         ...numParam(input, "layerHeightMm"),
         ...numParam(input, "fillDensityPct"),
         ...numParam(input, "brimWidthMm"),
         ...numParam(input, "nozzleDiameterMm"),
+        ...numParam(input, "perimeters"),
+        ...(typeof input.fillPattern === "string"
+          ? { fillPattern: input.fillPattern }
+          : {}),
         ...(typeof input.supportMaterial === "boolean"
           ? { supportMaterial: input.supportMaterial }
           : {}),
       };
       const hasExplicit = Object.keys(explicit).length > 0;
 
-      // Establish a recommended baseline so "just slice it" always uses sensible
-      // geometry-aware settings — even if recommend_settings was never called.
+      // Always recompute a goal/material/geometry-aware baseline so "just slice
+      // it" uses accurate, print-safe settings. If goal/material were given,
+      // they reshape the recommendation even when one was cached earlier.
+      const reInput = recommendInput(input);
+      const goalGiven = input.goal !== undefined || input.material !== undefined;
       let baseline = sessionState.lastRecommendation;
-      if (!baseline || Object.keys(baseline).length === 0) {
+      let warnings: string[] = [];
+      if (goalGiven || !baseline || Object.keys(baseline).length === 0) {
         const info = await getModelInfo(path);
         emit({ type: "info", info });
-        baseline = recommendSettings(info).params;
+        const rec = recommendSettings(info, reInput);
+        baseline = rec.params;
+        warnings = rec.warnings;
         sessionState.lastRecommendation = baseline;
       }
 
       const params: SliceParams = { ...baseline, ...explicit };
-      const metrics = await slice(path, params);
+      // Use the user's own config, else a synthesized config for their chosen
+      // printer, else PrusaSlicer defaults — so bed/nozzle match their machine.
+      const resolved = resolveSliceConfig(sessionState.printerKey);
+      const metrics = await slice(path, params, resolved.configIni);
       emit({ type: "metrics", metrics });
 
       const usedLine =
         `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
-        `${params.fillDensityPct ?? "default"}% infill, ` +
+        `${params.fillDensityPct ?? "default"}% ${params.fillPattern ?? ""} infill, ` +
+        `${params.perimeters ?? "default"} walls, ` +
         `supports ${params.supportMaterial ? "on" : "off"}, ` +
         `brim ${params.brimWidthMm ?? 0} mm` +
         (hasExplicit ? " (your overrides applied)" : " (recommended)") +
-        ".";
+        "." +
+        (warnings.length ? `\nHeads up: ${warnings.join(" ")}` : "");
 
       return (
         `Sliced successfully → ${metrics.gcodePath}\n` +
@@ -344,6 +503,10 @@ export function toolLabel(name: string, input: Record<string, unknown>): string 
       return "Opening in browser…";
     case "get_slicer_status":
       return "Checking PrusaSlicer…";
+    case "check_printer_setup":
+      return "Checking your printer setup…";
+    case "set_printer":
+      return "Configuring your printer…";
     case "inspect_model":
       return "Inspecting model…";
     case "recommend_settings":

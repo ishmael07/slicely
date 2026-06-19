@@ -9,6 +9,8 @@ interface SessionState {
   lastModelPath: string;
   /** The last recommendation, used as defaults when slicing. */
   lastRecommendation: SliceParams;
+  /** The printer the user picked this session (key into KNOWN_PRINTERS). */
+  printerKey?: string;
   /** Bridge to open a URL in the user's default browser (set by main). */
   openExternal?: (url: string) => void;
 }

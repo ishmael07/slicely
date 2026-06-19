@@ -57,10 +57,24 @@ export interface SliceParams {
   layerHeightMm?: number; // e.g. 0.2
   /** Infill density as a percent value 0–100 (e.g. 20 = 20%). */
   fillDensityPct?: number;
+  /** Infill pattern (PrusaSlicer fill_pattern value), e.g. "gyroid". */
+  fillPattern?: string;
+  /** Number of vertical walls (perimeters). */
+  perimeters?: number;
+  topSolidLayers?: number;
+  bottomSolidLayers?: number;
   supportMaterial?: boolean;
+  /** Overhang threshold in degrees (PrusaSlicer support_material_threshold; lower = fewer supports, 0 = auto). */
+  supportThresholdDeg?: number;
   brimWidthMm?: number; // 0 = none
   nozzleDiameterMm?: number; // e.g. 0.4
 }
+
+/** What the print is for — drives the whole settings profile. */
+export type PrintGoal = "draft" | "quality" | "functional";
+
+/** Filament family the user is printing with. */
+export type PrintMaterial = "PLA" | "PETG" | "ABS";
 
 /** Metrics parsed from a sliced G-code file. */
 export interface SliceMetrics {
