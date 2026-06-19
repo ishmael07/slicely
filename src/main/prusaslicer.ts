@@ -30,6 +30,7 @@ import type {
   PrintGoal,
   PrintMaterial,
 } from "../shared/types";
+import { packPlates, type PlatePart } from "./plates";
 import { getConfig } from "./config";
 
 const APP_NAME = "PrusaSlicer";
@@ -218,11 +219,13 @@ function parseInfo(out: string, filePath: string): ModelInfo {
 
 /** Slice an STL to G-code with the given params, then parse metrics.
  *  `configIni` overrides the .env config for this slice (e.g. a synthesized
- *  per-printer config from the profiles module). */
+ *  per-printer config from the profiles module). `outName` overrides the
+ *  output filename stem (used to keep per-plate gcode files distinct). */
 export async function slice(
   stlPath: string,
   params: SliceParams = {},
   configIni?: string,
+  outName?: string,
 ): Promise<SliceMetrics> {
   const bin = assertInstalled();
   if (!existsSync(stlPath)) {
@@ -239,7 +242,8 @@ export async function slice(
   const multi = inputs.length > 1;
   const base = basename(stlPath, extname(stlPath));
   // Name multi-part output as a "-plate" so it doesn't collide with single slices.
-  const gcodePath = join(cfg.slicesDir, `${base}${multi ? "-plate" : ""}.gcode`);
+  const stem = outName ?? `${base}${multi ? "-plate" : ""}`;
+  const gcodePath = join(cfg.slicesDir, `${stem}.gcode`);
 
   const args: string[] = ["--export-gcode", ...inputs, "--output", gcodePath];
 
@@ -348,6 +352,89 @@ export async function slice(
   }
 
   return parseMetrics(gcodePath);
+}
+
+/** Result of a (possibly multi-plate) slice job. */
+export interface PlateSliceResult {
+  /** One metrics entry per plate, in order. */
+  plates: SliceMetrics[];
+  /** Parts too big to fit the bed even alone — reported, not sliced. */
+  oversized: string[];
+}
+
+/**
+ * Slice one or more parts, splitting across MULTIPLE PLATES when they don't all
+ * fit on one bed. Each plate is sliced separately (PrusaSlicer's CLI arranges
+ * only one plate at a time) and returns its own metrics.
+ *
+ * - `paths`: the distinct mesh parts to print (>=1).
+ * - `params.copies`: when there's a single part, this many copies are packed
+ *   across plates (each plate slices its share via --duplicate).
+ * - `bed`: usable build area in mm; defaults to the recommendation's bed.
+ */
+export async function slicePlates(
+  paths: string[],
+  params: SliceParams,
+  bed: { w: number; d: number },
+  configIni?: string,
+  baseName = "plate",
+): Promise<PlateSliceResult> {
+  // Measure each distinct part's footprint (largest two bounding-box dims).
+  const distinct = paths.filter((p) => existsSync(p));
+  if (distinct.length === 0) throw new Error("No valid parts to slice.");
+
+  // Expand copies of a single part into repeated placements for packing.
+  const copies =
+    distinct.length === 1 && params.copies && params.copies > 1
+      ? Math.round(params.copies)
+      : 1;
+
+  const partFootprints = new Map<string, { w: number; d: number }>();
+  for (const p of distinct) {
+    const info = await getModelInfo(p);
+    // Footprint = the two largest dimensions (the part may need orienting, but
+    // for packing we use its current XY extent which is what PrusaSlicer uses).
+    partFootprints.set(p, { w: info.sizeX, d: info.sizeY });
+  }
+
+  const toPack: PlatePart[] = [];
+  for (const p of distinct) {
+    const fp = partFootprints.get(p)!;
+    for (let i = 0; i < copies; i++) {
+      toPack.push({ path: p, w: fp.w, d: fp.d });
+    }
+  }
+
+  const { plates, oversized } = packPlates(toPack, bed);
+
+  // If everything fits on one plate, slice it as a single plate (fast path).
+  const plateMetrics: SliceMetrics[] = [];
+  for (let i = 0; i < plates.length; i++) {
+    const group = plates[i].parts;
+    const primary = group[0].path;
+    // Distinct extra parts on this plate (dedupe paths; copies become --duplicate).
+    const onPlate = group.map((g) => g.path);
+    const uniqueOnPlate = [...new Set(onPlate)];
+    const extraInputs = uniqueOnPlate.filter((p) => p !== primary);
+
+    // If this plate is N copies of ONE part, use --duplicate N; else multi-input.
+    const singlePartCopies =
+      uniqueOnPlate.length === 1 ? onPlate.length : undefined;
+
+    const platePart: SliceParams = {
+      ...params,
+      extraInputs,
+      copies: singlePartCopies && singlePartCopies > 1 ? singlePartCopies : undefined,
+    };
+    const outName = plates.length > 1 ? `${baseName}-${i + 1}of${plates.length}` : baseName;
+    const m = await slice(primary, platePart, configIni, outName);
+    m.plateIndex = i + 1;
+    m.plateCount = plates.length;
+    m.partsOnPlate = group.length;
+    plateMetrics.push(m);
+  }
+
+  return { plates: plateMetrics, oversized: oversized.map((o) => o.path) };
 }
 
 /** Read the metric comments out of a sliced .gcode file. */
@@ -596,6 +683,73 @@ export function recommendSettings(
     rationale,
     warnings,
     assumptions: { goal, material, nozzleMm: nozzle },
+  };
+}
+
+/**
+ * Recommend settings for a WHOLE PLATE of parts. Layer/infill/walls come from
+ * the largest part (the plate prints at one resolution), but supports and brim
+ * are aggregated conservatively across ALL parts so a tall/awkward part isn't
+ * left unsupported just because it isn't the primary:
+ *   - supports ON if ANY part needs them (threshold = the lowest any part wants)
+ *   - brim = the WIDEST any part wants (best adhesion for the trickiest part)
+ * Warnings from every part are merged (deduped).
+ */
+export function recommendForPlate(
+  infos: ModelInfo[],
+  input: RecommendInput = {},
+): Recommendation {
+  if (infos.length === 0) throw new Error("No parts to recommend for.");
+  // Base the resolution/infill on the largest part by volume (or bounding box).
+  const primary =
+    [...infos].sort(
+      (a, b) =>
+        (b.volumeMm3 ?? b.sizeX * b.sizeY * b.sizeZ) -
+        (a.volumeMm3 ?? a.sizeX * a.sizeY * a.sizeZ),
+    )[0];
+  const base = recommendSettings(primary, input);
+  if (infos.length === 1) return base;
+
+  const recs = infos.map((i) => recommendSettings(i, input));
+
+  // Supports: ON if any part wants them; use the lowest (most aggressive) threshold.
+  const anySupport = recs.some((r) => r.params.supportMaterial);
+  const minThreshold = Math.min(
+    ...recs
+      .filter((r) => r.params.supportMaterial)
+      .map((r) => r.params.supportThresholdDeg ?? 50),
+  );
+  // Brim: the widest any part wants.
+  const maxBrim = Math.max(...recs.map((r) => r.params.brimWidthMm ?? 0));
+
+  const rationale = [...base.rationale];
+  if (anySupport && !base.params.supportMaterial) {
+    rationale.push(
+      `Supports turned on for the plate — at least one part needs them.`,
+    );
+  }
+  if (maxBrim > (base.params.brimWidthMm ?? 0)) {
+    rationale.push(
+      `Brim widened to ${maxBrim} mm — the trickiest part on the plate needs it.`,
+    );
+  }
+  // Merge + dedupe warnings across parts.
+  const warnings = [...new Set(recs.flatMap((r) => r.warnings))];
+
+  return {
+    params: {
+      ...base.params,
+      supportMaterial: anySupport,
+      supportThresholdDeg: anySupport
+        ? Number.isFinite(minThreshold)
+          ? minThreshold
+          : 50
+        : base.params.supportThresholdDeg,
+      brimWidthMm: maxBrim,
+    },
+    rationale,
+    warnings,
+    assumptions: base.assumptions,
   };
 }
 

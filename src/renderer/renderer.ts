@@ -624,9 +624,16 @@ function renderInfo(info: ModelInfo): void {
 function renderMetrics(m: SliceMetrics): void {
   endBotBubble();
   const panel = el("div", "panel");
-  panel.appendChild(panelHead("✦", "Slice result"));
+  const title =
+    m.plateCount && m.plateCount > 1
+      ? `Plate ${m.plateIndex} of ${m.plateCount}`
+      : "Slice result";
+  panel.appendChild(panelHead("✦", title));
 
   const grid = el("div", "metrics");
+  if (m.partsOnPlate && m.partsOnPlate > 1) {
+    addMetric(grid, "On plate", `${m.partsOnPlate} parts`);
+  }
   if (m.estimatedPrintTime) {
     addMetric(grid, "Print time", m.estimatedPrintTime, true, true);
   }

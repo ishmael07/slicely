@@ -116,6 +116,12 @@ export interface SliceMetrics {
   filamentUsedG?: number;
   filamentCost?: number;
   layerCount?: number;
+  /** 1-based index of this plate when a job spans multiple plates. */
+  plateIndex?: number;
+  /** Total number of plates the job was split into. */
+  plateCount?: number;
+  /** How many parts/copies are on this plate. */
+  partsOnPlate?: number;
 }
 
 /** Whether/where PrusaSlicer is installed and whether it's running now. */

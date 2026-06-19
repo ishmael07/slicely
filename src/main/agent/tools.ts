@@ -7,14 +7,16 @@ import type {
   SliceParams,
   PrintGoal,
   PrintMaterial,
+  ModelInfo,
 } from "../../shared/types";
 import { searchModels, downloadModel, type SourceFilter } from "../providers";
 import {
   getStatus,
   getModelInfo,
-  slice,
+  slicePlates,
   openInGui,
   recommendSettings,
+  recommendForPlate,
   type RecommendInput,
 } from "../prusaslicer";
 import {
@@ -33,6 +35,13 @@ const SLICEABLE_PART_EXTS = new Set([".stl", ".3mf", ".obj", ".amf"]);
 function extLower(p: string): string {
   const i = p.lastIndexOf(".");
   return i >= 0 ? p.slice(i).toLowerCase() : "";
+}
+
+/** Filename stem (no directory, no extension) for naming output gcode. */
+function baseStem(p: string): string {
+  const file = p.split(/[/\\]/).pop() ?? "model";
+  const dot = file.lastIndexOf(".");
+  return dot > 0 ? file.slice(0, dot) : file;
 }
 
 /** Build a RecommendInput from tool input, defaulting gracefully. Pulls the
@@ -218,11 +227,12 @@ export const TOOLS: Anthropic.Tool[] = [
     description:
       "Slice the active model into G-code with PrusaSlicer and return real metrics: estimated print time, " +
       "filament used (mm and grams), filament cost, and layer count. If no settings are given it auto-applies " +
-      "the geometry/goal-aware recommended settings, so 'just slice it' always works. Multi-part models " +
-      "(several STLs / an unzipped archive) are automatically placed on ONE plate and arranged; the metrics " +
-      "then cover the whole plate. Pass goal/material to shape the recommendation, or explicit values to " +
-      "override individual settings. You can also make copies, scale, rotate, merge parts, or set a preview " +
-      "filament colour.",
+      "the geometry/goal-aware recommended settings (including supports + brim, decided from the model — and " +
+      "for multi-part models aggregated across ALL parts), so 'just slice it' always works. Multi-part models " +
+      "and copies are arranged automatically, and SPLIT ACROSS MULTIPLE PLATES when they don't fit one bed — " +
+      "you get one metrics result per plate. Pass goal/material to shape the recommendation, or explicit " +
+      "values to override individual settings. You can also make copies, scale, rotate, merge parts, or set a " +
+      "preview filament colour.",
     input_schema: {
       type: "object",
       properties: {
@@ -492,48 +502,54 @@ export async function executeTool(
           : {}),
       };
       const hasExplicit = Object.keys(explicit).length > 0;
-
-      // Always recompute a goal/material/geometry-aware baseline so "just slice
-      // it" uses accurate, print-safe settings. If goal/material were given,
-      // they reshape the recommendation even when one was cached earlier.
       const reInput = recommendInput(input);
       if (reInput.material) sessionState.material = reInput.material;
-      const goalGiven = input.goal !== undefined || input.material !== undefined;
-      let baseline = sessionState.lastRecommendation;
-      let warnings: string[] = [];
-      if (goalGiven || !baseline || Object.keys(baseline).length === 0) {
-        const info = await getModelInfo(path);
-        emit({ type: "info", info });
-        const rec = recommendSettings(info, reInput);
-        baseline = rec.params;
-        warnings = rec.warnings;
-        sessionState.lastRecommendation = baseline;
-      }
 
-      // Multi-part: when no explicit path was given and the active model has
-      // several sliceable parts, place them ALL on one plate (auto-arranged).
+      // The full set of distinct sliceable parts to print. When using the
+      // active model, that's all its parts; otherwise just the given path.
       const usingActive = !input.path;
-      const extraInputs =
+      const allParts =
         usingActive && sessionState.lastModelParts.length > 1
-          ? sessionState.lastModelParts.filter((p) => p !== path)
-          : [];
+          ? sessionState.lastModelParts
+          : [path];
+      const isMultiPart = allParts.length > 1;
 
-      const params: SliceParams = { ...baseline, ...explicit, extraInputs };
-      // Use the user's own config, else a synthesized config for their chosen
-      // printer + material — so bed/nozzle AND filament density/cost match.
+      // Build a goal/geometry-aware baseline. For a multi-part plate, aggregate
+      // supports/brim across ALL parts so a tricky part isn't left unsupported.
+      const infos: ModelInfo[] = [];
+      for (const p of allParts) infos.push(await getModelInfo(p));
+      emit({ type: "info", info: infos[0] });
+      const rec = isMultiPart
+        ? recommendForPlate(infos, reInput)
+        : recommendSettings(infos[0], reInput);
+      const baselineWarnings = rec.warnings;
+      sessionState.lastRecommendation = rec.params;
+
+      const params: SliceParams = { ...rec.params, ...explicit };
+
+      // Config: user's own → synthesized (printer + material) → defaults.
       const resolved = resolveSliceConfig(
         sessionState.printerKey,
         sessionState.material,
       );
-      const metrics = await slice(path, params, resolved.configIni);
-      emit({ type: "metrics", metrics });
+      // Usable bed area = printer bed minus a margin (defaults to MK-class).
+      const bedDim = resolved.printer?.bed ?? { x: 250, y: 210, z: 210 };
+      const bed = { w: bedDim.x, d: bedDim.y };
 
-      const plateNote =
-        extraInputs.length > 0
-          ? ` ${extraInputs.length + 1} parts arranged on one plate; metrics are for the whole plate.`
-          : params.copies && params.copies > 1
-            ? ` ${params.copies} copies auto-arranged; metrics cover all copies.`
-            : "";
+      // Slice — splitting across multiple plates when parts/copies overflow one bed.
+      const stem = `${baseStem(allParts[0])}${isMultiPart ? "-plate" : ""}`;
+      const job = await slicePlates(
+        allParts,
+        params,
+        bed,
+        resolved.configIni,
+        stem,
+      );
+
+      // Emit one metrics panel per plate.
+      for (const m of job.plates) emit({ type: "metrics", metrics: m });
+
+      const plateCount = job.plates.length;
       const colourNote = params.filamentColour
         ? " Colour set for the preview only — it doesn't change a single-extruder print."
         : "";
@@ -541,6 +557,17 @@ export async function executeTool(
         resolved.source !== "user-config"
           ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"
           : "";
+      const oversizedNote = job.oversized.length
+        ? `\n⚠ ${job.oversized.length} part(s) are bigger than the bed and were skipped — scale them down or split them.`
+        : "";
+      const plateNote =
+        plateCount > 1
+          ? ` Split across ${plateCount} plates (they don't all fit one bed) — print them one after another.`
+          : isMultiPart
+            ? ` ${allParts.length} parts arranged on one plate.`
+            : params.copies && params.copies > 1
+              ? ` ${params.copies} copies auto-arranged.`
+              : "";
 
       const usedLine =
         `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
@@ -552,27 +579,25 @@ export async function executeTool(
         "." +
         plateNote +
         colourNote +
-        (warnings.length ? `\nHeads up: ${warnings.join(" ")}` : "");
+        (baselineWarnings.length ? `\nHeads up: ${baselineWarnings.join(" ")}` : "") +
+        oversizedNote;
 
-      return (
-        `Sliced successfully → ${metrics.gcodePath}\n` +
-        usedLine +
-        configNote +
-        "\n" +
-        (metrics.estimatedPrintTime
-          ? `  print time: ${metrics.estimatedPrintTime}\n`
-          : "") +
-        (metrics.filamentUsedG !== undefined
-          ? `  filament: ${metrics.filamentUsedG.toFixed(1)} g`
-          : "") +
-        (metrics.filamentUsedMm !== undefined
-          ? ` (${(metrics.filamentUsedMm / 1000).toFixed(2)} m)\n`
-          : "\n") +
-        (metrics.filamentCost !== undefined
-          ? `  cost: ${metrics.filamentCost.toFixed(2)}\n`
-          : "") +
-        (metrics.layerCount !== undefined ? `  layers: ${metrics.layerCount}` : "")
-      );
+      // Summarize each plate's metrics.
+      const plateLines = job.plates
+        .map((m) => {
+          const label =
+            plateCount > 1 ? `Plate ${m.plateIndex}/${m.plateCount}: ` : "";
+          return (
+            `${label}` +
+            (m.estimatedPrintTime ? `${m.estimatedPrintTime}` : "time n/a") +
+            (m.filamentUsedG !== undefined ? `, ${m.filamentUsedG.toFixed(1)} g` : "") +
+            (m.filamentCost !== undefined ? `, ${m.filamentCost.toFixed(2)} cost` : "") +
+            (m.layerCount !== undefined ? `, ${m.layerCount} layers` : "")
+          );
+        })
+        .join("\n");
+
+      return `Sliced successfully.\n${usedLine}${configNote}\n${plateLines}`;
     }
 
     case "open_in_slicer": {
