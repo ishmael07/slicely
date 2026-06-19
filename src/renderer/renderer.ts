@@ -207,11 +207,11 @@ function renderSettings(): void {
     ? `${chosenLabel} · ${current.effort}`
     : chosenLabel;
 
-  // Model radio list.
+  // Model cards — clean rounded rectangles with a checkmark when selected.
   modelListEl.innerHTML = "";
   for (const m of models) {
-    const opt = el("div", `model-opt${m.id === current.model ? " active" : ""}`);
-    opt.appendChild(el("div", "radio"));
+    const active = m.id === current.model;
+    const opt = el("div", `model-opt${active ? " active" : ""}`);
     const text = el("div", "mtext");
     const name = el("div", "mname");
     name.textContent = m.label;
@@ -220,15 +220,18 @@ function renderSettings(): void {
     text.appendChild(name);
     text.appendChild(blurb);
     opt.appendChild(text);
+    const check = el("span", "check");
+    check.textContent = "✓";
+    opt.appendChild(check);
     opt.onclick = () => void changeSettings({ model: m.id });
     modelListEl.appendChild(opt);
   }
 
-  // Effort segmented control — tiers the chosen model can't use are disabled.
+  // Effort pills — a wrapping row of rounded pills; unsupported tiers disabled.
   const chosen = models.find((m) => m.id === current.model);
   effortSegEl.innerHTML = "";
   for (const lvl of efforts) {
-    const b = el("button") as HTMLButtonElement;
+    const b = el("button", "effort-pill") as HTMLButtonElement;
     b.textContent = lvl;
     const disabled = effortDisabled(lvl, chosen);
     b.disabled = disabled;
@@ -241,7 +244,7 @@ function renderSettings(): void {
 
   effortHintEl.textContent = chosen
     ? chosen.supportsEffort
-      ? "Higher effort = better tool decisions, more tokens, slower."
+      ? "Higher effort = sharper decisions, more tokens, a little slower."
       : `${chosen.label} runs at a fixed speed — effort tiers don't apply.`
     : "";
 }

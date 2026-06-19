@@ -788,17 +788,27 @@ details.thinking[open] summary::before {
   -webkit-app-region: no-drag;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   font-family: var(--font);
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-dim);
   background: var(--panel);
-  border: 0.5px solid var(--border);
-  border-radius: 20px;
-  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+/* small accent dot before the label */
+.model-trigger::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  flex: 0 0 auto;
 }
 .model-trigger:hover {
   background: var(--panel-2);
@@ -806,31 +816,36 @@ details.thinking[open] summary::before {
   border-color: var(--border-bright);
 }
 .model-trigger.open {
-  color: var(--accent);
+  color: var(--text);
+  background: var(--panel-2);
   border-color: var(--accent-glow);
 }
 .model-trigger .caret {
   font-size: 9px;
   opacity: 0.7;
+  transition: transform 0.18s var(--ease);
+}
+.model-trigger.open .caret {
+  transform: rotate(180deg);
 }
 .picker-pop {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: 116px; /* sits just above the two-row composer */
+  bottom: 118px; /* sits just above the two-row composer */
   z-index: 40;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 14px;
+  gap: 18px;
+  padding: 16px;
   max-height: calc(100vh - 160px);
   overflow-y: auto;
   background: linear-gradient(170deg, var(--bg-1), var(--bg-0));
   backdrop-filter: blur(22px) saturate(160%);
-  border: 0.5px solid var(--border-bright);
+  border: 1px solid var(--border-bright);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  animation: enter 0.22s var(--ease) both;
+  animation: enter 0.2s var(--ease) both;
 }
 .set-group {
   display: flex;
@@ -844,99 +859,107 @@ details.thinking[open] summary::before {
   letter-spacing: 0.6px;
   color: var(--text-dim);
 }
+/* Model selection — clean rounded cards with a checkmark when selected. */
 .model-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
 }
 .model-opt {
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 11px;
-  border-radius: var(--radius-sm);
-  border: 0.5px solid var(--border);
+  padding: 11px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
   background: var(--panel);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, transform 0.12s var(--ease);
+  transition: border-color 0.16s var(--ease), background 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
 }
 .model-opt:hover {
   background: var(--panel-2);
-  transform: translateX(2px);
+  border-color: var(--border-bright);
 }
 .model-opt.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-.model-opt .radio {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 1.5px solid var(--text-faint);
-  flex: 0 0 auto;
-  transition: border-color 0.15s;
-  position: relative;
-}
-.model-opt.active .radio {
-  border-color: var(--accent);
-}
-.model-opt.active .radio::after {
-  content: "";
-  position: absolute;
-  inset: 2.5px;
-  border-radius: 50%;
-  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow) inset;
 }
 .model-opt .mtext {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 .model-opt .mname {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.1px;
 }
 .model-opt .mblurb {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-dim);
+  line-height: 1.35;
+}
+/* Checkmark chip — hidden until the card is active. */
+.model-opt .check {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: #1a1006;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+}
+.model-opt.active .check {
+  opacity: 1;
+  transform: scale(1);
 }
 
-/* Segmented effort control */
+/* Effort selection — a wrapping row of modern rounded pills. */
 .seg {
   display: flex;
-  gap: 3px;
-  padding: 3px;
-  background: var(--panel);
-  border: 0.5px solid var(--border);
-  border-radius: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.seg button {
+.effort-pill {
   -webkit-app-region: no-drag;
-  flex: 1 1 0;
   font-family: var(--font);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: capitalize;
-  padding: 6px 4px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  transition: background 0.18s var(--ease), color 0.18s;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease),
+    border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
 }
-.seg button:hover:not(.active):not(:disabled) {
+.effort-pill:hover:not(.active):not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
   color: var(--text);
 }
-.seg button.active {
+.effort-pill.active {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
   color: #1a1006;
-  box-shadow: 0 2px 8px rgba(255, 122, 69, 0.3);
+  box-shadow: 0 2px 10px rgba(255, 122, 69, 0.32);
 }
-.seg button:disabled {
-  opacity: 0.3;
+.effort-pill:disabled {
+  opacity: 0.32;
   cursor: not-allowed;
 }
 .set-hint {
