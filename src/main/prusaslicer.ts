@@ -230,10 +230,18 @@ export async function slice(
   }
 
   const cfg = getConfig();
-  const base = basename(stlPath, extname(stlPath));
-  const gcodePath = join(cfg.slicesDir, `${base}.gcode`);
 
-  const args: string[] = ["--export-gcode", stlPath, "--output", gcodePath];
+  // Build the full input list: the primary mesh plus any extra parts to place
+  // on the same plate. Filter to files that actually exist.
+  const inputs = [stlPath, ...(params.extraInputs ?? [])].filter((p) =>
+    existsSync(p),
+  );
+  const multi = inputs.length > 1;
+  const base = basename(stlPath, extname(stlPath));
+  // Name multi-part output as a "-plate" so it doesn't collide with single slices.
+  const gcodePath = join(cfg.slicesDir, `${base}${multi ? "-plate" : ""}.gcode`);
+
+  const args: string[] = ["--export-gcode", ...inputs, "--output", gcodePath];
 
   // Load a printer/filament config. CLI overrides below take precedence over
   // --load values (priority: overrides > --load > 3mf-embedded > compiled
@@ -302,6 +310,33 @@ export async function slice(
     args.push("--nozzle-diameter", String(params.nozzleDiameterMm));
   }
 
+  // ── Plate / multi-part / transforms ───────────────────────────────────────
+  // Multiple inputs auto-arrange by default; only disable when asked.
+  if (multi && params.arrange === false) {
+    args.push("--dont-arrange");
+  }
+  if (params.merge) {
+    args.push("--merge");
+  }
+  // --duplicate makes N auto-arranged copies of a SINGLE model; meaningless and
+  // contradictory alongside multiple distinct inputs, so guard on !multi.
+  if (!multi && typeof params.copies === "number" && params.copies > 1) {
+    args.push("--duplicate", String(Math.round(params.copies)));
+  }
+  if (typeof params.scale === "number" && params.scale > 0 && params.scale !== 1) {
+    args.push("--scale", String(params.scale));
+  }
+  if (typeof params.rotateDeg === "number" && params.rotateDeg !== 0) {
+    args.push("--rotate", String(params.rotateDeg));
+  }
+  // Filament colour: preview-only on a single-extruder FDM print. We still pass
+  // it so the GUI/preview matches; the agent/UI tells the user it won't change
+  // the physical print. Normalize to #RRGGBB.
+  const colour = normalizeHexColour(params.filamentColour);
+  if (colour) {
+    args.push("--filament-colour", colour);
+  }
+
   const { code, stdout, stderr } = await run(bin, args, 300_000, true);
 
   if (!existsSync(gcodePath)) {
@@ -348,12 +383,18 @@ export async function parseMetrics(gcodePath: string): Promise<SliceMetrics> {
   };
 }
 
-/** Open a model file in the PrusaSlicer GUI for the user. */
-export async function openInGui(filePath: string): Promise<void> {
-  if (!existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
+/** Open one or more files in the PrusaSlicer GUI. Passing multiple files loads
+ *  them all onto one plate (PrusaSlicer auto-arranges them on import) — this is
+ *  the closest thing to "live" GUI work, since PrusaSlicer exposes no API to
+ *  manipulate an already-open window. */
+export async function openInGui(filePath: string | string[]): Promise<void> {
+  const paths = (Array.isArray(filePath) ? filePath : [filePath]).filter((p) =>
+    existsSync(p),
+  );
+  if (paths.length === 0) {
+    throw new Error(`File not found: ${Array.isArray(filePath) ? filePath.join(", ") : filePath}`);
   }
-  const { code, stderr } = await run("open", ["-a", APP_NAME, filePath], 15_000);
+  const { code, stderr } = await run("open", ["-a", APP_NAME, ...paths], 15_000);
   if (code !== 0) {
     throw new Error(`Couldn't open PrusaSlicer: ${stderr.trim() || `exit ${code}`}`);
   }
@@ -361,6 +402,20 @@ export async function openInGui(filePath: string): Promise<void> {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(Math.max(n, lo), hi);
+}
+
+/** Normalize a colour string to "#RRGGBB", or undefined if it isn't a hex
+ *  colour we recognize. Accepts "#rgb", "rgb", "#rrggbb", "rrggbb". */
+function normalizeHexColour(input?: string): string | undefined {
+  if (!input) return undefined;
+  let h = input.trim().replace(/^#/, "").toLowerCase();
+  if (/^[0-9a-f]{3}$/.test(h)) {
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  return /^[0-9a-f]{6}$/.test(h) ? `#${h}` : undefined;
 }
 
 /** Inputs the recommendation engine reasons over. All optional except info. */

@@ -14,14 +14,17 @@ Tell Slicely what you want to print ("I want to 3D print a model car"). It searc
 | --- | --- |
 | 🔎 **Find models** | Searches Thingiverse + Printables + MakerWorld in one query, with thumbnails, creators, and licenses. |
 | ⬇️ **Import** | Downloads a Thingiverse model's STL/3MF directly into `~/Slicely/downloads`. (Printables/MakerWorld → opens the page in your browser.) |
-| 📤 **Upload your own CAD** | Drag-and-drop or pick an **STL · 3MF · OBJ · AMF · STEP** file — it becomes the active model and flows straight into inspect → recommend → slice. (STEP opens in PrusaSlicer to convert; the mesh formats slice directly.) |
+| 📤 **Upload your own CAD** | Drag-and-drop or pick an **STL · 3MF · OBJ · AMF · STEP** file — or a **ZIP of parts**, which Slicely unpacks. It becomes the active model and flows straight into inspect → recommend → slice. (STEP opens in PrusaSlicer to convert; the mesh formats slice directly.) |
+| 🧩 **Multi-part models** | Models that come as several STLs (or a ZIP) are placed on **one plate and auto-arranged**, so the print-time/filament metrics cover the whole batch. Open the arranged plate in PrusaSlicer with one click. |
+| 🎛️ **Max-out slicing** | Beyond settings: make N auto-arranged **copies**, **scale**, **rotate**, **merge** parts, and set a **filament colour** (preview-only on a single-extruder printer — Slicely says so plainly). |
 | 📐 **Inspect** | Runs `PrusaSlicer --info` for real dimensions, volume, triangle count, watertightness. |
 | 🧠 **Reason about the print** | Picks accurate settings from the model's geometry **and your goal** — fast (draft), detail (quality), or strength (functional) — plus material (PLA/PETG/ABS) and nozzle. Sets layer height (nozzle-bounded), infill % + pattern, walls, solid layers, supports + threshold, and brim, each with a rationale. Warns on bed-fit, non-watertight meshes, and material gotchas so prints don't fail. |
-| 🖨️ **Printer setup for newcomers** | If you've never run PrusaSlicer's wizard, Slicely detects it and asks which printer you have, then synthesizes a matching config (bed size + nozzle) so estimates are realistic. Already configured? It uses your profile. |
+| 🖨️ **Printer setup for newcomers** | If you've never run PrusaSlicer's wizard, Slicely detects it and asks which printer you have, then synthesizes a matching config (bed size + nozzle + **filament density/cost** so weight & cost are realistic). Forces plain-text G-code so metrics always parse. Already configured? It uses your profile — the most accurate option. |
 | 🍰 **Slice** | Slices to G-code with PrusaSlicer and reports estimated print time, filament used (g / m), cost, and layer count. "Just slice it" auto-applies the goal-aware recommended settings — no extra step. |
-| 🧠 **Pick model & effort** | A settings panel (⚙) lets you choose the Claude model (Opus 4.8 / Sonnet 4.6 / Haiku 4.5) and reasoning effort. Slicely only sends each model the params it supports, so the picker never errors. |
+| 💬 **Clean chat UI** | Replies render as real markdown (headings, **bold**, lists, `code`, callouts), with the model's reasoning in a collapsible "Thought process" block. |
+| 🧠 **Pick model & effort** | A dropdown under the chat box (Cursor/ChatGPT-style) lets you choose the Claude model (Opus 4.8 / Sonnet 4.6 / Haiku 4.5) and reasoning effort. Slicely only sends each model the params it supports, so the picker never errors. |
 | 🟢 **Live slicer status** | A status pill shows in real time whether PrusaSlicer is installed and whether you have it **open** — and it doesn't confuse Slicely's own background slices for the app being open. |
-| 🖥️ **Hand off** | Opens any model (or the sliced G-code) in the PrusaSlicer GUI, or reveals the G-code in Finder. |
+| 🖥️ **Hand off** | Opens any model, the whole multi-part plate, or the sliced G-code in the PrusaSlicer GUI, or reveals the G-code in Finder. |
 
 ---
 
@@ -89,9 +92,13 @@ Type what you want to print, or click one of the example prompts:
 - *"Slice it with 0.2mm layers and 20% infill"* → real print-time and filament metrics.
 - *"Open it in PrusaSlicer"* → hands off to the GUI.
 
-**Upload your own model:** drag an STL (or 3MF / OBJ / AMF / STEP) anywhere onto the window, or click the **＋** button next to the composer. It's copied into your workspace, becomes the active model, and Slicely inspects + offers to slice it automatically.
+**Upload your own model:** drag an STL (or 3MF / OBJ / AMF / STEP, or a **ZIP of parts**) anywhere onto the window, or click the **＋** button next to the composer. It's copied into your workspace, becomes the active model, and Slicely inspects + offers to slice it. Multiple parts (or a ZIP) are arranged together on one plate.
 
-**Choose model & effort:** click the **⚙** in the title bar. Pick Opus 4.8 / Sonnet 4.6 / Haiku 4.5 and a reasoning-effort tier. Your choice persists across restarts, and unavailable effort tiers are greyed out per model.
+**Max out a print:** ask Slicely to *"print 4 copies"*, *"scale to 50%"*, *"rotate 90°"*, *"merge the parts"*, or *"set the colour to blue"*. (On a single-extruder printer, colour only changes the preview, not the physical print — Slicely will remind you.)
+
+**Choose model & effort:** click the model pill **under the chat box** (e.g. "Opus 4.8 · high"). Pick Opus 4.8 / Sonnet 4.6 / Haiku 4.5 and a reasoning-effort tier. Your choice persists across restarts, and unavailable effort tiers are greyed out per model.
+
+> **On "live" GUI control:** PrusaSlicer has no API to puppeteer its already-open window. Slicely prepares the plate (arrange / copies / transforms) headlessly and opens the finished result in PrusaSlicer for you — which is more reliable than fragile click-automation.
 
 For Printables/MakerWorld cards, click **Open in browser** to download from the source.
 
@@ -103,7 +110,7 @@ For Printables/MakerWorld cards, click **Open in browser** to download from the 
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | ✅ | — | Powers the agent. |
 | `THINGIVERSE_APP_TOKEN` | for downloads | — | Enables in-app Thingiverse search + download. |
-| `SLICELY_MODEL` | | `claude-opus-4-8` | Default Claude model (the in-app ⚙ picker overrides this and persists your choice). |
+| `SLICELY_MODEL` | | `claude-opus-4-8` | Default Claude model (the in-app model picker under the chat box overrides this and persists your choice). |
 | `SLICELY_EFFORT` | | `high` | Default reasoning effort: `low`/`medium`/`high`/`xhigh`/`max` (also overridable in-app). |
 | `PRUSASLICER_PATH` | | `/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer` | PrusaSlicer binary. |
 | `PRUSASLICER_CONFIG_INI` | | — | Your exported printer/filament config (strongly recommended). |

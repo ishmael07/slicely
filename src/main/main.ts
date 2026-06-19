@@ -86,15 +86,19 @@ function settingsState(): SettingsState {
   };
 }
 
-/** Accept incoming files and make the newest one the active model so the
- *  agent's inspect/recommend/slice tools target it without a path argument. */
+/** Accept incoming files and make them the active model so the agent's
+ *  inspect/recommend/slice tools target them without a path argument. A ZIP or
+ *  multiple dropped files become a multi-part model arranged on one plate. */
 async function acceptIncoming(paths: string[]) {
   const results = await acceptUploads(paths);
-  // Prefer a directly-sliceable file as the active model; fall back to the last.
+  // Prefer a directly-sliceable file as the primary; fall back to the last.
   const active =
     [...results].reverse().find((r) => r.sliceable) ??
     results[results.length - 1];
   if (active) sessionState.lastModelPath = active.localPath;
+  // Track all sliceable parts for multi-part plate arrangement.
+  const sliceable = results.filter((r) => r.sliceable).map((r) => r.localPath);
+  sessionState.lastModelParts = sliceable.length > 0 ? sliceable : active ? [active.localPath] : [];
   return results;
 }
 
@@ -125,10 +129,11 @@ function registerIpc(): void {
   });
 
   // Direct "Open in slicer" actions from a card / metric-panel button.
-  ipcMain.handle(IPC.importModel, async (_e, path: string) => {
+  // Accepts one path or many (many = one arranged plate).
+  ipcMain.handle(IPC.importModel, async (_e, path: string | string[]) => {
     await openInGui(path);
   });
-  ipcMain.handle(IPC.openSlicer, async (_e, path: string) => {
+  ipcMain.handle(IPC.openSlicer, async (_e, path: string | string[]) => {
     await openInGui(path);
   });
 

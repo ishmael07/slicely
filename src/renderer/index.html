@@ -22,22 +22,8 @@
             <span class="dot" id="statusDot"></span>
             <span id="statusText">checking…</span>
           </div>
-          <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
         </div>
       </header>
-
-      <!-- Slide-in settings panel: model + reasoning effort -->
-      <section id="settings" class="settings hidden">
-        <div class="set-group">
-          <label class="set-label">Model</label>
-          <div id="modelList" class="model-list"></div>
-        </div>
-        <div class="set-group">
-          <label class="set-label">Reasoning effort</label>
-          <div id="effortSeg" class="seg"></div>
-          <p id="effortHint" class="set-hint"></p>
-        </div>
-      </section>
 
       <!-- Config warning banner (shown if keys missing) -->
       <div id="banner" class="banner hidden"></div>
@@ -45,19 +31,40 @@
       <!-- Conversation transcript -->
       <main id="messages" aria-live="polite"></main>
 
-      <!-- Composer -->
+      <!-- Composer: a model-picker row above the input row -->
       <footer id="composer">
-        <button id="attach" class="icon-btn attach" title="Upload a 3D model (STL, 3MF, OBJ, STEP)">
-          ＋
-        </button>
-        <textarea
-          id="input"
-          rows="1"
-          placeholder="Ask, or drop an STL to slice…"
-          autofocus
-        ></textarea>
-        <button id="send" title="Send (Enter)">↑</button>
-        <button id="stop" class="hidden" title="Stop">■</button>
+        <div class="composer-bar">
+          <button id="modelPicker" class="model-trigger" title="Model & reasoning effort">
+            <span id="modelPickerLabel">Model</span>
+            <span class="caret">▾</span>
+          </button>
+        </div>
+        <div class="composer-row">
+          <button id="attach" class="icon-btn attach" title="Upload a 3D model (STL, 3MF, OBJ, STEP, or a ZIP of parts)">
+            ＋
+          </button>
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Ask, or drop an STL to slice…"
+            autofocus
+          ></textarea>
+          <button id="send" title="Send (Enter)">↑</button>
+          <button id="stop" class="hidden" title="Stop">■</button>
+        </div>
+
+        <!-- Model / effort popover (anchored above the composer) -->
+        <div id="pickerPop" class="picker-pop hidden">
+          <div class="set-group">
+            <label class="set-label">Model</label>
+            <div id="modelList" class="model-list"></div>
+          </div>
+          <div class="set-group">
+            <label class="set-label">Reasoning effort</label>
+            <div id="effortSeg" class="seg"></div>
+            <p id="effortHint" class="set-hint"></p>
+          </div>
+        </div>
       </footer>
 
       <!-- Full-window drag-drop overlay -->

@@ -123,46 +123,71 @@ function readSelectedPrinter(): string | undefined {
   return undefined;
 }
 
+/** Per-material filament properties that drive accurate weight/cost estimates.
+ *  density g/cm³ converts the sliced volume → grams; cost is $/kg. Values are
+ *  typical defaults for common filaments; a user's real exported config is more
+ *  accurate and always wins (see resolveSliceConfig). */
+const MATERIAL_FILAMENT: Record<
+  string,
+  { densityGCm3: number; costPerKg: number }
+> = {
+  PLA: { densityGCm3: 1.24, costPerKg: 20 },
+  PETG: { densityGCm3: 1.27, costPerKg: 23 },
+  ABS: { densityGCm3: 1.04, costPerKg: 20 },
+};
+
 /**
- * Synthesize a minimal flat config.ini for a known printer and write it into
+ * Synthesize a flat config.ini for a known printer + material and write it into
  * the workspace, returning its path. This is what makes a first-time user's
- * slice realistic: it pins bed size + nozzle so estimates match their machine.
- * Returns the path; the caller passes it to slice() via config.
+ * slice realistic: it pins bed size + nozzle (geometry) AND filament density +
+ * cost (so grams and cost are believable, not generic defaults). Print specifics
+ * still come from CLI overrides (the recommendation engine).
  */
-export function synthesizeConfigForPrinter(printerKey: string): {
+export function synthesizeConfigForPrinter(
+  printerKey: string,
+  material = "PLA",
+): {
   path: string;
   printer: PrinterPreset;
 } {
   const printer = KNOWN_PRINTERS[printerKey] ?? KNOWN_PRINTERS.generic;
+  const fil = MATERIAL_FILAMENT[material] ?? MATERIAL_FILAMENT.PLA;
   const cfg = getConfig();
   const dir = join(cfg.workdir, "configs");
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${printerKey}.ini`);
+  const path = join(dir, `${printerKey}-${material}.ini`);
 
   // bed_shape is a comma-separated list of "XxY" rectangle vertices.
   const { x, y, z } = printer.bed;
   const bedShape = `0x0,${x}x0,${x}x${y},0x${y}`;
 
-  // A deliberately minimal FFF config — just enough printer geometry that
-  // PrusaSlicer slices realistically. Print/filament specifics come from CLI
-  // overrides (the recommendation engine) and PrusaSlicer's own defaults.
+  // Printer geometry + filament density/cost so weight/cost estimates are
+  // realistic. binary_gcode = 0 guarantees PLAINTEXT g-code comments so
+  // parseMetrics can always read print time / filament / cost.
   const ini =
-    `# Synthesized by Slicely for ${printer.label}\n` +
+    `# Synthesized by Slicely for ${printer.label} (${material})\n` +
     `bed_shape = ${bedShape}\n` +
     `max_print_height = ${z}\n` +
     `nozzle_diameter = ${printer.nozzleMm}\n` +
-    `printer_technology = FFF\n`;
+    `printer_technology = FFF\n` +
+    `binary_gcode = 0\n` +
+    `filament_diameter = 1.75\n` +
+    `filament_density = ${fil.densityGCm3}\n` +
+    `filament_cost = ${fil.costPerKg}\n`;
 
   writeFileSync(path, ini, "utf8");
   return { path, printer };
 }
 
 /** Resolve the best config + printer geometry to slice with, given the user's
- *  optional printer choice. Order of preference:
+ *  optional printer choice + material. Order of preference:
  *    1. user's own exported config.ini (highest fidelity)
- *    2. a synthesized config for a chosen/known printer
+ *    2. a synthesized config for a chosen/known printer + material
  *    3. nothing (bare slice against PrusaSlicer defaults) */
-export function resolveSliceConfig(printerKey?: string): {
+export function resolveSliceConfig(
+  printerKey?: string,
+  material = "PLA",
+): {
   configIni?: string;
   printer?: PrinterPreset;
   source: "user-config" | "synthesized" | "defaults";
@@ -172,7 +197,7 @@ export function resolveSliceConfig(printerKey?: string): {
     return { configIni: state.userConfigIni, source: "user-config" };
   }
   if (printerKey && KNOWN_PRINTERS[printerKey]) {
-    const { path, printer } = synthesizeConfigForPrinter(printerKey);
+    const { path, printer } = synthesizeConfigForPrinter(printerKey, material);
     return { configIni: path, printer, source: "synthesized" };
   }
   return { source: "defaults" };

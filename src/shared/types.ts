@@ -33,11 +33,23 @@ export interface ModelFile {
   ext: string; // ".stl", ".3mf", ".step", ...
 }
 
-/** Result of downloading + saving a model file locally. */
+/** One saved mesh file (a single part of a possibly multi-part model). */
+export interface DownloadPart {
+  localPath: string;
+  fileName: string;
+  sizeBytes: number;
+  ext: string;
+}
+
+/** Result of downloading + saving a model locally.
+ *  `localPath`/`fileName`/`sizeBytes` describe the PRIMARY part (kept for
+ *  backward compatibility); `parts` lists every mesh saved (>= 1) when the
+ *  model is multi-part or was a ZIP archive. */
 export interface DownloadResult {
   localPath: string;
   fileName: string;
   sizeBytes: number;
+  parts?: DownloadPart[];
 }
 
 /** Parsed output of `PrusaSlicer --info` for a single mesh. */
@@ -68,6 +80,26 @@ export interface SliceParams {
   supportThresholdDeg?: number;
   brimWidthMm?: number; // 0 = none
   nozzleDiameterMm?: number; // e.g. 0.4
+
+  // ── Plate / multi-part / cosmetic (the "max out slicing" options) ──────────
+  /** Additional mesh files to place on the SAME plate as the primary input.
+   *  Multiple inputs are auto-arranged by PrusaSlicer unless `arrange` is false. */
+  extraInputs?: string[];
+  /** Auto-arrange multiple inputs on the bed. Default true when >1 input;
+   *  set false to keep original coordinates (PrusaSlicer --dont-arrange). */
+  arrange?: boolean;
+  /** Merge all inputs into a single object after arranging (--merge). */
+  merge?: boolean;
+  /** Number of auto-arranged copies of a SINGLE model (--duplicate N).
+   *  Ignored when extraInputs is non-empty. */
+  copies?: number;
+  /** Uniform scale factor (1 = 100%); maps to --scale. */
+  scale?: number;
+  /** Z-axis rotation in degrees (--rotate). */
+  rotateDeg?: number;
+  /** Filament colour "#RRGGBB". NOTE: on a single-extruder FDM printer this is
+   *  PREVIEW-ONLY — it does not change the physical print. */
+  filamentColour?: string;
 }
 
 /** What the print is for — drives the whole settings profile. */
@@ -173,7 +205,8 @@ export interface UploadResult {
   sliceable: boolean;
 }
 
-/** Mesh/CAD extensions Slicely accepts from the user. */
+/** Mesh/CAD extensions Slicely accepts from the user. `.zip` is accepted and
+ *  expanded into its contained meshes. */
 export const ACCEPTED_UPLOAD_EXTS = [
   ".stl",
   ".3mf",
@@ -181,6 +214,7 @@ export const ACCEPTED_UPLOAD_EXTS = [
   ".amf",
   ".step",
   ".stp",
+  ".zip",
 ] as const;
 
 /**
@@ -196,11 +230,14 @@ export interface SlicelyApi {
   getStatus(): Promise<SlicerStatus>;
   getConfigState(): Promise<ConfigState>;
   openExternal(url: string): Promise<void>;
-  openInSlicer(path: string): Promise<void>;
+  /** Open one or more model/gcode files in the PrusaSlicer GUI. Passing
+   *  multiple files loads them onto one auto-arranged plate. */
+  openInSlicer(path: string | string[]): Promise<void>;
   /** Reveal a local file (e.g. sliced G-code) in Finder. */
   revealPath(path: string): Promise<void>;
-  /** Launch the PrusaSlicer GUI with a model/gcode file loaded. */
-  openSlicer(path: string): Promise<void>;
+  /** Launch the PrusaSlicer GUI with one or more files loaded (multiple =
+   *  one arranged plate). */
+  openSlicer(path: string | string[]): Promise<void>;
   /** Get the current model/effort selection and the available catalog. */
   getSettings(): Promise<SettingsState>;
   /** Persist a model/effort change; returns the updated selection. */

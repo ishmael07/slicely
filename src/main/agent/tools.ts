@@ -27,6 +27,14 @@ import { sessionState } from "./state";
 const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
 const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 
+/** Mesh formats PrusaSlicer slices directly (STEP is GUI-import only). */
+const SLICEABLE_PART_EXTS = new Set([".stl", ".3mf", ".obj", ".amf"]);
+
+function extLower(p: string): string {
+  const i = p.lastIndexOf(".");
+  return i >= 0 ? p.slice(i).toLowerCase() : "";
+}
+
 /** Build a RecommendInput from tool input, defaulting gracefully. Pulls the
  *  bed size + nozzle from the session's chosen printer so the bed-fit check and
  *  layer-height bounds match the user's actual machine. */
@@ -210,15 +218,18 @@ export const TOOLS: Anthropic.Tool[] = [
     description:
       "Slice the active model into G-code with PrusaSlicer and return real metrics: estimated print time, " +
       "filament used (mm and grams), filament cost, and layer count. If no settings are given it auto-applies " +
-      "the geometry/goal-aware recommended settings, so 'just slice it' always works. Pass goal/material to " +
-      "shape the recommendation, or explicit values to override individual settings.",
+      "the geometry/goal-aware recommended settings, so 'just slice it' always works. Multi-part models " +
+      "(several STLs / an unzipped archive) are automatically placed on ONE plate and arranged; the metrics " +
+      "then cover the whole plate. Pass goal/material to shape the recommendation, or explicit values to " +
+      "override individual settings. You can also make copies, scale, rotate, merge parts, or set a preview " +
+      "filament colour.",
     input_schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description:
-            "Absolute path to the model file. Omit to use the active (imported/uploaded) model.",
+            "Absolute path to the model file. Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
         },
         goal: {
           type: "string",
@@ -228,7 +239,7 @@ export const TOOLS: Anthropic.Tool[] = [
         material: {
           type: "string",
           enum: ["PLA", "PETG", "ABS"],
-          description: "Filament family. Default PLA.",
+          description: "Filament family. Default PLA. Also improves weight/cost accuracy.",
         },
         layerHeightMm: { type: "number", description: "Override, e.g. 0.2" },
         fillDensityPct: {
@@ -243,6 +254,32 @@ export const TOOLS: Anthropic.Tool[] = [
         supportMaterial: { type: "boolean", description: "Override supports on/off." },
         brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
         nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
+        copies: {
+          type: "integer",
+          description:
+            "Print N auto-arranged copies of a single model on the plate (e.g. 4). Ignored for multi-part models.",
+        },
+        scale: {
+          type: "number",
+          description: "Uniform scale factor (1 = 100%, 0.5 = half size, 2 = double).",
+        },
+        rotateDeg: {
+          type: "number",
+          description: "Rotate the model around the Z axis by this many degrees.",
+        },
+        merge: {
+          type: "boolean",
+          description: "Merge multiple parts into one object after arranging.",
+        },
+        arrangeParts: {
+          type: "boolean",
+          description: "Auto-arrange multiple parts on the bed (default true). Set false to keep original positions.",
+        },
+        filamentColour: {
+          type: "string",
+          description:
+            'Filament colour as hex, e.g. "#33aaff". PREVIEW-ONLY on a single-extruder printer — does not change the physical print.',
+        },
       },
     },
   },
@@ -305,12 +342,30 @@ export async function executeTool(
 
       const result = await downloadModel(source, modelId, fileId);
       sessionState.lastModelPath = result.localPath;
+      // Track every sliceable mesh part so a later slice can arrange them all
+      // onto one plate. STEP parts are GUI-only, so exclude them from the
+      // headless slice set (but they're still on disk).
+      const parts = result.parts ?? [
+        { localPath: result.localPath, ext: extLower(result.fileName) },
+      ];
+      sessionState.lastModelParts = parts
+        .filter((p) => SLICEABLE_PART_EXTS.has(extLower(p.localPath)))
+        .map((p) => p.localPath);
+      if (sessionState.lastModelParts.length === 0) {
+        // No directly-sliceable part (e.g. all STEP) — fall back to primary.
+        sessionState.lastModelParts = [result.localPath];
+      }
       if (model) {
         emit({ type: "download", model, result });
       }
-      return `Downloaded "${result.fileName}" (${formatBytes(
-        result.sizeBytes,
-      )}) to ${result.localPath}. It is now the active model for inspect/slice.`;
+      const count = result.parts?.length ?? 1;
+      return (
+        `Downloaded "${result.fileName}" (${formatBytes(result.sizeBytes)})` +
+        (count > 1
+          ? ` plus ${count - 1} more part(s) — ${count} parts total. They'll be arranged onto one plate when sliced.`
+          : ".") +
+        ` It is now the active model for inspect/slice.`
+      );
     }
 
     case "open_in_browser": {
@@ -419,8 +474,18 @@ export async function executeTool(
         ...numParam(input, "brimWidthMm"),
         ...numParam(input, "nozzleDiameterMm"),
         ...numParam(input, "perimeters"),
+        ...numParam(input, "copies"),
+        ...numParam(input, "scale"),
+        ...numParam(input, "rotateDeg"),
         ...(typeof input.fillPattern === "string"
           ? { fillPattern: input.fillPattern }
+          : {}),
+        ...(typeof input.filamentColour === "string"
+          ? { filamentColour: input.filamentColour }
+          : {}),
+        ...(typeof input.merge === "boolean" ? { merge: input.merge } : {}),
+        ...(typeof input.arrangeParts === "boolean"
+          ? { arrange: input.arrangeParts }
           : {}),
         ...(typeof input.supportMaterial === "boolean"
           ? { supportMaterial: input.supportMaterial }
@@ -432,6 +497,7 @@ export async function executeTool(
       // it" uses accurate, print-safe settings. If goal/material were given,
       // they reshape the recommendation even when one was cached earlier.
       const reInput = recommendInput(input);
+      if (reInput.material) sessionState.material = reInput.material;
       const goalGiven = input.goal !== undefined || input.material !== undefined;
       let baseline = sessionState.lastRecommendation;
       let warnings: string[] = [];
@@ -444,12 +510,37 @@ export async function executeTool(
         sessionState.lastRecommendation = baseline;
       }
 
-      const params: SliceParams = { ...baseline, ...explicit };
+      // Multi-part: when no explicit path was given and the active model has
+      // several sliceable parts, place them ALL on one plate (auto-arranged).
+      const usingActive = !input.path;
+      const extraInputs =
+        usingActive && sessionState.lastModelParts.length > 1
+          ? sessionState.lastModelParts.filter((p) => p !== path)
+          : [];
+
+      const params: SliceParams = { ...baseline, ...explicit, extraInputs };
       // Use the user's own config, else a synthesized config for their chosen
-      // printer, else PrusaSlicer defaults — so bed/nozzle match their machine.
-      const resolved = resolveSliceConfig(sessionState.printerKey);
+      // printer + material — so bed/nozzle AND filament density/cost match.
+      const resolved = resolveSliceConfig(
+        sessionState.printerKey,
+        sessionState.material,
+      );
       const metrics = await slice(path, params, resolved.configIni);
       emit({ type: "metrics", metrics });
+
+      const plateNote =
+        extraInputs.length > 0
+          ? ` ${extraInputs.length + 1} parts arranged on one plate; metrics are for the whole plate.`
+          : params.copies && params.copies > 1
+            ? ` ${params.copies} copies auto-arranged; metrics cover all copies.`
+            : "";
+      const colourNote = params.filamentColour
+        ? " Colour set for the preview only — it doesn't change a single-extruder print."
+        : "";
+      const configNote =
+        resolved.source !== "user-config"
+          ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"
+          : "";
 
       const usedLine =
         `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
@@ -459,11 +550,14 @@ export async function executeTool(
         `brim ${params.brimWidthMm ?? 0} mm` +
         (hasExplicit ? " (your overrides applied)" : " (recommended)") +
         "." +
+        plateNote +
+        colourNote +
         (warnings.length ? `\nHeads up: ${warnings.join(" ")}` : "");
 
       return (
         `Sliced successfully → ${metrics.gcodePath}\n` +
         usedLine +
+        configNote +
         "\n" +
         (metrics.estimatedPrintTime
           ? `  print time: ${metrics.estimatedPrintTime}\n`
@@ -482,9 +576,17 @@ export async function executeTool(
     }
 
     case "open_in_slicer": {
-      const path = resolvePath(input.path);
-      await openInGui(path);
-      return `Opened ${path} in PrusaSlicer.`;
+      // Open the whole plate (all parts) when using the active multi-part model.
+      const usingActive = !input.path;
+      const paths =
+        usingActive && sessionState.lastModelParts.length > 1
+          ? sessionState.lastModelParts
+          : resolvePath(input.path);
+      await openInGui(paths);
+      const n = Array.isArray(paths) ? paths.length : 1;
+      return n > 1
+        ? `Opened ${n} parts as one arranged plate in PrusaSlicer — tweak and print from there.`
+        : `Opened ${Array.isArray(paths) ? paths[0] : paths} in PrusaSlicer.`;
     }
 
     default:

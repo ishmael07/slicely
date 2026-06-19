@@ -15,6 +15,9 @@ import type {
   EffortLevel,
   UploadResult,
 } from "../shared/types";
+// NOTE: explicit ".js" — the renderer is native browser ESM (no bundler), so
+// the import specifier must match the emitted filename exactly.
+import { renderMarkdown } from "./markdown.js";
 
 declare global {
   interface Window {
@@ -34,8 +37,9 @@ const stopBtn = $<HTMLButtonElement>("stop");
 const bannerEl = $<HTMLDivElement>("banner");
 const statusDot = $<HTMLSpanElement>("statusDot");
 const statusText = $<HTMLSpanElement>("statusText");
-const settingsBtn = $<HTMLButtonElement>("settingsBtn");
-const settingsEl = $<HTMLElement>("settings");
+const modelPickerBtn = $<HTMLButtonElement>("modelPicker");
+const modelPickerLabel = $<HTMLSpanElement>("modelPickerLabel");
+const pickerPopEl = $<HTMLDivElement>("pickerPop");
 const modelListEl = $<HTMLDivElement>("modelList");
 const effortSegEl = $<HTMLDivElement>("effortSeg");
 const effortHintEl = $<HTMLParagraphElement>("effortHint");
@@ -43,8 +47,15 @@ const attachBtn = $<HTMLButtonElement>("attach");
 const dropzoneEl = $<HTMLDivElement>("dropzone");
 
 let busy = false;
-/** The bot bubble currently being streamed into (text deltas append here). */
+/** The bot bubble currently being streamed into (markdown re-rendered per delta). */
 let activeBotBubble: HTMLDivElement | null = null;
+/** Raw (unparsed) markdown accumulated for the active bubble. */
+let activeBotRaw = "";
+/** The collapsible reasoning block + its raw text for the current turn. */
+let activeThinkingBody: HTMLElement | null = null;
+let activeThinkingRaw = "";
+/** Pending rAF handle for throttled markdown re-render. */
+let renderFrame = 0;
 /** Active tool chips by tool name, so tool_end can finalize the right one. */
 const activeChips = new Map<string, HTMLDivElement>();
 /** Path of the most-recently downloaded/sliced model, for action buttons. */
@@ -69,8 +80,24 @@ inputEl.addEventListener("keydown", (e) => {
 });
 sendBtn.addEventListener("click", submit);
 stopBtn.addEventListener("click", () => api.cancel());
-settingsBtn.addEventListener("click", toggleSettings);
 attachBtn.addEventListener("click", pickFiles);
+
+// Model/effort picker: toggle on the trigger; close on outside-click or Escape.
+modelPickerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  togglePicker();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (pickerPopEl.classList.contains("hidden")) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (pickerPopEl.contains(t) || modelPickerBtn.contains(t))) return;
+  closePicker();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !pickerPopEl.classList.contains("hidden")) {
+    closePicker();
+  }
+});
 
 // ── Drag-and-drop CAD upload ─────────────────────────────────────────────
 let dragDepth = 0;
@@ -158,15 +185,27 @@ async function loadSettings(): Promise<void> {
   }
 }
 
-function toggleSettings(): void {
-  const open = settingsEl.classList.toggle("hidden") === false;
-  settingsBtn.classList.toggle("open", open);
-  scheduleResize();
+function togglePicker(): void {
+  const open = pickerPopEl.classList.toggle("hidden") === false;
+  modelPickerBtn.classList.toggle("open", open);
+}
+
+function closePicker(): void {
+  pickerPopEl.classList.add("hidden");
+  modelPickerBtn.classList.remove("open");
 }
 
 function renderSettings(): void {
   if (!settings) return;
   const { current, models, efforts } = settings;
+
+  // Trigger pill label: "Model · effort".
+  const chosenLabel =
+    models.find((m) => m.id === current.model)?.label ?? current.model;
+  const supportsEffort = models.find((m) => m.id === current.model)?.supportsEffort;
+  modelPickerLabel.textContent = supportsEffort
+    ? `${chosenLabel} · ${current.effort}`
+    : chosenLabel;
 
   // Model radio list.
   modelListEl.innerHTML = "";
@@ -306,7 +345,7 @@ function sendInstruction(displayText: string, instruction: string): void {
 
 function startTurn(): void {
   setBusy(true);
-  activeBotBubble = null;
+  endBotBubble();
 }
 
 function setBusy(b: boolean): void {
@@ -320,6 +359,9 @@ function handleAgentEvent(event: AgentEvent): void {
   switch (event.type) {
     case "text":
       appendBotText(event.text);
+      break;
+    case "thinking":
+      appendThinking(event.text);
       break;
     case "tool_start":
       startToolChip(event.tool, event.label);
@@ -347,9 +389,8 @@ function handleAgentEvent(event: AgentEvent): void {
       renderError(event.message);
       break;
     case "done":
-      finishStreaming();
+      endBotBubble();
       setBusy(false);
-      activeBotBubble = null;
       break;
   }
   scrollToBottom();
@@ -365,24 +406,84 @@ function addUserMessage(text: string): void {
 }
 
 function appendBotText(delta: string): void {
+  // A new answer ends any reasoning block for this turn.
+  finishThinking();
   if (!activeBotBubble) {
     const wrap = el("div", "msg bot enter");
-    activeBotBubble = el("div", "bubble streaming") as HTMLDivElement;
+    activeBotBubble = el("div", "bubble streaming md") as HTMLDivElement;
     wrap.appendChild(activeBotBubble);
     messagesEl.appendChild(wrap);
+    activeBotRaw = "";
   }
-  activeBotBubble.textContent = (activeBotBubble.textContent ?? "") + delta;
+  activeBotRaw += delta;
+  scheduleMarkdownRender();
 }
 
-/** Stop the blinking caret on whatever bubble was last streamed. */
+/** Throttle markdown re-parse to ~1 per animation frame regardless of token
+ *  rate (re-parsing the whole accumulated string each delta is wasteful). */
+function scheduleMarkdownRender(): void {
+  if (renderFrame) return;
+  renderFrame = requestAnimationFrame(() => {
+    renderFrame = 0;
+    if (activeBotBubble) renderMarkdownInto(activeBotBubble, activeBotRaw);
+    if (activeThinkingBody) renderMarkdownInto(activeThinkingBody, activeThinkingRaw);
+    scrollToBottom();
+  });
+}
+
+function renderMarkdownInto(target: HTMLElement, raw: string): void {
+  target.replaceChildren(renderMarkdown(raw));
+}
+
+/** Reasoning deltas → a collapsed <details> block above the answer. */
+function appendThinking(delta: string): void {
+  if (!activeThinkingBody) {
+    const details = el("details", "thinking enter") as HTMLDetailsElement;
+    const summary = el("summary");
+    summary.textContent = "Thinking…";
+    activeThinkingBody = el("div", "think-body md");
+    details.appendChild(summary);
+    details.appendChild(activeThinkingBody);
+    messagesEl.appendChild(details);
+    activeThinkingRaw = "";
+  }
+  activeThinkingRaw += delta;
+  scheduleMarkdownRender();
+}
+
+/** Finalize the reasoning block (relabel summary, stop accumulating). */
+function finishThinking(): void {
+  if (activeThinkingBody) {
+    const details = activeThinkingBody.closest("details");
+    const summary = details?.querySelector("summary");
+    if (summary) summary.textContent = "Thought process";
+    renderMarkdownInto(activeThinkingBody, activeThinkingRaw);
+    activeThinkingBody = null;
+    activeThinkingRaw = "";
+  }
+}
+
+/** Stop the blinking caret and flush the final markdown for the active bubble. */
 function finishStreaming(): void {
+  if (renderFrame) {
+    cancelAnimationFrame(renderFrame);
+    renderFrame = 0;
+  }
+  if (activeBotBubble) renderMarkdownInto(activeBotBubble, activeBotRaw);
   activeBotBubble?.classList.remove("streaming");
+}
+
+/** End the current bot bubble + reasoning block (used between segments). */
+function endBotBubble(): void {
+  finishThinking();
+  finishStreaming();
+  activeBotBubble = null;
+  activeBotRaw = "";
 }
 
 function startToolChip(tool: string, label: string): void {
   // A new tool call ends the current text bubble so following text starts fresh.
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   const chip = el("div", "tool-chip enter") as HTMLDivElement;
   chip.appendChild(el("span", "spin"));
   const txt = el("span");
@@ -416,8 +517,7 @@ function prependIcon(chip: HTMLDivElement, glyph: string): void {
 }
 
 function renderCards(models: ModelResult[]): void {
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   if (models.length === 0) return;
   const wrap = el("div", "cards");
   for (const m of models) wrap.appendChild(buildCard(m));
@@ -489,8 +589,7 @@ function placeholderThumb(): HTMLDivElement {
 }
 
 function renderDownloadNote(model: ModelResult, fileName: string): void {
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   const chip = el("div", "tool-chip done enter") as HTMLDivElement;
   prependIcon(chip, "⬇");
   const txt = el("span");
@@ -500,8 +599,7 @@ function renderDownloadNote(model: ModelResult, fileName: string): void {
 }
 
 function renderInfo(info: ModelInfo): void {
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   if (info.filePath) activeModelPath = info.filePath;
 
   const panel = el("div", "panel");
@@ -524,8 +622,7 @@ function renderInfo(info: ModelInfo): void {
 }
 
 function renderMetrics(m: SliceMetrics): void {
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   const panel = el("div", "panel");
   panel.appendChild(panelHead("✦", "Slice result"));
 
@@ -595,8 +692,7 @@ function addMetric(
 }
 
 function renderError(message: string): void {
-  finishStreaming();
-  activeBotBubble = null;
+  endBotBubble();
   const chip = el("div", "tool-chip err done enter") as HTMLDivElement;
   prependIcon(chip, "⚠");
   const txt = el("span");
@@ -650,15 +746,6 @@ function scrollToBottom(): void {
   // rAF so layout settles (animations/images) before we measure scrollHeight.
   requestAnimationFrame(() => {
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
-}
-
-function scheduleResize(): void {
-  // Ask the main process to grow the window when the settings panel opens, so
-  // it doesn't steal space from the transcript. rAF lets layout settle first.
-  requestAnimationFrame(() => {
-    const total = document.getElementById("app")?.scrollHeight ?? 0;
-    if (total > 0) api.resizeWindow(total);
   });
 }
 
