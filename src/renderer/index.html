@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self';"
+    />
+    <title>Slicely</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Draggable title strip (frameless window) -->
+      <header id="titlebar">
+        <div class="brand">
+          <span class="logo">◆</span>
+          <span class="name">Slicely</span>
+        </div>
+        <div class="status" id="slicerStatus" title="PrusaSlicer status">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">checking…</span>
+        </div>
+      </header>
+
+      <!-- Config warning banner (shown if keys missing) -->
+      <div id="banner" class="banner hidden"></div>
+
+      <!-- Conversation transcript -->
+      <main id="messages" aria-live="polite"></main>
+
+      <!-- Composer -->
+      <footer id="composer">
+        <textarea
+          id="input"
+          rows="1"
+          placeholder="e.g. I want to 3D print a model car"
+          autofocus
+        ></textarea>
+        <button id="send" title="Send (Enter)">↑</button>
+        <button id="stop" class="hidden" title="Stop">■</button>
+      </footer>
+    </div>
+    <script type="module" src="renderer.js"></script>
+  </body>
+</html>

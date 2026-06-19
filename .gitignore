@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-web/
+.env
+*.log
+.DS_Store
+out/
+release/
+*.gcode
+*.bgcode
