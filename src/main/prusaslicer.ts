@@ -261,9 +261,60 @@ export async function slice(
     args.push("--load", loadIni);
   }
 
-  // ── CLI overrides ───────────────────────────────────────────────────────
-  // Plain-mm values (NOT multiplied by anything): layer-height, brim-width,
-  // nozzle-diameter, first-layer follows layer-height.
+  // ── CLI setting overrides ─────────────────────────────────────────────────
+  // Shared with the GUI-open path (writeEffectiveConfig) so the GUI session
+  // and a headless slice are built from IDENTICAL settings.
+  args.push(...settingArgs(params));
+
+  // ── Plate / multi-part / transforms ───────────────────────────────────────
+  // Multiple inputs auto-arrange by default; only disable when asked.
+  if (multi && params.arrange === false) {
+    args.push("--dont-arrange");
+  }
+  if (params.merge) {
+    args.push("--merge");
+  }
+  // --duplicate makes N auto-arranged copies of a SINGLE model; meaningless and
+  // contradictory alongside multiple distinct inputs, so guard on !multi.
+  if (!multi && typeof params.copies === "number" && params.copies > 1) {
+    args.push("--duplicate", String(Math.round(params.copies)));
+  }
+  if (typeof params.scale === "number" && params.scale > 0 && params.scale !== 1) {
+    args.push("--scale", String(params.scale));
+  }
+  if (typeof params.rotateDeg === "number" && params.rotateDeg !== 0) {
+    args.push("--rotate", String(params.rotateDeg));
+  }
+  // Filament colour: preview-only on a single-extruder FDM print. We still pass
+  // it so the GUI/preview matches; the agent/UI tells the user it won't change
+  // the physical print. Normalize to #RRGGBB.
+  const colour = normalizeHexColour(params.filamentColour);
+  if (colour) {
+    args.push("--filament-colour", colour);
+  }
+
+  const { code, stdout, stderr } = await run(bin, args, 300_000, true);
+
+  if (!existsSync(gcodePath)) {
+    const reason =
+      stderr.trim() ||
+      stdout.trim() ||
+      `exit ${code}. The print may be empty or outside the print volume.`;
+    throw new Error(`Slicing failed: ${reason}`);
+  }
+
+  return parseMetrics(gcodePath);
+}
+
+/** Build the `--<setting>` CLI args for the print settings in `params`.
+ *  These are the values PrusaSlicer treats as CONFIG (so they round-trip
+ *  through --save/--load), as opposed to per-import transforms like scale or
+ *  rotate. Used by both the headless slice and the GUI-open path so the two
+ *  can never drift apart. */
+function settingArgs(params: SliceParams): string[] {
+  const args: string[] = [];
+
+  // Plain-mm value, no multiplier.
   if (typeof params.layerHeightMm === "number") {
     args.push("--layer-height", String(params.layerHeightMm));
   }
@@ -314,44 +365,41 @@ export async function slice(
     args.push("--nozzle-diameter", String(params.nozzleDiameterMm));
   }
 
-  // ── Plate / multi-part / transforms ───────────────────────────────────────
-  // Multiple inputs auto-arrange by default; only disable when asked.
-  if (multi && params.arrange === false) {
-    args.push("--dont-arrange");
-  }
-  if (params.merge) {
-    args.push("--merge");
-  }
-  // --duplicate makes N auto-arranged copies of a SINGLE model; meaningless and
-  // contradictory alongside multiple distinct inputs, so guard on !multi.
-  if (!multi && typeof params.copies === "number" && params.copies > 1) {
-    args.push("--duplicate", String(Math.round(params.copies)));
-  }
-  if (typeof params.scale === "number" && params.scale > 0 && params.scale !== 1) {
-    args.push("--scale", String(params.scale));
-  }
-  if (typeof params.rotateDeg === "number" && params.rotateDeg !== 0) {
-    args.push("--rotate", String(params.rotateDeg));
-  }
-  // Filament colour: preview-only on a single-extruder FDM print. We still pass
-  // it so the GUI/preview matches; the agent/UI tells the user it won't change
-  // the physical print. Normalize to #RRGGBB.
-  const colour = normalizeHexColour(params.filamentColour);
-  if (colour) {
-    args.push("--filament-colour", colour);
-  }
+  return args;
+}
 
-  const { code, stdout, stderr } = await run(bin, args, 300_000, true);
+/**
+ * Materialize the FULL effective print config (base config + the given setting
+ * overrides) to an .ini using PrusaSlicer's `--save`. The GUI can then `--load`
+ * it so opening a model reflects the EXACT settings a headless slice would use.
+ *
+ * `--export-3mf` deliberately is NOT used here: verified on PrusaSlicer 2.9, the
+ * CLI 3MF export writes only model geometry/arrangement, never the print config
+ * — so a config .ini loaded at GUI launch is the reliable path to consistency.
+ *
+ * Returns the written path, or undefined if the config couldn't be produced
+ * (callers fall back to opening the bare model).
+ */
+export async function writeEffectiveConfig(
+  params: SliceParams = {},
+  baseConfigIni?: string,
+): Promise<string | undefined> {
+  const bin = assertInstalled();
+  const cfg = getConfig();
+  const base =
+    baseConfigIni && existsSync(baseConfigIni)
+      ? baseConfigIni
+      : cfg.prusaConfigIni && existsSync(cfg.prusaConfigIni)
+        ? cfg.prusaConfigIni
+        : undefined;
 
-  if (!existsSync(gcodePath)) {
-    const reason =
-      stderr.trim() ||
-      stdout.trim() ||
-      `exit ${code}. The print may be empty or outside the print volume.`;
-    throw new Error(`Slicing failed: ${reason}`);
-  }
+  const outPath = join(cfg.slicesDir, "_gui-settings.ini");
+  const args: string[] = [];
+  if (base) args.push("--load", base);
+  args.push(...settingArgs(params), "--save", outPath);
 
-  return parseMetrics(gcodePath);
+  await run(bin, args, 60_000, true);
+  return existsSync(outPath) ? outPath : undefined;
 }
 
 /** Result of a (possibly multi-plate) slice job. */
@@ -474,13 +522,33 @@ export async function parseMetrics(gcodePath: string): Promise<SliceMetrics> {
  *  them all onto one plate (PrusaSlicer auto-arranges them on import) — this is
  *  the closest thing to "live" GUI work, since PrusaSlicer exposes no API to
  *  manipulate an already-open window. */
-export async function openInGui(filePath: string | string[]): Promise<void> {
+export async function openInGui(
+  filePath: string | string[],
+  configIni?: string,
+): Promise<void> {
   const paths = (Array.isArray(filePath) ? filePath : [filePath]).filter((p) =>
     existsSync(p),
   );
   if (paths.length === 0) {
     throw new Error(`File not found: ${Array.isArray(filePath) ? filePath.join(", ") : filePath}`);
   }
+
+  // With settings: launch the binary directly in GUI mode (no action flag ⇒
+  // GUI) and `--load` the effective config, so the opened model carries the
+  // same settings as a headless slice. The process is the user's own GUI, so
+  // it is detached and NOT tracked as one of our headless spawns.
+  if (configIni && existsSync(configIni)) {
+    const bin = assertInstalled();
+    const child = spawn(bin, ["--load", configIni, ...paths], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    child.unref();
+    return;
+  }
+
+  // No settings to apply: hand off to LaunchServices (reuses a running GUI).
   const { code, stderr } = await run("open", ["-a", APP_NAME, ...paths], 15_000);
   if (code !== 0) {
     throw new Error(`Couldn't open PrusaSlicer: ${stderr.trim() || `exit ${code}`}`);

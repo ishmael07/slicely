@@ -15,6 +15,7 @@ import {
   getModelInfo,
   slicePlates,
   openInGui,
+  writeEffectiveConfig,
   recommendSettings,
   recommendForPlate,
   type RecommendInput,
@@ -296,8 +297,9 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "open_in_slicer",
     description:
-      "Open a downloaded model file in the PrusaSlicer GUI so the user can tweak and print it themselves. " +
-      "Use when the user wants to take over manually.",
+      "Open a model in the PrusaSlicer GUI with slicing settings ALREADY APPLIED, so the GUI matches a headless slice. " +
+      "By default it reuses the settings of the most recent slice (or recommends from the model's geometry). " +
+      "Pass any setting below to open with that specific value. Use when the user wants to take over manually.",
     input_schema: {
       type: "object",
       properties: {
@@ -305,6 +307,13 @@ export const TOOLS: Anthropic.Tool[] = [
           type: "string",
           description: "Absolute path to the model. Omit to use the most recently imported model.",
         },
+        layerHeightMm: { type: "number", description: "Layer height in mm (e.g. 0.2)." },
+        fillDensityPct: { type: "number", description: "Infill density percent 0–100." },
+        fillPattern: { type: "string", description: 'Infill pattern, e.g. "gyroid", "grid".' },
+        perimeters: { type: "number", description: "Number of perimeter walls." },
+        supportMaterial: { type: "boolean", description: "Enable/disable supports." },
+        brimWidthMm: { type: "number", description: "Brim width in mm (0 = none)." },
+        nozzleDiameterMm: { type: "number", description: "Nozzle diameter in mm (e.g. 0.4)." },
       },
     },
   },
@@ -478,29 +487,7 @@ export async function executeTool(
       const path = resolvePath(input.path);
 
       // Explicit per-setting overrides the user/agent passed on this call.
-      const explicit: SliceParams = {
-        ...numParam(input, "layerHeightMm"),
-        ...numParam(input, "fillDensityPct"),
-        ...numParam(input, "brimWidthMm"),
-        ...numParam(input, "nozzleDiameterMm"),
-        ...numParam(input, "perimeters"),
-        ...numParam(input, "copies"),
-        ...numParam(input, "scale"),
-        ...numParam(input, "rotateDeg"),
-        ...(typeof input.fillPattern === "string"
-          ? { fillPattern: input.fillPattern }
-          : {}),
-        ...(typeof input.filamentColour === "string"
-          ? { filamentColour: input.filamentColour }
-          : {}),
-        ...(typeof input.merge === "boolean" ? { merge: input.merge } : {}),
-        ...(typeof input.arrangeParts === "boolean"
-          ? { arrange: input.arrangeParts }
-          : {}),
-        ...(typeof input.supportMaterial === "boolean"
-          ? { supportMaterial: input.supportMaterial }
-          : {}),
-      };
+      const explicit = explicitParams(input);
       const hasExplicit = Object.keys(explicit).length > 0;
       const reInput = recommendInput(input);
       if (reInput.material) sessionState.material = reInput.material;
@@ -532,6 +519,10 @@ export async function executeTool(
         sessionState.printerKey,
         sessionState.material,
       );
+      // Remember exactly what we sliced, so open_in_slicer can open the GUI
+      // with identical settings.
+      sessionState.lastSliceParams = params;
+      sessionState.lastConfigIni = resolved.configIni;
       // Usable bed area = printer bed minus a margin (defaults to MK-class).
       const bedDim = resolved.printer?.bed ?? { x: 250, y: 210, z: 210 };
       const bed = { w: bedDim.x, d: bedDim.y };
@@ -607,11 +598,44 @@ export async function executeTool(
         usingActive && sessionState.lastModelParts.length > 1
           ? sessionState.lastModelParts
           : resolvePath(input.path);
-      await openInGui(paths);
+      const primary = Array.isArray(paths) ? paths[0] : paths;
+
+      // Determine the settings to open WITH, so the GUI matches a slice:
+      //   • explicit overrides on this call always win;
+      //   • else reuse the exact params of the most recent slice;
+      //   • else recommend from the model's geometry (skip for non-sliceable
+      //     STEP, which can't be inspected headlessly — open with base config).
+      const explicit = explicitParams(input);
+      let params: SliceParams;
+      let baseConfig: string | undefined;
+      if (sessionState.lastSliceParams && !Object.keys(explicit).length) {
+        params = sessionState.lastSliceParams;
+        baseConfig = sessionState.lastConfigIni;
+      } else {
+        baseConfig = resolveSliceConfig(
+          sessionState.printerKey,
+          sessionState.material,
+        ).configIni;
+        if (SLICEABLE_PART_EXTS.has(extLower(primary))) {
+          const rec = recommendSettings(
+            await getModelInfo(primary),
+            recommendInput(input),
+          );
+          params = { ...rec.params, ...explicit };
+        } else {
+          params = explicit;
+        }
+      }
+
+      // Materialize the effective config and launch the GUI with it loaded.
+      const guiConfig = await writeEffectiveConfig(params, baseConfig);
+      await openInGui(paths, guiConfig);
+
       const n = Array.isArray(paths) ? paths.length : 1;
+      const applied = guiConfig ? " with your slicing settings applied" : "";
       return n > 1
-        ? `Opened ${n} parts as one arranged plate in PrusaSlicer — tweak and print from there.`
-        : `Opened ${Array.isArray(paths) ? paths[0] : paths} in PrusaSlicer.`;
+        ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied} — tweak and print from there.`
+        : `Opened ${primary} in PrusaSlicer${applied}.`;
     }
 
     default:
@@ -655,6 +679,34 @@ function resolvePath(p: unknown): string {
     );
   }
   return path;
+}
+
+/** Per-call setting/transform overrides the user or agent passed explicitly.
+ *  Shared by slice_model and open_in_slicer so both build the same params. */
+function explicitParams(input: Record<string, unknown>): SliceParams {
+  return {
+    ...numParam(input, "layerHeightMm"),
+    ...numParam(input, "fillDensityPct"),
+    ...numParam(input, "brimWidthMm"),
+    ...numParam(input, "nozzleDiameterMm"),
+    ...numParam(input, "perimeters"),
+    ...numParam(input, "copies"),
+    ...numParam(input, "scale"),
+    ...numParam(input, "rotateDeg"),
+    ...(typeof input.fillPattern === "string"
+      ? { fillPattern: input.fillPattern }
+      : {}),
+    ...(typeof input.filamentColour === "string"
+      ? { filamentColour: input.filamentColour }
+      : {}),
+    ...(typeof input.merge === "boolean" ? { merge: input.merge } : {}),
+    ...(typeof input.arrangeParts === "boolean"
+      ? { arrange: input.arrangeParts }
+      : {}),
+    ...(typeof input.supportMaterial === "boolean"
+      ? { supportMaterial: input.supportMaterial }
+      : {}),
+  };
 }
 
 function numParam(

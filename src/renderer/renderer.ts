@@ -37,13 +37,14 @@ const stopBtn = $<HTMLButtonElement>("stop");
 const bannerEl = $<HTMLDivElement>("banner");
 const statusDot = $<HTMLSpanElement>("statusDot");
 const statusText = $<HTMLSpanElement>("statusText");
-const modelPickerBtn = $<HTMLButtonElement>("modelPicker");
-const modelPickerLabel = $<HTMLSpanElement>("modelPickerLabel");
-const pickerPopEl = $<HTMLDivElement>("pickerPop");
-const modelListEl = $<HTMLDivElement>("modelList");
-const effortSegEl = $<HTMLDivElement>("effortSeg");
-const effortHintEl = $<HTMLParagraphElement>("effortHint");
+const modelTriggerBtn = $<HTMLButtonElement>("modelTrigger");
+const modelTriggerLabel = $<HTMLSpanElement>("modelTriggerLabel");
+const modelMenuEl = $<HTMLDivElement>("modelMenu");
+const effortTriggerBtn = $<HTMLButtonElement>("effortTrigger");
+const effortTriggerLabel = $<HTMLSpanElement>("effortTriggerLabel");
+const effortMenuEl = $<HTMLDivElement>("effortMenu");
 const attachBtn = $<HTMLButtonElement>("attach");
+const attachTrayEl = $<HTMLDivElement>("attachTray");
 const dropzoneEl = $<HTMLDivElement>("dropzone");
 
 let busy = false;
@@ -62,9 +63,12 @@ const activeChips = new Map<string, HTMLDivElement>();
 let activeModelPath: string | null = null;
 /** Latest settings snapshot (model catalog + current selection). */
 let settings: SettingsState | null = null;
+/** Files staged in the composer tray, awaiting send (stage-on-drop, slice-on-send). */
+let stagedFiles: UploadResult[] = [];
 
 // ── Bootstrapping ────────────────────────────────────────────────────────
 showEmptyState();
+updateSendState();
 void refreshStatus();
 void checkConfig();
 void loadSettings();
@@ -72,6 +76,7 @@ void loadSettings();
 api.onAgentEvent(handleAgentEvent);
 
 inputEl.addEventListener("input", autoGrow);
+inputEl.addEventListener("input", updateSendState);
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -82,21 +87,25 @@ sendBtn.addEventListener("click", submit);
 stopBtn.addEventListener("click", () => api.cancel());
 attachBtn.addEventListener("click", pickFiles);
 
-// Model/effort picker: toggle on the trigger; close on outside-click or Escape.
-modelPickerBtn.addEventListener("click", (e) => {
+// Model + effort dropdowns: each trigger toggles its own menu (only one open
+// at a time); both close on outside-click or Escape.
+modelTriggerBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  togglePicker();
+  toggleMenu("model");
+});
+effortTriggerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMenu("effort");
 });
 document.addEventListener("pointerdown", (e) => {
-  if (pickerPopEl.classList.contains("hidden")) return;
   const t = e.target as HTMLElement | null;
-  if (t && (pickerPopEl.contains(t) || modelPickerBtn.contains(t))) return;
-  closePicker();
+  if (!t) return closeMenus();
+  if (modelMenuEl.contains(t) || modelTriggerBtn.contains(t)) return;
+  if (effortMenuEl.contains(t) || effortTriggerBtn.contains(t)) return;
+  closeMenus();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !pickerPopEl.classList.contains("hidden")) {
-    closePicker();
-  }
+  if (e.key === "Escape") closeMenus();
 });
 
 // ── Drag-and-drop CAD upload ─────────────────────────────────────────────
@@ -124,7 +133,7 @@ window.addEventListener("drop", (e) => {
     const p = (f as File & { path?: string }).path;
     if (p) paths.push(p);
   }
-  if (paths.length > 0) void uploadPaths(paths);
+  if (paths.length > 0) void stagePaths(paths);
 });
 
 // ── Config & status ───────────────────────────────────────────────────────
@@ -185,33 +194,44 @@ async function loadSettings(): Promise<void> {
   }
 }
 
-function togglePicker(): void {
-  const open = pickerPopEl.classList.toggle("hidden") === false;
-  modelPickerBtn.classList.toggle("open", open);
+/** Open one menu (closing the other), or close it if it's already open. */
+function toggleMenu(which: "model" | "effort"): void {
+  const isModel = which === "model";
+  const menu = isModel ? modelMenuEl : effortMenuEl;
+  const trigger = isModel ? modelTriggerBtn : effortTriggerBtn;
+  const willOpen = menu.classList.contains("hidden");
+  closeMenus();
+  if (willOpen) {
+    menu.classList.remove("hidden");
+    trigger.classList.add("open");
+  }
 }
 
-function closePicker(): void {
-  pickerPopEl.classList.add("hidden");
-  modelPickerBtn.classList.remove("open");
+function closeMenus(): void {
+  modelMenuEl.classList.add("hidden");
+  effortMenuEl.classList.add("hidden");
+  modelTriggerBtn.classList.remove("open");
+  effortTriggerBtn.classList.remove("open");
 }
 
 function renderSettings(): void {
   if (!settings) return;
   const { current, models, efforts } = settings;
+  const chosen = models.find((m) => m.id === current.model);
 
-  // Trigger pill label: "Model · effort".
-  const chosenLabel =
-    models.find((m) => m.id === current.model)?.label ?? current.model;
-  const supportsEffort = models.find((m) => m.id === current.model)?.supportsEffort;
-  modelPickerLabel.textContent = supportsEffort
-    ? `${chosenLabel} · ${current.effort}`
-    : chosenLabel;
+  // Model trigger shows the chosen model's name.
+  modelTriggerLabel.textContent = chosen?.label ?? current.model;
 
-  // Model cards — clean rounded rectangles with a checkmark when selected.
-  modelListEl.innerHTML = "";
+  // Effort trigger shows the current tier — hidden for fixed-speed models.
+  const supportsEffort = chosen?.supportsEffort ?? false;
+  effortTriggerBtn.classList.toggle("hidden", !supportsEffort);
+  effortTriggerLabel.textContent = current.effort;
+
+  // Model menu — name + blurb, checkmark on the selected row.
+  modelMenuEl.innerHTML = "";
   for (const m of models) {
     const active = m.id === current.model;
-    const opt = el("div", `model-opt${active ? " active" : ""}`);
+    const item = el("div", `menu-item${active ? " active" : ""}`);
     const text = el("div", "mtext");
     const name = el("div", "mname");
     name.textContent = m.label;
@@ -219,34 +239,41 @@ function renderSettings(): void {
     blurb.textContent = m.blurb;
     text.appendChild(name);
     text.appendChild(blurb);
-    opt.appendChild(text);
+    item.appendChild(text);
     const check = el("span", "check");
     check.textContent = "✓";
-    opt.appendChild(check);
-    opt.onclick = () => void changeSettings({ model: m.id });
-    modelListEl.appendChild(opt);
-  }
-
-  // Effort pills — a wrapping row of rounded pills; unsupported tiers disabled.
-  const chosen = models.find((m) => m.id === current.model);
-  effortSegEl.innerHTML = "";
-  for (const lvl of efforts) {
-    const b = el("button", "effort-pill") as HTMLButtonElement;
-    b.textContent = lvl;
-    const disabled = effortDisabled(lvl, chosen);
-    b.disabled = disabled;
-    if (lvl === current.effort && !disabled) b.classList.add("active");
-    b.onclick = () => {
-      if (!b.disabled) void changeSettings({ effort: lvl });
+    item.appendChild(check);
+    item.onclick = () => {
+      closeMenus();
+      void changeSettings({ model: m.id });
     };
-    effortSegEl.appendChild(b);
+    modelMenuEl.appendChild(item);
   }
 
-  effortHintEl.textContent = chosen
-    ? chosen.supportsEffort
-      ? "Higher effort = sharper decisions, more tokens, a little slower."
-      : `${chosen.label} runs at a fixed speed — effort tiers don't apply.`
-    : "";
+  // Effort menu — one row per tier; unsupported tiers shown disabled.
+  effortMenuEl.innerHTML = "";
+  for (const lvl of efforts) {
+    const disabled = effortDisabled(lvl, chosen);
+    const active = lvl === current.effort && !disabled;
+    const item = el(
+      "div",
+      `menu-item effort${active ? " active" : ""}${disabled ? " disabled" : ""}`,
+    );
+    const text = el("div", "mtext");
+    const name = el("div", "mname");
+    name.textContent = lvl;
+    text.appendChild(name);
+    item.appendChild(text);
+    const check = el("span", "check");
+    check.textContent = "✓";
+    item.appendChild(check);
+    item.onclick = () => {
+      if (disabled) return;
+      closeMenus();
+      void changeSettings({ effort: lvl });
+    };
+    effortMenuEl.appendChild(item);
+  }
 }
 
 function effortDisabled(
@@ -271,20 +298,20 @@ async function changeSettings(
   }
 }
 
-// ── CAD file upload ──────────────────────────────────────────────────────
+// ── CAD file staging (stage-on-drop, slice-on-send) ──────────────────────
 async function pickFiles(): Promise<void> {
   try {
-    const results = await api.pickFile();
-    if (results.length > 0) onUploaded(results);
+    stageResults(await api.pickFile());
   } catch (err) {
     renderError((err as Error).message ?? "Upload failed.");
   }
 }
 
-async function uploadPaths(paths: string[]): Promise<void> {
+/** Copy dropped paths into the workspace, then stage them in the tray. */
+async function stagePaths(paths: string[]): Promise<void> {
   try {
     const results = await api.uploadFiles(paths);
-    if (results.length > 0) onUploaded(results);
+    if (results.length > 0) stageResults(results);
     else
       renderError(
         "That file type isn't supported. Use STL, 3MF, OBJ, AMF, or STEP.",
@@ -294,27 +321,62 @@ async function uploadPaths(paths: string[]): Promise<void> {
   }
 }
 
-/** A file landed in the workspace: show it, set it active, and kick the agent. */
-function onUploaded(results: UploadResult[]): void {
-  clearEmptyState();
-  const active = results.find((r) => r.sliceable) ?? results[0];
-  activeModelPath = active.localPath;
-
-  for (const r of results) renderUploadChip(r);
-
-  // Tell the agent — it'll inspect/recommend/slice the active (now-default) file.
-  const label =
-    results.length === 1
-      ? `Uploaded ${active.fileName}`
-      : `Uploaded ${results.length} files`;
-  addUserMessage(label);
-  startTurn();
-  const instruction = active.sliceable
-    ? `I just uploaded a 3D model file named "${active.fileName}" — it's now the active model. Inspect it, report its dimensions, recommend optimal slicing settings, and offer to slice it.`
-    : `I just uploaded "${active.fileName}" (a ${active.ext} CAD file). It's the active model. Note that STEP files should be opened in PrusaSlicer to convert them — offer to open it in the slicer, and inspect it if possible.`;
-  void api.sendMessage(instruction);
+/** Add accepted files to the staging tray (de-duped by workspace path). */
+function stageResults(results: UploadResult[]): void {
+  if (results.length === 0) return;
+  for (const r of results) {
+    if (!stagedFiles.some((s) => s.localPath === r.localPath)) {
+      stagedFiles.push(r);
+    }
+  }
+  renderAttachTray();
+  updateSendState();
+  inputEl.focus();
 }
 
+function removeStaged(localPath: string): void {
+  stagedFiles = stagedFiles.filter((s) => s.localPath !== localPath);
+  renderAttachTray();
+  updateSendState();
+}
+
+/** Render the composer tray of staged files, each with a remove ×. */
+function renderAttachTray(): void {
+  attachTrayEl.innerHTML = "";
+  attachTrayEl.classList.toggle("hidden", stagedFiles.length === 0);
+  for (const f of stagedFiles) {
+    const chip = el("div", "attach-chip") as HTMLDivElement;
+
+    const badge = el("span", "ac-badge");
+    badge.textContent = f.ext.replace(".", "").toUpperCase();
+    chip.appendChild(badge);
+
+    const meta = el("div", "ac-meta");
+    const name = el("div", "ac-name");
+    name.textContent = f.fileName;
+    name.title = f.fileName;
+    const sub = el("div", "ac-sub");
+    sub.textContent = formatBytes(f.sizeBytes);
+    if (!f.sliceable) {
+      const tag = el("span", "warn");
+      tag.textContent = " · needs convert";
+      sub.appendChild(tag);
+    }
+    meta.appendChild(name);
+    meta.appendChild(sub);
+    chip.appendChild(meta);
+
+    const rm = el("button", "ac-remove") as HTMLButtonElement;
+    rm.textContent = "×";
+    rm.title = `Remove ${f.fileName}`;
+    rm.onclick = () => removeStaged(f.localPath);
+    chip.appendChild(rm);
+
+    attachTrayEl.appendChild(chip);
+  }
+}
+
+/** A committed (sent) attachment, recorded in the transcript. */
 function renderUploadChip(r: UploadResult): void {
   const chip = el("div", "tool-chip done enter") as HTMLDivElement;
   prependIcon(chip, "📦");
@@ -325,16 +387,65 @@ function renderUploadChip(r: UploadResult): void {
   scrollToBottom();
 }
 
+/** Enable send when there's text or at least one staged file (and not busy). */
+function updateSendState(): void {
+  sendBtn.disabled =
+    busy || (inputEl.value.trim() === "" && stagedFiles.length === 0);
+}
+
 // ── Submit / send ──────────────────────────────────────────────────────────
 function submit(): void {
+  if (busy) return;
   const text = inputEl.value.trim();
-  if (!text || busy) return;
+  const files = stagedFiles;
+  if (!text && files.length === 0) return;
   clearEmptyState();
-  addUserMessage(text);
+
+  if (files.length > 0) {
+    submitWithAttachments(text, files);
+  } else {
+    addUserMessage(text);
+  }
+
   inputEl.value = "";
   autoGrow();
   startTurn();
-  void api.sendMessage(text);
+  void api.sendMessage(buildInstruction(text, files));
+}
+
+/** Record the user's message + attachment chips, set the active model, and
+ *  clear the tray. The agent instruction is built separately. */
+function submitWithAttachments(text: string, files: UploadResult[]): void {
+  const active = files.find((f) => f.sliceable) ?? files[0];
+  activeModelPath = active.localPath;
+
+  addUserMessage(
+    text ||
+      (files.length === 1
+        ? `Attached ${active.fileName}`
+        : `Attached ${files.length} files`),
+  );
+  for (const f of files) renderUploadChip(f);
+
+  stagedFiles = [];
+  renderAttachTray();
+}
+
+/** Compose the message sent to the agent from the user's text + staged files. */
+function buildInstruction(text: string, files: UploadResult[]): string {
+  if (files.length === 0) return text;
+
+  const active = files.find((f) => f.sliceable) ?? files[0];
+  const names = files.map((f) => `"${f.fileName}"`).join(", ");
+  const context =
+    files.length === 1
+      ? `The user attached a 3D model file, ${names}, now the active model. `
+      : `The user attached ${files.length} files (${names}). The active model is "${active.fileName}". `;
+
+  if (text) return `${context}\n\nThe user says: ${text}`;
+  return active.sliceable
+    ? `${context}Inspect it, report its dimensions, recommend optimal slicing settings, and offer to slice it.`
+    : `${context}This is a ${active.ext} CAD file — STEP files must be opened in PrusaSlicer to convert. Offer to open it in the slicer, and inspect it if possible.`;
 }
 
 /** Send a synthesized instruction (from a card button) as if the user asked. */
@@ -355,6 +466,7 @@ function setBusy(b: boolean): void {
   busy = b;
   sendBtn.classList.toggle("hidden", b);
   stopBtn.classList.toggle("hidden", !b);
+  updateSendState();
 }
 
 // ── Event handling ──────────────────────────────────────────────────────────

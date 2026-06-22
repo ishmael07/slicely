@@ -31,17 +31,34 @@
       <!-- Conversation transcript -->
       <main id="messages" aria-live="polite"></main>
 
-      <!-- Composer: a model-picker row above the input row -->
+      <!-- Composer: two compact dropdowns above the input row -->
       <footer id="composer">
         <div class="composer-bar">
-          <button id="modelPicker" class="model-trigger" title="Model & reasoning effort">
-            <span id="modelPickerLabel">Model</span>
-            <span class="caret">▾</span>
-          </button>
+          <!-- Model dropdown -->
+          <div class="picker-anchor">
+            <button id="modelTrigger" class="picker-trigger" title="Model">
+              <span class="dot"></span>
+              <span id="modelTriggerLabel">Model</span>
+              <span class="caret">▾</span>
+            </button>
+            <div id="modelMenu" class="picker-menu hidden"></div>
+          </div>
+          <!-- Effort dropdown (hidden for fixed-speed models) -->
+          <div class="picker-anchor">
+            <button id="effortTrigger" class="picker-trigger hidden" title="Reasoning effort">
+              <span id="effortTriggerLabel">Effort</span>
+              <span class="caret">▾</span>
+            </button>
+            <div id="effortMenu" class="picker-menu hidden"></div>
+          </div>
         </div>
+        <!-- Attachment tray: appears when files are staged (drop or picker) -->
+        <div id="attachTray" class="attach-tray hidden"></div>
         <div class="composer-row">
-          <button id="attach" class="icon-btn attach" title="Upload a 3D model (STL, 3MF, OBJ, STEP, or a ZIP of parts)">
-            ＋
+          <button id="attach" class="icon-btn attach" title="Attach a 3D model (STL, 3MF, OBJ, STEP, or a ZIP of parts)">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
           </button>
           <textarea
             id="input"
@@ -49,21 +66,16 @@
             placeholder="Ask, or drop an STL to slice…"
             autofocus
           ></textarea>
-          <button id="send" title="Send (Enter)">↑</button>
-          <button id="stop" class="hidden" title="Stop">■</button>
-        </div>
-
-        <!-- Model / effort popover (anchored above the composer) -->
-        <div id="pickerPop" class="picker-pop hidden">
-          <div class="set-group">
-            <label class="set-label">Model</label>
-            <div id="modelList" class="model-list"></div>
-          </div>
-          <div class="set-group">
-            <label class="set-label">Reasoning effort</label>
-            <div id="effortSeg" class="seg"></div>
-            <p id="effortHint" class="set-hint"></p>
-          </div>
+          <button id="send" title="Send (Enter)" disabled>
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" aria-hidden="true">
+              <path d="M12 19V6M12 6l-6 6M12 6l6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button id="stop" class="hidden" title="Stop">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/>
+            </svg>
+          </button>
         </div>
       </footer>
 

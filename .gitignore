@@ -8,3 +8,10 @@ out/
 release/
 *.gcode
 *.bgcode
+
+# Runtime artifacts (uploaded models, downloads, generated slices/configs, local settings)
+uploads/
+downloads/
+slices/
+configs/
+settings.json

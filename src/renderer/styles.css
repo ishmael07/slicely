@@ -646,28 +646,44 @@ details.thinking[open] summary::before {
 #input::placeholder {
   color: var(--text-faint);
 }
-#composer button {
+/* Round action buttons — scoped to send/stop ONLY so it never turns the
+   picker triggers (also <button>s inside #composer) into orange circles. */
+#send,
+#stop {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 40px;
   border-radius: 50%;
   border: none;
-  font-size: 17px;
   cursor: pointer;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #1a1006;
-  font-weight: 700;
-  transition: filter 0.12s, transform 0.08s, box-shadow 0.2s;
-  box-shadow: 0 3px 12px rgba(255, 122, 69, 0.3);
+  background: linear-gradient(140deg, var(--accent-2), var(--accent));
+  color: #2a1505;
+  transition: filter 0.14s var(--ease), transform 0.14s var(--ease),
+    box-shadow 0.2s var(--ease), opacity 0.15s;
+  box-shadow: 0 4px 14px rgba(255, 122, 69, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
-#composer button:hover {
-  filter: brightness(1.08);
+#send svg,
+#stop svg {
+  display: block;
 }
-#composer button:active {
-  transform: scale(0.92);
+#send:hover:not(:disabled),
+#stop:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(255, 122, 69, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
-#composer button:disabled {
-  opacity: 0.35;
+#send:active:not(:disabled),
+#stop:active {
+  transform: scale(0.9);
+}
+#send:disabled {
+  background: var(--panel-2);
+  color: var(--text-faint);
   cursor: default;
   box-shadow: none;
 }
@@ -773,10 +789,11 @@ details.thinking[open] summary::before {
 .icon-btn:active {
   transform: scale(0.9);
 }
-/* ── Composer model/effort picker (trigger pill + popover) ─────────────── */
+/* ── Composer model/effort dropdowns (two compact triggers + menus) ─────── */
 .composer-bar {
   display: flex;
   align-items: center;
+  gap: 6px;
   margin-bottom: 8px;
 }
 .composer-row {
@@ -784,203 +801,281 @@ details.thinking[open] summary::before {
   align-items: flex-end;
   gap: 8px;
 }
-.model-trigger {
+
+/* Each trigger + its menu share a relative anchor so the menu pops above it. */
+.picker-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Compact pill trigger (used by both model + effort). */
+.picker-trigger {
   -webkit-app-region: no-drag;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   font-family: var(--font);
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-dim);
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 0.5px solid var(--border);
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 5px 11px;
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.15s var(--ease), color 0.15s var(--ease),
     border-color 0.15s var(--ease);
 }
-/* small accent dot before the label */
-.model-trigger::before {
-  content: "";
+.picker-trigger:hover {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+.picker-trigger.open {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--accent-glow);
+}
+.picker-trigger .dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   flex: 0 0 auto;
 }
-.model-trigger:hover {
-  background: var(--panel-2);
-  color: var(--text);
-  border-color: var(--border-bright);
-}
-.model-trigger.open {
-  color: var(--text);
-  background: var(--panel-2);
-  border-color: var(--accent-glow);
-}
-.model-trigger .caret {
+.picker-trigger .caret {
   font-size: 9px;
   opacity: 0.7;
   transition: transform 0.18s var(--ease);
 }
-.model-trigger.open .caret {
+.picker-trigger.open .caret {
   transform: rotate(180deg);
 }
-.picker-pop {
+
+/* Anchored dropdown menu — pops above its trigger, sized to content. */
+.picker-menu {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 118px; /* sits just above the two-row composer */
+  left: 0;
+  bottom: calc(100% + 8px);
   z-index: 40;
+  min-width: 210px;
+  max-width: 280px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 16px;
-  max-height: calc(100vh - 160px);
-  overflow-y: auto;
+  gap: 3px;
   background: linear-gradient(170deg, var(--bg-1), var(--bg-0));
   backdrop-filter: blur(22px) saturate(160%);
-  border: 1px solid var(--border-bright);
-  border-radius: var(--radius);
+  border: 0.5px solid var(--border-bright);
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
-  animation: enter 0.2s var(--ease) both;
+  transform-origin: bottom left;
+  animation: menu-in 0.16s var(--ease) both;
 }
-.set-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.picker-menu.effort-menu {
+  min-width: 150px;
 }
-.set-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--text-dim);
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.97);
+  }
 }
-/* Model selection — clean rounded cards with a checkmark when selected. */
-.model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+.picker-menu::-webkit-scrollbar {
+  width: 7px;
 }
-.model-opt {
+.picker-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+/* A selectable row: text on the left, checkmark on the right. */
+.menu-item {
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 11px 13px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--panel);
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
-  transition: border-color 0.16s var(--ease), background 0.16s var(--ease),
-    box-shadow 0.16s var(--ease);
+  transition: background 0.12s var(--ease);
 }
-.model-opt:hover {
+.menu-item:hover {
   background: var(--panel-2);
-  border-color: var(--border-bright);
 }
-.model-opt.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 1px var(--accent-glow) inset;
+.menu-item.disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
 }
-.model-opt .mtext {
+.menu-item.disabled:hover {
+  background: transparent;
+}
+.menu-item .mtext {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
   flex: 1 1 auto;
 }
-.model-opt .mname {
-  font-size: 13px;
-  font-weight: 650;
+.menu-item .mname {
+  font-size: 12.5px;
+  font-weight: 600;
   letter-spacing: -0.1px;
 }
-.model-opt .mblurb {
-  font-size: 11px;
-  color: var(--text-dim);
-  line-height: 1.35;
+.menu-item.effort .mname {
+  text-transform: capitalize;
 }
-/* Checkmark chip — hidden until the card is active. */
-.model-opt .check {
+.menu-item .mblurb {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-item .check {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   font-size: 12px;
   font-weight: 800;
-  color: #1a1006;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--accent);
   opacity: 0;
-  transform: scale(0.6);
-  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+  transition: opacity 0.12s var(--ease);
 }
-.model-opt.active .check {
+.menu-item.active .check {
   opacity: 1;
-  transform: scale(1);
 }
-
-/* Effort selection — a wrapping row of modern rounded pills. */
-.seg {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.effort-pill {
-  -webkit-app-region: no-drag;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: capitalize;
-  padding: 7px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: background 0.16s var(--ease), color 0.16s var(--ease),
-    border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
-}
-.effort-pill:hover:not(.active):not(:disabled) {
-  background: var(--panel-2);
-  border-color: var(--border-bright);
-  color: var(--text);
-}
-.effort-pill.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border-color: transparent;
-  color: #1a1006;
-  box-shadow: 0 2px 10px rgba(255, 122, 69, 0.32);
-}
-.effort-pill:disabled {
-  opacity: 0.32;
-  cursor: not-allowed;
-}
-.set-hint {
-  font-size: 10.5px;
-  color: var(--text-faint);
-  line-height: 1.4;
-  min-height: 14px;
+.menu-item.active .mname {
+  color: var(--accent);
 }
 
 /* ── Attach button in composer ─────────────────────────────────────────── */
 .icon-btn.attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  font-size: 20px;
-  font-weight: 300;
+  color: var(--text-dim);
   background: var(--panel-2);
+  transition: background 0.15s var(--ease), color 0.15s var(--ease),
+    transform 0.14s var(--ease), border-color 0.15s var(--ease);
+}
+.icon-btn.attach svg {
+  display: block;
 }
 .icon-btn.attach:hover {
   background: var(--panel-hover);
   color: var(--accent);
+  border-color: var(--border-bright);
+}
+.icon-btn.attach:active {
+  transform: scale(0.9);
+}
+
+/* ── Attachment tray (staged files before sending) ─────────────────────── */
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 9px;
+  max-height: 132px;
+  overflow-y: auto;
+  animation: tray-in 0.22s var(--ease) both;
+}
+@keyframes tray-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.attach-chip {
+  -webkit-app-region: no-drag;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 26px 8px 8px; /* room for the remove × at top-right */
+  min-width: 0;
+  max-width: 220px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+  animation: enter 0.3s var(--ease) both;
+}
+.attach-chip:hover {
+  border-color: var(--border-bright);
+  background: var(--panel-2);
+}
+/* File-type badge (e.g. STL / 3MF) */
+.ac-badge {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-xs);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 0.5px solid rgba(255, 122, 69, 0.28);
+}
+.ac-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ac-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.ac-sub {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.ac-sub .warn {
+  color: var(--warn);
+}
+/* Small × at the chip's top-right corner */
+.ac-remove {
+  -webkit-app-region: no-drag;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s, transform 0.1s;
+}
+.ac-remove:hover {
+  background: var(--err);
+  color: #fff;
+}
+.ac-remove:active {
+  transform: scale(0.88);
 }
 
 /* ── Drag-drop overlay ─────────────────────────────────────────────────── */

@@ -11,6 +11,11 @@ interface SessionState {
   lastModelParts: string[];
   /** The last recommendation, used as defaults when slicing. */
   lastRecommendation: SliceParams;
+  /** The exact effective params of the most recent slice — so open_in_slicer
+   *  can open the GUI with settings identical to what was sliced. */
+  lastSliceParams?: SliceParams;
+  /** The base config .ini resolved for the most recent slice. */
+  lastConfigIni?: string;
   /** The printer the user picked this session (key into KNOWN_PRINTERS). */
   printerKey?: string;
   /** The material chosen this session (for synthesized filament density/cost). */
