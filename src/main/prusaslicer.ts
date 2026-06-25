@@ -296,6 +296,18 @@ export async function slice(
   const { code, stdout, stderr } = await run(bin, args, 300_000, true);
 
   if (!existsSync(gcodePath)) {
+    // PrusaSlicer prints this exact message and writes NO g-code when every
+    // object ended up outside the (single) bed — i.e. the plate was over-packed
+    // and the CLI dropped the off-bed parts. Surface that as an actionable error
+    // rather than a generic "slicing failed". (Verified vs PrusaSlicer source,
+    // ProcessActions.cpp: "Nothing to print … no object is fully inside the
+    // print volume".)
+    const out = `${stdout}\n${stderr}`;
+    if (/nothing to print|no object is fully inside the print volume/i.test(out)) {
+      throw new Error(
+        "Nothing landed on the bed — the plate is over-packed or a part sits outside the print volume. Reduce copies, scale parts down, or split across more plates.",
+      );
+    }
     const reason =
       stderr.trim() ||
       stdout.trim() ||
@@ -304,6 +316,45 @@ export async function slice(
   }
 
   return parseMetrics(gcodePath);
+}
+
+/**
+ * Read the inter-object arrange gap PrusaSlicer will actually use for a given
+ * config, so Slicely's plate packer matches the slicer's real arrange and never
+ * groups parts the slicer would drop. Mirrors PrusaSlicer's min_object_distance:
+ *   gap = complete_objects ? max(duplicate_distance, extruder_clearance_radius)
+ *                          : duplicate_distance        (default 6 mm)
+ * Falls back to 6 mm / non-sequential when the config doesn't pin these (e.g.
+ * Slicely's synthesized configs), which is exactly PrusaSlicer's own default.
+ */
+export async function readArrangeSpacing(
+  configIni?: string,
+): Promise<{ spacing: number; sequential: boolean }> {
+  const fallback = { spacing: 6, sequential: false };
+  if (!configIni || !existsSync(configIni)) return fallback;
+  const text = await readFile(configIni, "utf8").catch(() => "");
+  if (!text) return fallback;
+
+  const readNum = (key: string): number | undefined => {
+    // Flat .ini "key = value" (these keys are plain mm, no % suffix).
+    const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*([0-9.]+)`, "mi"));
+    return m ? Number(m[1]) : undefined;
+  };
+  const readBool = (key: string): boolean => {
+    const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(\\w+)`, "mi"));
+    if (!m) return false;
+    const v = m[1].toLowerCase();
+    return v === "1" || v === "true" || v === "yes";
+  };
+
+  const duplicateDistance = readNum("duplicate_distance") ?? 6;
+  const sequential = readBool("complete_objects");
+  const clearance = readNum("extruder_clearance_radius") ?? 0;
+  const spacing = sequential
+    ? Math.max(duplicateDistance, clearance)
+    : duplicateDistance;
+  // Guard against a pathological 0 gap (parts touching) — keep a small minimum.
+  return { spacing: spacing > 0 ? spacing : 6, sequential };
 }
 
 /** Build the `--<setting>` CLI args for the print settings in `params`.
@@ -437,12 +488,29 @@ export async function slicePlates(
       ? Math.round(params.copies)
       : 1;
 
+  // Footprints must reflect the SAME transforms the slice will apply, or the
+  // packer plans for one size while PrusaSlicer arranges another and parts spill
+  // off-bed (silently dropped). --scale multiplies both XY dims; --rotate spins
+  // each object about Z, so its axis-aligned footprint grows to the rotated
+  // bounding box. We bake both into the footprint used for packing/oversize.
+  const scaleFactor =
+    typeof params.scale === "number" && params.scale > 0 ? params.scale : 1;
+  const rotRad = (((params.rotateDeg ?? 0) % 360) * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rotRad));
+  const sin = Math.abs(Math.sin(rotRad));
+
   const partFootprints = new Map<string, { w: number; d: number }>();
   for (const p of distinct) {
     const info = await getModelInfo(p);
-    // Footprint = the two largest dimensions (the part may need orienting, but
-    // for packing we use its current XY extent which is what PrusaSlicer uses).
-    partFootprints.set(p, { w: info.sizeX, d: info.sizeY });
+    // Scaled XY extent, then its rotated axis-aligned bounding box. (PrusaSlicer
+    // arranges by convex hull; this AABB is never smaller, so packing stays
+    // conservative — it never claims a fit the slicer can't achieve.)
+    const sx = info.sizeX * scaleFactor;
+    const sy = info.sizeY * scaleFactor;
+    partFootprints.set(p, {
+      w: sx * cos + sy * sin,
+      d: sx * sin + sy * cos,
+    });
   }
 
   const toPack: PlatePart[] = [];
@@ -453,7 +521,10 @@ export async function slicePlates(
     }
   }
 
-  const { plates, oversized } = packPlates(toPack, bed);
+  // Pack with the SAME object gap PrusaSlicer will use, so a plate we accept is
+  // one the slicer can arrange without pushing a part off-bed (and dropping it).
+  const { spacing } = await readArrangeSpacing(configIni);
+  const { plates, oversized } = packPlates(toPack, bed, spacing);
 
   // If everything fits on one plate, slice it as a single plate (fast path).
   const plateMetrics: SliceMetrics[] = [];
@@ -469,9 +540,23 @@ export async function slicePlates(
     const singlePartCopies =
       uniqueOnPlate.length === 1 ? onPlate.length : undefined;
 
+    // CRITICAL: distinct parts on one plate MUST be merged. PrusaSlicer's CLI
+    // loads each input file as its OWN Model and slices them in a loop that
+    // re-exports to the SAME --output, so WITHOUT --merge a multi-input plate
+    // produces g-code for only the LAST part (the rest are overwritten). --merge
+    // combines all inputs into ONE model so the whole plate slices together; it
+    // arranges them on the bed too, unless --dont-arrange is also set (which the
+    // existing arrange===false path adds, keeping the parts' original
+    // coordinates while still combining them). Either way every part survives.
+    // (Verified vs PrusaSlicer source version_2.9.5: LoadPrintData.cpp
+    // models.push_back per file; ProcessActions.cpp `for (Model& model :
+    // models)`; ProcessTransform.cpp --merge combines, arranges iff !dont_arrange.)
+    const mergeDistinct = extraInputs.length > 0 ? true : params.merge;
+
     const platePart: SliceParams = {
       ...params,
       extraInputs,
+      merge: mergeDistinct,
       copies: singlePartCopies && singlePartCopies > 1 ? singlePartCopies : undefined,
     };
     const outName = plates.length > 1 ? `${baseName}-${i + 1}of${plates.length}` : baseName;
@@ -552,6 +637,36 @@ export async function openInGui(
   const { code, stderr } = await run("open", ["-a", APP_NAME, ...paths], 15_000);
   if (code !== 0) {
     throw new Error(`Couldn't open PrusaSlicer: ${stderr.trim() || `exit ${code}`}`);
+  }
+}
+
+/**
+ * Open an ALREADY-SLICED .gcode file in PrusaSlicer. This is the honest
+ * realization of "slice, then open to the export page": opening a .gcode makes
+ * PrusaSlicer load it straight into the toolpath PREVIEW (the same view you'd
+ * reach after clicking Slice), showing the print time / filament / layer preview
+ * with G-code export & "Send to printer" available — and NO Slice click needed,
+ * because the file is already sliced. (We do this instead of trying to auto-press
+ * the Slice button, which PrusaSlicer exposes no API for: any action flag like
+ * --export-gcode forces headless mode, so you cannot both slice and show the GUI
+ * in one invocation. Slicing headlessly first, then opening the result, is the
+ * reliable equivalent.)
+ *
+ * No --load is passed: the .gcode already encodes the sliced result, so config
+ * is irrelevant to the preview. Detached + untracked — it's the user's own GUI.
+ */
+export async function openGcodeInGui(gcodePath: string): Promise<void> {
+  if (!existsSync(gcodePath)) {
+    throw new Error(`Sliced G-code not found: ${gcodePath}`);
+  }
+  // Hand off to LaunchServices so an already-open PrusaSlicer is reused; opening
+  // a .gcode association lands on the preview. (Falls back to the binary if the
+  // association isn't registered.)
+  const { code, stderr } = await run("open", ["-a", APP_NAME, gcodePath], 15_000);
+  if (code !== 0) {
+    throw new Error(
+      `Couldn't open the sliced G-code in PrusaSlicer: ${stderr.trim() || `exit ${code}`}`,
+    );
   }
 }
 

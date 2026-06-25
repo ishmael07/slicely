@@ -15,10 +15,12 @@ import {
   getModelInfo,
   slicePlates,
   openInGui,
+  openGcodeInGui,
   writeEffectiveConfig,
   recommendSettings,
   recommendForPlate,
   type RecommendInput,
+  type PlateSliceResult,
 } from "../prusaslicer";
 import {
   getProfileState,
@@ -75,6 +77,67 @@ function recommendInput(input: Record<string, unknown>): RecommendInput {
 
 /** Emit a structured side-channel event to the renderer. */
 export type Emit = (event: AgentEvent) => void;
+
+/** The input properties shared by slice_model and slice_and_open (they take the
+ *  exact same settings/transforms — the only difference is whether the GUI is
+ *  opened afterward). Defined once so the two tools can never drift apart. */
+const SLICE_PROPERTIES: Record<string, unknown> = {
+  path: {
+    type: "string",
+    description:
+      "Absolute path to the model file. Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
+  },
+  goal: {
+    type: "string",
+    enum: ["draft", "quality", "functional"],
+    description: "Print goal driving the recommended baseline. Default quality.",
+  },
+  material: {
+    type: "string",
+    enum: ["PLA", "PETG", "ABS"],
+    description: "Filament family. Default PLA. Also improves weight/cost accuracy.",
+  },
+  layerHeightMm: { type: "number", description: "Override, e.g. 0.2" },
+  fillDensityPct: {
+    type: "number",
+    description: "Override infill density as a percent, 0–100 (e.g. 20).",
+  },
+  fillPattern: {
+    type: "string",
+    description: "Override infill pattern, e.g. gyroid, rectilinear, grid, honeycomb.",
+  },
+  perimeters: { type: "integer", description: "Override wall count." },
+  supportMaterial: { type: "boolean", description: "Override supports on/off." },
+  brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
+  nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
+  copies: {
+    type: "integer",
+    description:
+      "Print N auto-arranged copies of a single model on the plate (e.g. 4). Ignored for multi-part models.",
+  },
+  scale: {
+    type: "number",
+    description: "Uniform scale factor (1 = 100%, 0.5 = half size, 2 = double).",
+  },
+  rotateDeg: {
+    type: "number",
+    description: "Rotate the model around the Z axis by this many degrees.",
+  },
+  merge: {
+    type: "boolean",
+    description: "Merge multiple parts into one object after arranging.",
+  },
+  arrangeParts: {
+    type: "boolean",
+    description:
+      "Auto-arrange multiple parts on the bed (default true). Set false to keep original positions.",
+  },
+  filamentColour: {
+    type: "string",
+    description:
+      'Filament colour as hex, e.g. "#33aaff". PREVIEW-ONLY on a single-extruder printer — does not change the physical print.',
+  },
+};
 
 export const TOOLS: Anthropic.Tool[] = [
   {
@@ -236,62 +299,24 @@ export const TOOLS: Anthropic.Tool[] = [
       "preview filament colour.",
     input_schema: {
       type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description:
-            "Absolute path to the model file. Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
-        },
-        goal: {
-          type: "string",
-          enum: ["draft", "quality", "functional"],
-          description: "Print goal driving the recommended baseline. Default quality.",
-        },
-        material: {
-          type: "string",
-          enum: ["PLA", "PETG", "ABS"],
-          description: "Filament family. Default PLA. Also improves weight/cost accuracy.",
-        },
-        layerHeightMm: { type: "number", description: "Override, e.g. 0.2" },
-        fillDensityPct: {
-          type: "number",
-          description: "Override infill density as a percent, 0–100 (e.g. 20).",
-        },
-        fillPattern: {
-          type: "string",
-          description: "Override infill pattern, e.g. gyroid, rectilinear, grid, honeycomb.",
-        },
-        perimeters: { type: "integer", description: "Override wall count." },
-        supportMaterial: { type: "boolean", description: "Override supports on/off." },
-        brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
-        nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
-        copies: {
-          type: "integer",
-          description:
-            "Print N auto-arranged copies of a single model on the plate (e.g. 4). Ignored for multi-part models.",
-        },
-        scale: {
-          type: "number",
-          description: "Uniform scale factor (1 = 100%, 0.5 = half size, 2 = double).",
-        },
-        rotateDeg: {
-          type: "number",
-          description: "Rotate the model around the Z axis by this many degrees.",
-        },
-        merge: {
-          type: "boolean",
-          description: "Merge multiple parts into one object after arranging.",
-        },
-        arrangeParts: {
-          type: "boolean",
-          description: "Auto-arrange multiple parts on the bed (default true). Set false to keep original positions.",
-        },
-        filamentColour: {
-          type: "string",
-          description:
-            'Filament colour as hex, e.g. "#33aaff". PREVIEW-ONLY on a single-extruder printer — does not change the physical print.',
-        },
-      },
+      properties: SLICE_PROPERTIES,
+    },
+  },
+  {
+    name: "slice_and_open",
+    description:
+      "Slice the active model headlessly for ACCURATE metrics (print time, filament, cost — shown once), " +
+      "THEN open the finished result in PrusaSlicer's toolpath PREVIEW / export view so the user does NOT have " +
+      "to press Slice. Use this when the user says things like 'slice it then open it for me', 'prep it and let " +
+      "me take over', or wants real numbers AND to finish/export in the GUI. Takes the SAME settings as " +
+      "slice_model (goal, material, overrides, copies, scale, rotate, merge, colour). Honest note: PrusaSlicer " +
+      "has no API to auto-press its Slice button, so Slicely slices first and opens the already-sliced G-code — " +
+      "which lands PrusaSlicer right on the preview/export page with nothing left to click. For a multi-plate " +
+      "split, only the first plate opens (the GUI shows one bed at a time); the rest are sliced and openable " +
+      "from their panels.",
+    input_schema: {
+      type: "object",
+      properties: SLICE_PROPERTIES,
     },
   },
   {
@@ -484,111 +509,41 @@ export async function executeTool(
     }
 
     case "slice_model": {
-      const path = resolvePath(input.path);
+      const { summary } = await runSlice(input, emit);
+      return summary;
+    }
 
-      // Explicit per-setting overrides the user/agent passed on this call.
-      const explicit = explicitParams(input);
-      const hasExplicit = Object.keys(explicit).length > 0;
-      const reInput = recommendInput(input);
-      if (reInput.material) sessionState.material = reInput.material;
+    case "slice_and_open": {
+      // Slice headlessly for accurate metrics (shown once, per the renderer's
+      // per-turn dedup), THEN open the prepared result in PrusaSlicer. This is
+      // the honest "slice, then open to the export page" flow: PrusaSlicer has
+      // no API to auto-press Slice and any action flag forces headless, so we
+      // slice first and open the finished G-code — which lands the GUI straight
+      // on the toolpath preview / export view with zero Slice clicks.
+      const slice = await runSlice(input, emit);
 
-      // The full set of distinct sliceable parts to print. When using the
-      // active model, that's all its parts; otherwise just the given path.
-      const usingActive = !input.path;
-      const allParts =
-        usingActive && sessionState.lastModelParts.length > 1
-          ? sessionState.lastModelParts
-          : [path];
-      const isMultiPart = allParts.length > 1;
+      // STEP can't be sliced headlessly — runSlice already errors for it, so we
+      // only reach here with a real sliced result. Open the first plate's G-code
+      // into the preview. (A multi-plate split has one .gcode per plate; the GUI
+      // shows one bed at a time, so we open plate 1 and tell the user the rest
+      // are sliced and revealable.)
+      const firstPlate = slice.job.plates[0];
+      let openNote: string;
+      if (firstPlate?.gcodePath) {
+        try {
+          await openGcodeInGui(firstPlate.gcodePath);
+          openNote =
+            slice.job.plates.length > 1
+              ? ` Opened plate 1 of ${slice.job.plates.length} in PrusaSlicer's preview — already sliced, no need to press Slice. The other plates are sliced too; open each from its panel to review them one at a time.`
+              : ` Opened it in PrusaSlicer's preview — already sliced, so you can review the toolpaths and export the G-code without pressing Slice.`;
+        } catch (err) {
+          openNote = ` (Couldn't open PrusaSlicer automatically: ${(err as Error).message})`;
+        }
+      } else {
+        openNote = "";
+      }
 
-      // Build a goal/geometry-aware baseline. For a multi-part plate, aggregate
-      // supports/brim across ALL parts so a tricky part isn't left unsupported.
-      const infos: ModelInfo[] = [];
-      for (const p of allParts) infos.push(await getModelInfo(p));
-      emit({ type: "info", info: infos[0] });
-      const rec = isMultiPart
-        ? recommendForPlate(infos, reInput)
-        : recommendSettings(infos[0], reInput);
-      const baselineWarnings = rec.warnings;
-      sessionState.lastRecommendation = rec.params;
-
-      const params: SliceParams = { ...rec.params, ...explicit };
-
-      // Config: user's own → synthesized (printer + material) → defaults.
-      const resolved = resolveSliceConfig(
-        sessionState.printerKey,
-        sessionState.material,
-      );
-      // Remember exactly what we sliced, so open_in_slicer can open the GUI
-      // with identical settings.
-      sessionState.lastSliceParams = params;
-      sessionState.lastConfigIni = resolved.configIni;
-      // Usable bed area = printer bed minus a margin (defaults to MK-class).
-      const bedDim = resolved.printer?.bed ?? { x: 250, y: 210, z: 210 };
-      const bed = { w: bedDim.x, d: bedDim.y };
-
-      // Slice — splitting across multiple plates when parts/copies overflow one bed.
-      const stem = `${baseStem(allParts[0])}${isMultiPart ? "-plate" : ""}`;
-      const job = await slicePlates(
-        allParts,
-        params,
-        bed,
-        resolved.configIni,
-        stem,
-      );
-
-      // Emit one metrics panel per plate.
-      for (const m of job.plates) emit({ type: "metrics", metrics: m });
-
-      const plateCount = job.plates.length;
-      const colourNote = params.filamentColour
-        ? " Colour set for the preview only — it doesn't change a single-extruder print."
-        : "";
-      const configNote =
-        resolved.source !== "user-config"
-          ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"
-          : "";
-      const oversizedNote = job.oversized.length
-        ? `\n⚠ ${job.oversized.length} part(s) are bigger than the bed and were skipped — scale them down or split them.`
-        : "";
-      const plateNote =
-        plateCount > 1
-          ? ` Split across ${plateCount} plates (they don't all fit one bed) — print them one after another.`
-          : isMultiPart
-            ? ` ${allParts.length} parts arranged on one plate.`
-            : params.copies && params.copies > 1
-              ? ` ${params.copies} copies auto-arranged.`
-              : "";
-
-      const usedLine =
-        `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
-        `${params.fillDensityPct ?? "default"}% ${params.fillPattern ?? ""} infill, ` +
-        `${params.perimeters ?? "default"} walls, ` +
-        `supports ${params.supportMaterial ? "on" : "off"}, ` +
-        `brim ${params.brimWidthMm ?? 0} mm` +
-        (hasExplicit ? " (your overrides applied)" : " (recommended)") +
-        "." +
-        plateNote +
-        colourNote +
-        (baselineWarnings.length ? `\nHeads up: ${baselineWarnings.join(" ")}` : "") +
-        oversizedNote;
-
-      // Summarize each plate's metrics.
-      const plateLines = job.plates
-        .map((m) => {
-          const label =
-            plateCount > 1 ? `Plate ${m.plateIndex}/${m.plateCount}: ` : "";
-          return (
-            `${label}` +
-            (m.estimatedPrintTime ? `${m.estimatedPrintTime}` : "time n/a") +
-            (m.filamentUsedG !== undefined ? `, ${m.filamentUsedG.toFixed(1)} g` : "") +
-            (m.filamentCost !== undefined ? `, ${m.filamentCost.toFixed(2)} cost` : "") +
-            (m.layerCount !== undefined ? `, ${m.layerCount} layers` : "")
-          );
-        })
-        .join("\n");
-
-      return `Sliced successfully.\n${usedLine}${configNote}\n${plateLines}`;
+      return `${slice.summary}${openNote}`;
     }
 
     case "open_in_slicer": {
@@ -643,6 +598,145 @@ export async function executeTool(
   }
 }
 
+/** Result of a slice run, shared by slice_model and slice_and_open. */
+interface SliceRun {
+  /** Human/model-facing summary string (identical to slice_model's output). */
+  summary: string;
+  /** The per-plate slice job (metrics + oversized parts). */
+  job: PlateSliceResult;
+  /** The exact effective params used (also stored in sessionState). */
+  params: SliceParams;
+  /** The config .ini resolved for this slice. */
+  configIni?: string;
+}
+
+/**
+ * Run a full slice: recommend a baseline from geometry + goal, apply explicit
+ * overrides, resolve the printer config, split across plates as needed, emit the
+ * info + per-plate metrics events, and build the summary string. Extracted from
+ * the slice_model case so slice_and_open reuses the IDENTICAL slice (and the
+ * exact params/config it produced) instead of re-resolving — keeping the GUI
+ * hand-off consistent with what was sliced. Errors for STEP (can't slice a
+ * non-mesh headlessly), matching the rest of the pipeline.
+ */
+async function runSlice(
+  input: Record<string, unknown>,
+  emit: Emit,
+): Promise<SliceRun> {
+  const path = resolvePath(input.path);
+
+  // Explicit per-setting overrides the user/agent passed on this call.
+  const explicit = explicitParams(input);
+  const hasExplicit = Object.keys(explicit).length > 0;
+  const reInput = recommendInput(input);
+  if (reInput.material) sessionState.material = reInput.material;
+
+  // The full set of distinct sliceable parts to print. When using the active
+  // model, that's all its parts; otherwise just the given path.
+  const usingActive = !input.path;
+  const allParts =
+    usingActive && sessionState.lastModelParts.length > 1
+      ? sessionState.lastModelParts
+      : [path];
+
+  // Guard: a STEP/STP file can't be sliced headlessly (it's GUI-import-only).
+  // Steer the caller to open_in_slicer instead of failing deep in PrusaSlicer.
+  if (!SLICEABLE_PART_EXTS.has(extLower(allParts[0]))) {
+    throw new Error(
+      `"${allParts[0]}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
+    );
+  }
+
+  const isMultiPart = allParts.length > 1;
+
+  // Build a goal/geometry-aware baseline. For a multi-part plate, aggregate
+  // supports/brim across ALL parts so a tricky part isn't left unsupported.
+  const infos: ModelInfo[] = [];
+  for (const p of allParts) infos.push(await getModelInfo(p));
+  emit({ type: "info", info: infos[0] });
+  const rec = isMultiPart
+    ? recommendForPlate(infos, reInput)
+    : recommendSettings(infos[0], reInput);
+  const baselineWarnings = rec.warnings;
+  sessionState.lastRecommendation = rec.params;
+
+  const params: SliceParams = { ...rec.params, ...explicit };
+
+  // Config: user's own → synthesized (printer + material) → defaults.
+  const resolved = resolveSliceConfig(
+    sessionState.printerKey,
+    sessionState.material,
+  );
+  // Remember exactly what we sliced, so open_in_slicer can open the GUI with
+  // identical settings.
+  sessionState.lastSliceParams = params;
+  sessionState.lastConfigIni = resolved.configIni;
+  // Usable bed area = printer bed minus a margin (defaults to MK-class).
+  const bedDim = resolved.printer?.bed ?? { x: 250, y: 210, z: 210 };
+  const bed = { w: bedDim.x, d: bedDim.y };
+
+  // Slice — splitting across multiple plates when parts/copies overflow one bed.
+  const stem = `${baseStem(allParts[0])}${isMultiPart ? "-plate" : ""}`;
+  const job = await slicePlates(allParts, params, bed, resolved.configIni, stem);
+
+  // Emit one metrics panel per plate.
+  for (const m of job.plates) emit({ type: "metrics", metrics: m });
+
+  const plateCount = job.plates.length;
+  const colourNote = params.filamentColour
+    ? " Colour set for the preview only — it doesn't change a single-extruder print."
+    : "";
+  const configNote =
+    resolved.source !== "user-config"
+      ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"
+      : "";
+  const oversizedNote = job.oversized.length
+    ? `\n⚠ ${job.oversized.length} part(s) are bigger than the bed and were skipped — scale them down or split them.`
+    : "";
+  const plateNote =
+    plateCount > 1
+      ? ` Split across ${plateCount} plates (they don't all fit one bed) — print them one after another.`
+      : isMultiPart
+        ? ` ${allParts.length} parts arranged on one plate.`
+        : params.copies && params.copies > 1
+          ? ` ${params.copies} copies auto-arranged.`
+          : "";
+
+  const usedLine =
+    `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
+    `${params.fillDensityPct ?? "default"}% ${params.fillPattern ?? ""} infill, ` +
+    `${params.perimeters ?? "default"} walls, ` +
+    `supports ${params.supportMaterial ? "on" : "off"}, ` +
+    `brim ${params.brimWidthMm ?? 0} mm` +
+    (hasExplicit ? " (your overrides applied)" : " (recommended)") +
+    "." +
+    plateNote +
+    colourNote +
+    (baselineWarnings.length ? `\nHeads up: ${baselineWarnings.join(" ")}` : "") +
+    oversizedNote;
+
+  // Summarize each plate's metrics.
+  const plateLines = job.plates
+    .map((m) => {
+      const label = plateCount > 1 ? `Plate ${m.plateIndex}/${m.plateCount}: ` : "";
+      return (
+        `${label}` +
+        (m.estimatedPrintTime ? `${m.estimatedPrintTime}` : "time n/a") +
+        (m.filamentUsedG !== undefined ? `, ${m.filamentUsedG.toFixed(1)} g` : "") +
+        (m.filamentCost !== undefined ? `, ${m.filamentCost.toFixed(2)} cost` : "") +
+        (m.layerCount !== undefined ? `, ${m.layerCount} layers` : "")
+      );
+    })
+    .join("\n");
+
+  return {
+    summary: `Sliced successfully.\n${usedLine}${configNote}\n${plateLines}`,
+    job,
+    params,
+    configIni: resolved.configIni,
+  };
+}
+
 /** Short human-facing label for the tool, shown while it runs. */
 export function toolLabel(name: string, input: Record<string, unknown>): string {
   switch (name) {
@@ -664,6 +758,8 @@ export function toolLabel(name: string, input: Record<string, unknown>): string 
       return "Working out optimal settings…";
     case "slice_model":
       return "Slicing…";
+    case "slice_and_open":
+      return "Slicing, then opening PrusaSlicer…";
     case "open_in_slicer":
       return "Opening PrusaSlicer…";
     default:

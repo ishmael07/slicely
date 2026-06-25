@@ -1,10 +1,23 @@
 // Bin-pack parts across one or more print plates when they don't all fit on a
-// single bed. PrusaSlicer's CLI arranges only onto ONE plate, so Slicely does
-// the plate-splitting itself: each plate is sliced separately.
+// single bed. PrusaSlicer's CLI arranges only onto ONE plate (it slices bed 0
+// and silently drops anything off-bed), so Slicely does the plate-splitting
+// itself: each plate is sliced separately.
 //
 // The packer is a simple, conservative shelf/skyline bin-pack on the parts'
-// XY footprints (with 90° rotation allowed). It deliberately over-estimates
-// spacing so a packed plate won't overflow once PrusaSlicer re-arranges it.
+// XY footprints. It MIRRORS what PrusaSlicer's CLI arranger actually does, so a
+// plate the packer accepts is one PrusaSlicer can place without dropping a part:
+//   • NO part rotation, anywhere. The CLI arranger is built with rotations=false
+//     (verified vs PrusaSlicer source, version_2.9.5) and centers each part in
+//     its imported orientation, so it never spins a part to make it fit. Both
+//     the packing decision AND the oversized check use the as-imported footprint
+//     — a part that would fit only rotated is genuinely oversized (the slicer
+//     won't turn it), and a multi-part fit that needs rotation would overflow.
+//   • No bed-edge margin (the arranger uses distance_from_bed = 0); `spacing` is
+//     only the gap left BETWEEN parts.
+//   • Object gap defaults to min_object_distance = duplicate_distance (6 mm), and
+//     grows under sequential printing (complete_objects). The caller passes the
+//     profile-derived spacing (and the footprints already include scale/rotate)
+//     so the packer matches the slicer's real arrange.
 
 /** A part to place, identified by its file path + footprint in mm. */
 export interface PlatePart {
@@ -31,22 +44,33 @@ export interface PackResult {
   oversized: PlatePart[];
 }
 
-/** Gap left between parts and around the bed edge, in mm. */
-const SPACING = 6;
+/** Default gap left between parts, in mm. Matches PrusaSlicer's
+ *  min_object_distance default (duplicate_distance = 6 mm). Callers should pass
+ *  the profile-derived spacing instead of relying on this. */
+export const DEFAULT_SPACING = 6;
 
 /**
  * Pack parts onto as few plates as possible using a first-fit shelf algorithm.
  * Parts are sorted tallest-footprint first; each is placed on the current shelf
- * if it fits, else a new shelf, else a new plate. Rotation by 90° is tried when
- * the part doesn't fit in its original orientation.
+ * if it fits, else a new shelf, else a new plate. Parts are NOT rotated — the
+ * grouping must match PrusaSlicer's un-rotated arrange so a packed plate never
+ * overflows and drops a part. `spacing` is the gap left BETWEEN parts in mm
+ * (the slicer's min_object_distance for the active profile); there is no
+ * bed-edge margin, matching the arranger's distance_from_bed = 0.
  */
-export function packPlates(parts: PlatePart[], bed: BedArea): PackResult {
-  const usableW = bed.w - SPACING;
-  const usableD = bed.d - SPACING;
-
+export function packPlates(
+  parts: PlatePart[],
+  bed: BedArea,
+  spacing: number = DEFAULT_SPACING,
+): PackResult {
   const oversized: PlatePart[] = [];
   const fits = parts.filter((p) => {
-    const ok = orientFits(p, usableW, usableD);
+    // Oversized ONLY if the part exceeds the bed in its AS-IMPORTED orientation.
+    // PrusaSlicer's CLI arranger is rotations=false and centers a part WITHOUT
+    // spinning it (distance_from_bed = 0), so a part that would only fit rotated
+    // is genuinely oversized — the slicer won't turn it to make it fit. No
+    // spacing here: spacing is the gap BETWEEN parts, not a bed-edge margin.
+    const ok = fitsAsImported(p, bed.w, bed.d);
     if (!ok) oversized.push(p);
     return ok;
   });
@@ -60,14 +84,14 @@ export function packPlates(parts: PlatePart[], bed: BedArea): PackResult {
   for (const part of sorted) {
     let placed = false;
     for (const plate of plates) {
-      if (placeOnPlate(plate, part, usableW, usableD)) {
+      if (placeOnPlate(plate, part, bed.w, bed.d, spacing)) {
         placed = true;
         break;
       }
     }
     if (!placed) {
       const plate: Plate = { parts: [] };
-      placeOnPlate(plate, part, usableW, usableD); // always fits (passed `fits`)
+      placeOnPlate(plate, part, bed.w, bed.d, spacing); // fits (passed `fits`)
       plates.push(plate);
     }
   }
@@ -75,51 +99,48 @@ export function packPlates(parts: PlatePart[], bed: BedArea): PackResult {
   return { plates, oversized };
 }
 
-/** True if the part fits the bed in either orientation. */
-function orientFits(p: PlatePart, w: number, d: number): boolean {
-  return (
-    (p.w + SPACING <= w && p.d + SPACING <= d) ||
-    (p.d + SPACING <= w && p.w + SPACING <= d)
-  );
+/** True if the part fits the bed in its AS-IMPORTED orientation. PrusaSlicer's
+ *  CLI arranger does not rotate parts, so we must NOT credit a 90° turn the
+ *  slicer would never make — a part that fits only rotated is oversized. No
+ *  inter-part spacing applies to the oversized check (it's a bed-fit test). */
+function fitsAsImported(p: PlatePart, bedW: number, bedD: number): boolean {
+  return p.w <= bedW && p.d <= bedD;
 }
 
 /**
  * Try to add `part` to `plate` using a shelf model: track shelves as rows that
- * grow downward. We approximate occupancy with running shelf widths/heights —
- * good enough to decide grouping (PrusaSlicer does the real arrange per plate).
+ * grow downward. `spacing` is the gap left BETWEEN parts on a shelf and BETWEEN
+ * shelves (not against the bed edge). Parts are placed WITHOUT rotation so the
+ * grouping matches PrusaSlicer's un-rotated arrange (which would otherwise drop
+ * a part that only "fit" rotated).
  */
 function placeOnPlate(
   plate: Plate,
   part: PlatePart,
   bedW: number,
   bedD: number,
+  spacing: number,
 ): boolean {
   // Reconstruct shelves from already-placed parts (small N, so recompute).
-  const shelves = buildShelves(plate.parts, bedW, bedD);
-  const fw = part.w + SPACING;
-  const fd = part.d + SPACING;
+  const shelves = buildShelves(plate.parts, bedW, spacing);
 
   for (const shelf of shelves) {
-    // Fits on this shelf without rotation?
-    if (shelf.usedW + fw <= bedW && fd <= shelf.height) {
+    // Add to this shelf if there's room widthwise (gap before this part) and the
+    // part is no taller than the shelf band.
+    const needW = shelf.usedW > 0 ? spacing + part.w : part.w;
+    if (shelf.usedW + needW <= bedW && part.d <= shelf.height) {
       plate.parts.push(part);
       return true;
     }
-    // Try rotated.
-    if (shelf.usedW + fd <= bedW && fw <= shelf.height) {
-      plate.parts.push({ path: part.path, w: part.d, d: part.w });
-      return true;
-    }
   }
 
-  // New shelf below the existing ones?
-  const usedHeight = shelves.reduce((s, sh) => s + sh.height, 0);
-  if (usedHeight + fd <= bedD && fw <= bedW) {
+  // New shelf below the existing ones (gap before the new shelf if any exist).
+  const occupiedH =
+    shelves.reduce((s, sh) => s + sh.height, 0) +
+    Math.max(0, shelves.length - 1) * spacing;
+  const needH = shelves.length > 0 ? spacing + part.d : part.d;
+  if (occupiedH + needH <= bedD && part.w <= bedW) {
     plate.parts.push(part);
-    return true;
-  }
-  if (usedHeight + fw <= bedD && fd <= bedW) {
-    plate.parts.push({ path: part.path, w: part.d, d: part.w });
     return true;
   }
 
@@ -131,18 +152,19 @@ interface Shelf {
   height: number;
 }
 
-/** Greedily reconstruct shelves for the parts already on a plate. */
-function buildShelves(parts: PlatePart[], bedW: number, _bedD: number): Shelf[] {
+/** Greedily reconstruct shelves for the parts already on a plate. `usedW` is the
+ *  occupied width including inter-part gaps; `height` is the tallest part on the
+ *  shelf (its depth band). */
+function buildShelves(parts: PlatePart[], bedW: number, spacing: number): Shelf[] {
   const shelves: Shelf[] = [];
   for (const p of parts) {
-    const fw = p.w + SPACING;
-    const fd = p.d + SPACING;
     const shelf = shelves[shelves.length - 1];
-    if (shelf && shelf.usedW + fw <= bedW) {
-      shelf.usedW += fw;
-      shelf.height = Math.max(shelf.height, fd);
+    const needW = shelf && shelf.usedW > 0 ? spacing + p.w : p.w;
+    if (shelf && shelf.usedW + needW <= bedW) {
+      shelf.usedW += needW;
+      shelf.height = Math.max(shelf.height, p.d);
     } else {
-      shelves.push({ usedW: fw, height: fd });
+      shelves.push({ usedW: p.w, height: p.d });
     }
   }
   return shelves;

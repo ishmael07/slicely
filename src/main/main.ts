@@ -8,7 +8,7 @@ import type { AgentEvent, UserSettings, SettingsState } from "../shared/types";
 import { configState } from "./config";
 import { sessionState } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
-import { getStatus, openInGui } from "./prusaslicer";
+import { getStatus, openInGui, openGcodeInGui } from "./prusaslicer";
 import {
   getSettings,
   updateSettings,
@@ -102,6 +102,17 @@ async function acceptIncoming(paths: string[]) {
   return results;
 }
 
+/** Open a path (or arranged set) in PrusaSlicer. A lone .gcode is routed to the
+ *  guarded G-code preview opener (no --load, lands on the toolpath/export view);
+ *  models go through the normal GUI open. */
+async function openPath(path: string | string[]): Promise<void> {
+  if (typeof path === "string" && path.toLowerCase().endsWith(".gcode")) {
+    await openGcodeInGui(path);
+    return;
+  }
+  await openInGui(path);
+}
+
 function registerIpc(): void {
   // Renderer → agent: a user message. Streams events back via IPC.agentEvent.
   ipcMain.handle(IPC.sendMessage, async (_e, message: string) => {
@@ -129,12 +140,14 @@ function registerIpc(): void {
   });
 
   // Direct "Open in slicer" actions from a card / metric-panel button.
-  // Accepts one path or many (many = one arranged plate).
+  // Accepts one path or many (many = one arranged plate). A single .gcode goes
+  // through openGcodeInGui so it lands on PrusaSlicer's read-only toolpath
+  // preview (already-sliced — nothing to click), never a --load model import.
   ipcMain.handle(IPC.importModel, async (_e, path: string | string[]) => {
-    await openInGui(path);
+    await openPath(path);
   });
   ipcMain.handle(IPC.openSlicer, async (_e, path: string | string[]) => {
-    await openInGui(path);
+    await openPath(path);
   });
 
   // Reveal a sliced G-code file in Finder.

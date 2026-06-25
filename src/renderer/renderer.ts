@@ -59,8 +59,14 @@ let activeThinkingRaw = "";
 let renderFrame = 0;
 /** Active tool chips by tool name, so tool_end can finalize the right one. */
 const activeChips = new Map<string, HTMLDivElement>();
-/** Path of the most-recently downloaded/sliced model, for action buttons. */
-let activeModelPath: string | null = null;
+/** Per-turn dedup of the Model-dimensions panel. inspect_model, recommend_settings,
+ *  and slice_model can each emit {type:"info"} for the SAME file within one turn
+ *  (the happy path runs all three), which would render the panel 2–3×. We render
+ *  it once per filePath per turn and clear on "done", so a later turn still shows a
+ *  fresh panel. Metrics are deliberately NOT deduped: gcodePath is deterministic,
+ *  so a legitimate same-turn re-slice (e.g. "now try draft") must still show its
+ *  own panel. */
+const seenInfoPaths = new Set<string>();
 /** Latest settings snapshot (model catalog + current selection). */
 let settings: SettingsState | null = null;
 /** Files staged in the composer tray, awaiting send (stage-on-drop, slice-on-send). */
@@ -417,7 +423,6 @@ function submit(): void {
  *  clear the tray. The agent instruction is built separately. */
 function submitWithAttachments(text: string, files: UploadResult[]): void {
   const active = files.find((f) => f.sliceable) ?? files[0];
-  activeModelPath = active.localPath;
 
   addUserMessage(
     text ||
@@ -488,7 +493,6 @@ function handleAgentEvent(event: AgentEvent): void {
       renderCards(event.models);
       break;
     case "download":
-      activeModelPath = event.result.localPath;
       renderDownloadNote(event.model, event.result.fileName);
       break;
     case "info":
@@ -506,6 +510,9 @@ function handleAgentEvent(event: AgentEvent): void {
     case "done":
       endBotBubble();
       setBusy(false);
+      // A turn can span many tool iterations; "done" is the true turn boundary,
+      // so the per-turn panel dedup resets here (not at startTurn).
+      seenInfoPaths.clear();
       break;
   }
   scrollToBottom();
@@ -715,7 +722,12 @@ function renderDownloadNote(model: ModelResult, fileName: string): void {
 
 function renderInfo(info: ModelInfo): void {
   endBotBubble();
-  if (info.filePath) activeModelPath = info.filePath;
+  // Dedup the Model panel: inspect_model, recommend_settings, and slice_model can
+  // each emit {type:"info"} for the same file within one turn — render it once.
+  if (info.filePath) {
+    if (seenInfoPaths.has(info.filePath)) return; // already shown this turn
+    seenInfoPaths.add(info.filePath);
+  }
 
   const panel = el("div", "panel");
   panel.appendChild(panelHead("◳", "Model"));
@@ -766,14 +778,13 @@ function renderMetrics(m: SliceMetrics): void {
   }
   panel.appendChild(grid);
 
-  // Action row: open the sliced result / reveal the G-code file.
+  // Action row: open the ALREADY-SLICED result (lands on PrusaSlicer's toolpath
+  // preview / export view — no re-slice needed) / reveal the G-code in Finder.
   const actions = el("div", "actions");
   const openBtn = el("button", "btn primary") as HTMLButtonElement;
-  openBtn.textContent = "Open in PrusaSlicer";
-  openBtn.onclick = () => {
-    const p = activeModelPath ?? m.gcodePath;
-    void api.openSlicer(p);
-  };
+  openBtn.textContent = "Open sliced preview";
+  openBtn.title = "Open the sliced G-code in PrusaSlicer's preview — already sliced, nothing to click";
+  openBtn.onclick = () => void api.openSlicer(m.gcodePath);
   actions.appendChild(openBtn);
 
   const revealBtn = el("button", "btn") as HTMLButtonElement;
