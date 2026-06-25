@@ -19,6 +19,7 @@ const api: SlicelyApi = {
   openInSlicer: (path) => ipcRenderer.invoke(IPC.importModel, path),
   revealPath: (path) => ipcRenderer.invoke(IPC.revealPath, path),
   openSlicer: (path) => ipcRenderer.invoke(IPC.openSlicer, path),
+  openGcode: (path) => ipcRenderer.invoke(IPC.openGcode, path),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.updateSettings, patch),
   pickFile: () => ipcRenderer.invoke(IPC.pickFile),

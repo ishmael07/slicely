@@ -8,7 +8,12 @@ import type { AgentEvent, UserSettings, SettingsState } from "../shared/types";
 import { configState } from "./config";
 import { sessionState } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
-import { getStatus, openInGui, openGcodeInGui } from "./prusaslicer";
+import {
+  getStatus,
+  openInGui,
+  openGcodeInGui,
+  writeEffectiveConfig,
+} from "./prusaslicer";
 import {
   getSettings,
   updateSettings,
@@ -102,15 +107,26 @@ async function acceptIncoming(paths: string[]) {
   return results;
 }
 
-/** Open a path (or arranged set) in PrusaSlicer. A lone .gcode is routed to the
- *  guarded G-code preview opener (no --load, lands on the toolpath/export view);
- *  models go through the normal GUI open. */
-async function openPath(path: string | string[]): Promise<void> {
-  if (typeof path === "string" && path.toLowerCase().endsWith(".gcode")) {
-    await openGcodeInGui(path);
-    return;
+/** Open one or more MODELS in the regular PrusaSlicer editor, ready to slice.
+ *  When we have the most recent slice's settings, materialize them to an .ini
+ *  and `--load` it so the editor opens with those exact settings applied — the
+ *  user only has to press Slice once. (This is the DEFAULT "open in PrusaSlicer"
+ *  path: the editable editor, NOT the G-code viewer.) */
+async function openModelInEditor(path: string | string[]): Promise<void> {
+  let guiConfig: string | undefined;
+  // Reuse the exact params + base config of the most recent slice, if any, so
+  // the GUI matches what Slicely sliced. Best-effort — fall back to a bare open.
+  if (sessionState.lastSliceParams) {
+    try {
+      guiConfig = await writeEffectiveConfig(
+        sessionState.lastSliceParams,
+        sessionState.lastConfigIni,
+      );
+    } catch {
+      /* fall back to opening the bare model */
+    }
   }
-  await openInGui(path);
+  await openInGui(path, guiConfig);
 }
 
 function registerIpc(): void {
@@ -139,15 +155,20 @@ function registerIpc(): void {
     if (/^https?:\/\//.test(url)) await shell.openExternal(url);
   });
 
-  // Direct "Open in slicer" actions from a card / metric-panel button.
-  // Accepts one path or many (many = one arranged plate). A single .gcode goes
-  // through openGcodeInGui so it lands on PrusaSlicer's read-only toolpath
-  // preview (already-sliced — nothing to click), never a --load model import.
+  // "Open in PrusaSlicer" actions from a card / metric-panel button. Opens the
+  // MODEL in the regular editor (with the last slice's settings loaded), ready
+  // to slice. Accepts one path or many (many = one arranged plate).
   ipcMain.handle(IPC.importModel, async (_e, path: string | string[]) => {
-    await openPath(path);
+    await openModelInEditor(path);
   });
   ipcMain.handle(IPC.openSlicer, async (_e, path: string | string[]) => {
-    await openPath(path);
+    await openModelInEditor(path);
+  });
+
+  // "View finished slice" — open an already-sliced .gcode in PrusaSlicer's
+  // G-code viewer (the finished toolpath / export view). Opt-in only.
+  ipcMain.handle(IPC.openGcode, async (_e, path: string) => {
+    await openGcodeInGui(path);
   });
 
   // Reveal a sliced G-code file in Finder.

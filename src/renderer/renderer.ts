@@ -59,6 +59,10 @@ let activeThinkingRaw = "";
 let renderFrame = 0;
 /** Active tool chips by tool name, so tool_end can finalize the right one. */
 const activeChips = new Map<string, HTMLDivElement>();
+/** Path of the most-recently downloaded/uploaded/inspected MODEL, so the
+ *  metrics panel's "Open in PrusaSlicer" button reopens the editable model
+ *  (not the G-code). */
+let activeModelPath: string | null = null;
 /** Per-turn dedup of the Model-dimensions panel. inspect_model, recommend_settings,
  *  and slice_model can each emit {type:"info"} for the SAME file within one turn
  *  (the happy path runs all three), which would render the panel 2–3×. We render
@@ -423,6 +427,7 @@ function submit(): void {
  *  clear the tray. The agent instruction is built separately. */
 function submitWithAttachments(text: string, files: UploadResult[]): void {
   const active = files.find((f) => f.sliceable) ?? files[0];
+  activeModelPath = active.localPath;
 
   addUserMessage(
     text ||
@@ -493,6 +498,7 @@ function handleAgentEvent(event: AgentEvent): void {
       renderCards(event.models);
       break;
     case "download":
+      activeModelPath = event.result.localPath;
       renderDownloadNote(event.model, event.result.fileName);
       break;
     case "info":
@@ -722,6 +728,9 @@ function renderDownloadNote(model: ModelResult, fileName: string): void {
 
 function renderInfo(info: ModelInfo): void {
   endBotBubble();
+  // Track the active model path even for a duplicate we suppress — identity is
+  // cheap/idempotent and the "Open in PrusaSlicer" button relies on it.
+  if (info.filePath) activeModelPath = info.filePath;
   // Dedup the Model panel: inspect_model, recommend_settings, and slice_model can
   // each emit {type:"info"} for the same file within one turn — render it once.
   if (info.filePath) {
@@ -778,14 +787,27 @@ function renderMetrics(m: SliceMetrics): void {
   }
   panel.appendChild(grid);
 
-  // Action row: open the ALREADY-SLICED result (lands on PrusaSlicer's toolpath
-  // preview / export view — no re-slice needed) / reveal the G-code in Finder.
+  // Action row. Default = open the MODEL in the regular PrusaSlicer editor with
+  // these settings loaded (ready to slice). "View finished slice" is the opt-in
+  // G-code viewer (the finished toolpath / export view). Reveal opens Finder.
   const actions = el("div", "actions");
   const openBtn = el("button", "btn primary") as HTMLButtonElement;
-  openBtn.textContent = "Open sliced preview";
-  openBtn.title = "Open the sliced G-code in PrusaSlicer's preview — already sliced, nothing to click";
-  openBtn.onclick = () => void api.openSlicer(m.gcodePath);
+  openBtn.textContent = "Open in PrusaSlicer";
+  openBtn.title = "Open the model in PrusaSlicer with these settings loaded — ready to slice";
+  openBtn.onclick = () =>
+    // Editor expects a MODEL. We always have one after a slice (the info event
+    // sets activeModelPath), but if somehow not, open the finished G-code in the
+    // viewer rather than feed a .gcode into the editor's --load path.
+    activeModelPath
+      ? void api.openSlicer(activeModelPath)
+      : void api.openGcode(m.gcodePath);
   actions.appendChild(openBtn);
+
+  const viewBtn = el("button", "btn") as HTMLButtonElement;
+  viewBtn.textContent = "View finished slice";
+  viewBtn.title = "Open the finished G-code in PrusaSlicer's viewer (toolpaths + export)";
+  viewBtn.onclick = () => void api.openGcode(m.gcodePath);
+  actions.appendChild(viewBtn);
 
   const revealBtn = el("button", "btn") as HTMLButtonElement;
   revealBtn.textContent = "Reveal G-code";

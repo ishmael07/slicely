@@ -21,11 +21,11 @@ Tell Slicely what you want to print ("I want to 3D print a model car"). It searc
 | 🧠 **Reason about the print** | Picks accurate settings from the model's geometry **and your goal** — fast (draft), detail (quality), or strength (functional) — plus material (PLA/PETG/ABS) and nozzle. Sets layer height (nozzle-bounded), infill % + pattern, walls, solid layers, supports + threshold, and brim, each with a rationale. Warns on bed-fit, non-watertight meshes, and material gotchas so prints don't fail. |
 | 🖨️ **Printer setup for newcomers** | If you've never run PrusaSlicer's wizard, Slicely detects it and asks which printer you have, then synthesizes a matching config (bed size + nozzle + **filament density/cost** so weight & cost are realistic). Forces plain-text G-code so metrics always parse. Already configured? It uses your profile — the most accurate option. |
 | 🍰 **Slice** | Slices to G-code with PrusaSlicer and reports estimated print time, filament used (g / m), cost, and layer count. "Just slice it" auto-applies the goal-aware recommended settings — no extra step. |
-| 🪄 **Slice, then open it for me** | Say *"slice it then open it for me"* and Slicely slices headlessly for accurate numbers, **then opens the finished result straight into PrusaSlicer's toolpath preview / export page — no Slice click needed**. (PrusaSlicer has no API to auto-press Slice, so Slicely slices first and opens the already-sliced G-code; that lands you right on the export view.) The "Open sliced preview" button on every metrics panel does the same in one click. |
+| 🪄 **Show me the finished slice** | Say *"slice it and open it"*, *"show me the finished product"*, or *"open the export g-code"* and Slicely slices headlessly for accurate numbers, **then opens the finished result in PrusaSlicer's G-code viewer — the toolpath/export view, no Slice click needed**. A "View finished slice" button on every metrics panel does the same. (A plain *"open it"* instead opens the **editable** PrusaSlicer with your settings loaded, ready to slice — PrusaSlicer has no API to auto-press Slice inside the editor, so the only zero-click finished view is the G-code viewer, reserved for these explicit requests.) |
 | 💬 **Clean chat UI** | Replies render as real markdown (headings, **bold**, lists, `code`, callouts), with the model's reasoning in a collapsible "Thought process" block. |
 | 🧠 **Pick model & effort** | A dropdown under the chat box (Cursor/ChatGPT-style) lets you choose the Claude model (Opus 4.8 / Sonnet 4.6 / Haiku 4.5) and reasoning effort. Slicely only sends each model the params it supports, so the picker never errors. |
 | 🟢 **Live slicer status** | A status pill shows in real time whether PrusaSlicer is installed and whether you have it **open** — and it doesn't confuse Slicely's own background slices for the app being open. |
-| 🖥️ **Hand off** | Opens any model, the whole multi-part plate, or the sliced G-code in the PrusaSlicer GUI, or reveals the G-code in Finder. |
+| 🖥️ **Hand off** | Opens any model (or the whole multi-part plate) in the **editable PrusaSlicer** with your settings loaded, ready to slice; opens the finished **G-code in the viewer** when you ask to see the result; or reveals the G-code in Finder. |
 
 ---
 
@@ -91,8 +91,8 @@ Type what you want to print, or click one of the example prompts:
 - *"I want to 3D print a model car"* → Slicely searches and shows cards.
 - Click **Import** on a Thingiverse card → it downloads, reads the dimensions, and recommends settings.
 - *"Slice it with 0.2mm layers and 20% infill"* → real print-time and filament metrics.
-- *"Slice it then open it for me"* → slices for accurate numbers, then opens PrusaSlicer **on the sliced preview/export page** — nothing left to click.
-- *"Open it in PrusaSlicer"* → hands off to the GUI with your settings loaded.
+- *"Open it in PrusaSlicer"* → opens the **editable PrusaSlicer** with your settings loaded — just press Slice.
+- *"Slice it and open it"* / *"show me the finished product"* → slices for accurate numbers, then opens the finished **G-code in PrusaSlicer's viewer** (toolpaths + export) — nothing left to click.
 
 **Upload your own model:** drag an STL (or 3MF / OBJ / AMF / STEP, or a **ZIP of parts**) anywhere onto the window, or click the **＋** button next to the composer. It's copied into your workspace, becomes the active model, and Slicely inspects + offers to slice it. Multiple parts (or a ZIP) are arranged together on one plate.
 
@@ -100,7 +100,7 @@ Type what you want to print, or click one of the example prompts:
 
 **Choose model & effort:** click the model pill **under the chat box** (e.g. "Opus 4.8 · high"). Pick Opus 4.8 / Sonnet 4.6 / Haiku 4.5 and a reasoning-effort tier. Your choice persists across restarts, and unavailable effort tiers are greyed out per model.
 
-> **On "live" GUI control:** PrusaSlicer has no API to puppeteer its already-open window or auto-press the Slice button. So Slicely does the honest equivalent: it prepares the plate (arrange / copies / transforms) and slices it **headlessly**, then opens the result for you — *"open it"* loads the model with your settings ready to slice, while *"slice it then open it"* opens the **already-sliced G-code** straight onto PrusaSlicer's preview/export page (nothing to click). More reliable than fragile click-automation.
+> **On "live" GUI control:** PrusaSlicer has no API to puppeteer its already-open window or auto-press the Slice button inside the editor. So Slicely does the honest equivalent: *"open it"* opens the **editable PrusaSlicer** with the model arranged and your settings loaded — you press Slice once. Only when you explicitly ask to **see the finished result** (*"slice it and open it"*, *"show me the finished slice"*) does Slicely slice **headlessly** and open the **already-sliced G-code in the viewer** (toolpaths + export, nothing to click). More reliable than fragile click-automation.
 
 For Printables/MakerWorld cards, click **Open in browser** to download from the source.
 

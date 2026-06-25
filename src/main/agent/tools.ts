@@ -305,15 +305,15 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "slice_and_open",
     description:
-      "Slice the active model headlessly for ACCURATE metrics (print time, filament, cost — shown once), " +
-      "THEN open the finished result in PrusaSlicer's toolpath PREVIEW / export view so the user does NOT have " +
-      "to press Slice. Use this when the user says things like 'slice it then open it for me', 'prep it and let " +
-      "me take over', or wants real numbers AND to finish/export in the GUI. Takes the SAME settings as " +
-      "slice_model (goal, material, overrides, copies, scale, rotate, merge, colour). Honest note: PrusaSlicer " +
-      "has no API to auto-press its Slice button, so Slicely slices first and opens the already-sliced G-code — " +
-      "which lands PrusaSlicer right on the preview/export page with nothing left to click. For a multi-plate " +
-      "split, only the first plate opens (the GUI shows one bed at a time); the rest are sliced and openable " +
-      "from their panels.",
+      "Slice the active model headlessly for ACCURATE metrics (print time, filament, cost — shown once), THEN open " +
+      "the FINISHED result in PrusaSlicer's G-code VIEWER (the toolpath preview / export view). Use this ONLY when " +
+      "the user explicitly wants to SEE THE FINISHED RESULT — e.g. 'show me the finished product', 'show me the " +
+      "finished slice', 'slice it and open it', 'open the export/g-code', 'let me see the toolpaths/preview'. Do " +
+      "NOT use it for a plain 'open it' (that's open_in_slicer — the editable editor). Takes the SAME settings as " +
+      "slice_model (goal, material, overrides, copies, scale, rotate, merge, colour). Honest note: this opens the " +
+      "already-sliced G-code (the viewer is read-only — toolpaths + export, nothing to click); PrusaSlicer has no " +
+      "API to auto-press the Slice button in the editor. For a multi-plate split, the finished G-code for plate 1 " +
+      "opens; the rest are sliced too and openable from their panels.",
     input_schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
@@ -322,9 +322,11 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "open_in_slicer",
     description:
-      "Open a model in the PrusaSlicer GUI with slicing settings ALREADY APPLIED, so the GUI matches a headless slice. " +
-      "By default it reuses the settings of the most recent slice (or recommends from the model's geometry). " +
-      "Pass any setting below to open with that specific value. Use when the user wants to take over manually.",
+      "Open a MODEL in the regular, editable PrusaSlicer editor with slicing settings ALREADY APPLIED, ready to " +
+      "slice (the user just presses Slice). This is the DEFAULT for 'open it' / 'open in PrusaSlicer' / 'let me " +
+      "tweak it myself' / 'take over manually'. By default it reuses the settings of the most recent slice (or " +
+      "recommends from the model's geometry). Pass any setting below to open with that specific value. NOT the " +
+      "finished G-code viewer — for 'show me the finished slice', use slice_and_open.",
     input_schema: {
       type: "object",
       properties: {
@@ -534,8 +536,8 @@ export async function executeTool(
           await openGcodeInGui(firstPlate.gcodePath);
           openNote =
             slice.job.plates.length > 1
-              ? ` Opened plate 1 of ${slice.job.plates.length} in PrusaSlicer's preview — already sliced, no need to press Slice. The other plates are sliced too; open each from its panel to review them one at a time.`
-              : ` Opened it in PrusaSlicer's preview — already sliced, so you can review the toolpaths and export the G-code without pressing Slice.`;
+              ? ` Opened the finished plate 1 of ${slice.job.plates.length} in PrusaSlicer's G-code viewer — already sliced, no need to press Slice. The other plates are sliced too; open each from its panel to review them one at a time.`
+              : ` Opened the finished slice in PrusaSlicer's G-code viewer — review the toolpaths and export the G-code, no Slice click needed.`;
         } catch (err) {
           openNote = ` (Couldn't open PrusaSlicer automatically: ${(err as Error).message})`;
         }

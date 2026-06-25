@@ -161,6 +161,7 @@ export const IPC = {
   getConfigState: "slicely:getConfigState",
   revealPath: "slicely:revealPath",
   openSlicer: "slicely:openSlicer",
+  openGcode: "slicely:openGcode",
   getSettings: "slicely:getSettings",
   updateSettings: "slicely:updateSettings",
   uploadFiles: "slicely:uploadFiles",
@@ -241,9 +242,13 @@ export interface SlicelyApi {
   openInSlicer(path: string | string[]): Promise<void>;
   /** Reveal a local file (e.g. sliced G-code) in Finder. */
   revealPath(path: string): Promise<void>;
-  /** Launch the PrusaSlicer GUI with one or more files loaded (multiple =
-   *  one arranged plate). */
+  /** Open one or more MODELS in the regular PrusaSlicer editor (multiple = one
+   *  arranged plate), ready to slice. NOT for G-code — use openGcode for that. */
   openSlicer(path: string | string[]): Promise<void>;
+  /** Open an already-sliced .gcode in PrusaSlicer's G-code viewer (the finished
+   *  toolpath preview / export view). Use only when the user wants the finished
+   *  result, not the editable editor. */
+  openGcode(gcodePath: string): Promise<void>;
   /** Get the current model/effort selection and the available catalog. */
   getSettings(): Promise<SettingsState>;
   /** Persist a model/effort change; returns the updated selection. */
