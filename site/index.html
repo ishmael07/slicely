@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slicely — AI that finds &amp; slices 3D models for you</title>
+  <meta name="description" content="Slicely is a macOS chat-bar app: tell it what you want to 3D print, and its AI agent finds a free model online, picks smart settings, and slices it with PrusaSlicer — print time, filament, and cost in one conversation." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Slicely — AI that finds &amp; slices 3D models for you" />
+  <meta property="og:description" content="Tell it what to print. It finds a free model, picks smart settings, and slices it with PrusaSlicer — all in a little chat bar for your Mac." />
+  <meta property="og:type" content="website" />
+
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ambient background -->
+  <div class="bg" aria-hidden="true">
+    <div class="aurora"></div>
+    <div class="grid"></div>
+  </div>
+
+  <!-- nav -->
+  <header class="nav">
+    <a class="brand" href="#top" aria-label="Slicely home">
+      <span class="brand-mark" aria-hidden="true">🍰</span>
+      <span class="brand-name">Slicely</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+    <button class="btn btn-primary btn-sm" data-open-waitlist>Get access</button>
+  </header>
+
+  <main id="top">
+    <!-- hero -->
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow reveal">
+          <span class="dot"></span> For macOS · powered by Claude + PrusaSlicer
+        </div>
+        <h1 class="reveal" data-delay="1">
+          Say what you want to print.<br />
+          <span class="grad">Slicely finds it and slices it.</span>
+        </h1>
+        <p class="lead reveal" data-delay="2">
+          A little chat bar for your Mac. Tell its AI agent
+          <em>“I want to print a model car,”</em> and it searches the open-source
+          libraries, picks optimal settings from the model’s real geometry, and slices it
+          with PrusaSlicer — handing you accurate print time, filament, and cost.
+        </p>
+        <div class="hero-cta reveal" data-delay="3">
+          <button class="btn btn-primary" data-open-waitlist>
+            Get access <span class="arrow">→</span>
+          </button>
+          <a class="btn btn-ghost" href="#how">See how it works</a>
+        </div>
+        <p class="hero-note reveal" data-delay="4">Free · bring your own Claude key · no account required</p>
+      </div>
+
+      <!-- animated app mockup -->
+      <div class="hero-app reveal" data-delay="3" aria-hidden="true">
+        <div class="app-window">
+          <div class="app-bar">
+            <span class="tl-dot"></span><span class="tl-dot"></span><span class="tl-dot"></span>
+            <span class="app-title">Slicely</span>
+            <span class="status-pill"><span class="status-dot"></span> PrusaSlicer ready</span>
+          </div>
+          <div class="app-body">
+            <div class="msg user">I want to 3D print a desk cable holder</div>
+            <div class="msg bot">
+              <span class="typing"><i></i><i></i><i></i></span>
+              <div class="bot-text">
+                Found <b>3 free models</b>. I’d go with this one — clean geometry, prints
+                without supports. Recommended: <b>0.2 mm</b> layers, <b>15%</b> gyroid infill.
+              </div>
+            </div>
+            <div class="metrics">
+              <div class="metric"><span class="m-k">Print time</span><span class="m-v">1h 24m</span></div>
+              <div class="metric"><span class="m-k">Filament</span><span class="m-v">18 g · 6.1 m</span></div>
+              <div class="metric"><span class="m-k">Cost</span><span class="m-v">$0.41</span></div>
+            </div>
+          </div>
+          <div class="app-input">
+            <span class="caret-line">Slice it for strength</span>
+            <span class="send">↑</span>
+          </div>
+        </div>
+        <div class="app-glow"></div>
+      </div>
+    </section>
+
+    <!-- how it works -->
+    <section class="how" id="how">
+      <h2 class="section-title reveal">How it works</h2>
+      <p class="section-sub reveal" data-delay="1">From a sentence to print-ready G-code, in one conversation.</p>
+      <div class="steps">
+        <div class="step reveal" data-delay="1">
+          <div class="step-icon">💬</div>
+          <h3>You ask</h3>
+          <p>Tell the chat what you want. It’s powered by <b>Claude</b> — pick Opus, Sonnet, or Haiku in the model menu.</p>
+        </div>
+        <div class="step reveal" data-delay="2">
+          <div class="step-icon">🔎</div>
+          <h3>It finds (or you upload)</h3>
+          <p>Searches Thingiverse, Printables &amp; MakerWorld — or drag in your own <b>STL · 3MF · OBJ · STEP</b> or a ZIP of parts.</p>
+        </div>
+        <div class="step reveal" data-delay="3">
+          <div class="step-icon">🧠</div>
+          <h3>It reasons</h3>
+          <p>Reads the model’s real geometry, then dials in layer height, infill, supports &amp; brim for your goal.</p>
+        </div>
+        <div class="step reveal" data-delay="4">
+          <div class="step-icon">🍰</div>
+          <h3>It slices</h3>
+          <p>Hands it to <b>PrusaSlicer</b> and generates clean G-code — with real print time, filament &amp; cost.</p>
+        </div>
+        <div class="step reveal" data-delay="4">
+          <div class="step-icon">🖨️</div>
+          <h3>You print</h3>
+          <p>Open the result in PrusaSlicer or save the G-code straight to your printer’s SD card and go.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- features -->
+    <section class="features" id="features">
+      <h2 class="section-title reveal">Everything in one conversation</h2>
+      <div class="feature-grid">
+        <article class="card reveal">
+          <div class="card-icon">🔎</div>
+          <h3>Finds free models</h3>
+          <p>Searches Thingiverse, Printables &amp; MakerWorld at once — thumbnails, creators, licenses.</p>
+        </article>
+        <article class="card reveal" data-delay="1">
+          <div class="card-icon">🧠</div>
+          <h3>Reasons about the print</h3>
+          <p>Picks layer height, infill, walls, supports &amp; brim from the model’s geometry and your goal.</p>
+        </article>
+        <article class="card reveal" data-delay="2">
+          <div class="card-icon">📐</div>
+          <h3>Inspects real geometry</h3>
+          <p>Reads true dimensions, volume, triangle count &amp; watertightness before it commits.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">🧩</div>
+          <h3>Multi-part &amp; multi-plate</h3>
+          <p>Auto-arranges parts, splits across plates when they don’t fit, and slices each one.</p>
+        </article>
+        <article class="card reveal" data-delay="1">
+          <div class="card-icon">📤</div>
+          <h3>Your own CAD too</h3>
+          <p>Drag in STL · 3MF · OBJ · AMF · STEP — or a ZIP of parts — and it flows straight to slicing.</p>
+        </article>
+        <article class="card reveal" data-delay="2">
+          <div class="card-icon">🍰</div>
+          <h3>Real numbers</h3>
+          <p>Estimated print time, filament in grams &amp; metres, cost, and layer count — every slice.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- requirements / CTA -->
+    <section class="cta">
+      <div class="cta-inner reveal">
+        <h2>Ready when you are</h2>
+        <p>Slicely runs on <b>macOS</b> and drives your local
+          <a href="https://www.prusa3d.com/page/prusaslicer_424/" target="_blank" rel="noopener">PrusaSlicer</a>.
+          Searching &amp; importing work without it; inspecting &amp; slicing need it installed.</p>
+        <button class="btn btn-primary btn-lg" data-open-waitlist>Get access <span class="arrow">→</span></button>
+        <p class="cta-fine">Bring your own Claude API key · your key stays on your Mac.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span class="brand"><span class="brand-mark" aria-hidden="true">🍰</span> Slicely</span>
+    <span class="footer-links">
+      <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">GitHub</a>
+      <span>·</span>
+      <span>MIT licensed</span>
+      <span>·</span>
+      <span>Made by ishmael07</span>
+    </span>
+  </footer>
+
+  <!-- waitlist modal -->
+  <div class="modal-root" id="waitlist" hidden>
+    <div class="modal-backdrop" data-close-waitlist></div>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wl-title">
+      <button class="modal-x" data-close-waitlist aria-label="Close">×</button>
+      <div class="modal-body" data-state="form">
+        <h2 id="wl-title">Get early access</h2>
+        <p class="modal-sub">Slicely is rolling out gradually. Drop your details and we’ll email you a download link.</p>
+        <form id="waitlist-form" novalidate>
+          <label>
+            <span>Name</span>
+            <input type="text" name="name" autocomplete="name" placeholder="Ada Lovelace" />
+          </label>
+          <label>
+            <span>Email <i>*</i></span>
+            <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
+          </label>
+          <label>
+            <span>What would you print?</span>
+            <input type="text" name="usage" placeholder="Cosplay props, functional parts, minis…" />
+          </label>
+          <label>
+            <span>Anything else?</span>
+            <textarea name="comments" rows="2" placeholder="Optional — what made you curious?"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Join the list</button>
+          <p class="form-err" hidden></p>
+        </form>
+      </div>
+      <div class="modal-body success" data-state="success" hidden>
+        <div class="success-emoji">🎉</div>
+        <h2>You’re on the list!</h2>
+        <p class="modal-sub">We’ll email you a download link as access opens up. Thanks for the curiosity.</p>
+        <button class="btn btn-ghost btn-block" data-close-waitlist>Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
