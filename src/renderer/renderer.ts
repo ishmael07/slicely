@@ -793,7 +793,7 @@ function renderMetrics(m: SliceMetrics): void {
   const actions = el("div", "actions");
   const openBtn = el("button", "btn primary") as HTMLButtonElement;
   openBtn.textContent = "Open in PrusaSlicer";
-  openBtn.title = "Open the model in PrusaSlicer with these settings loaded — ready to slice";
+  openBtn.title = "Open the editable model with these settings loaded and auto-slicing on — click Preview to see toolpaths";
   openBtn.onclick = () =>
     // Editor expects a MODEL. We always have one after a slice (the info event
     // sets activeModelPath), but if somehow not, open the finished G-code in the

@@ -32,6 +32,7 @@ import type {
 } from "../shared/types";
 import { packPlates, type PlatePart } from "./plates";
 import { getConfig } from "./config";
+import { ensureBackgroundProcessing } from "./profiles";
 
 const APP_NAME = "PrusaSlicer";
 /** macOS LaunchServices bundle id for PrusaSlicer (used by lsappinfo). */
@@ -668,6 +669,61 @@ export async function openGcodeInGui(gcodePath: string): Promise<void> {
       `Couldn't open the sliced G-code in PrusaSlicer: ${stderr.trim() || `exit ${code}`}`,
     );
   }
+}
+
+/** What happened when opening the editable editor in pre-sliced mode. */
+export interface EditorSlicedResult {
+  /** background_processing is on for this launch, so the model auto-slices as it
+   *  loads — the user just clicks Preview. */
+  preSliced: boolean;
+  /** PrusaSlicer was already running, so we could NOT enable pre-slicing for
+   *  this session (it read its prefs at launch and rewrites them on exit, which
+   *  would clobber our change). The user can press Slice, or quit it first and
+   *  reopen via Slicely to get auto-slicing. */
+  alreadyOpen: boolean;
+  /** PrusaSlicer.ini doesn't exist yet (wizard never run) — couldn't enable. */
+  noConfig: boolean;
+}
+
+/**
+ * Open one or more MODELS in the regular, EDITABLE PrusaSlicer editor, set up so
+ * the slice is already done when the user gets there. PrusaSlicer's editor can't
+ * be told (via CLI/API) to open on its Preview tab or to auto-press Slice — any
+ * action flag forces headless mode, and tab/Slice control is internal-only
+ * (verified vs PrusaSlicer source, version_2.9.5). The honest closest thing is
+ * its `background_processing` preference: with it on, loading a model auto-slices
+ * in the BACKGROUND, so the toolpaths are ready the instant the user clicks the
+ * Preview tab — no "Slice now" click, no wait.
+ *
+ * CRUCIAL timing: PrusaSlicer reads its prefs at launch and REWRITES PrusaSlicer.ini
+ * on exit. So enabling the pref only sticks if we do it while the app is CLOSED,
+ * right before the launch we trigger (that session reads bg=1 and persists it on
+ * its own exit). If a GUI is already running, we must NOT touch the pref — our
+ * write wouldn't apply to the running session and would be clobbered when it
+ * quits — so we just open the model and report `alreadyOpen` so the caller can be
+ * honest (press Slice this time, or quit + reopen via Slicely for auto-slicing).
+ *
+ * Returns what happened so the caller can tell the user exactly what to expect.
+ */
+export async function openModelInEditorSliced(
+  filePath: string | string[],
+  configIni?: string,
+): Promise<EditorSlicedResult> {
+  const guiAlreadyOpen = await isGuiRunning();
+
+  // Only enable the pref when the app is closed (otherwise the write is futile
+  // and gets clobbered on the running app's exit).
+  let preSliced = false;
+  let noConfig = false;
+  if (!guiAlreadyOpen) {
+    const bg = ensureBackgroundProcessing();
+    preSliced = bg.enabled;
+    noConfig = bg.noConfig;
+  }
+
+  await openInGui(filePath, configIni);
+
+  return { preSliced, alreadyOpen: guiAlreadyOpen, noConfig };
 }
 
 function clamp(n: number, lo: number, hi: number): number {

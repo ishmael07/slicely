@@ -101,6 +101,79 @@ function listPresets(kind: "printer" | "print" | "filament"): string[] {
   }
 }
 
+/** Outcome of trying to turn on PrusaSlicer's `background_processing` pref. */
+export interface BackgroundProcessingResult {
+  /** True if the pref is now on (either we set it, or it already was). */
+  enabled: boolean;
+  /** True only when WE just flipped it from off/absent → on. */
+  changed: boolean;
+  /** True when PrusaSlicer.ini doesn't exist yet (wizard never run) — we can't
+   *  safely synthesize the whole app config, so the pref can't be enabled. */
+  noConfig: boolean;
+}
+
+/**
+ * Ensure PrusaSlicer's `background_processing` app preference is ON, so opening a
+ * model in the editor auto-slices it in the background — the toolpaths are ready
+ * the instant the user clicks the Preview tab (no "Slice now" click, no wait).
+ *
+ * This is a GLOBAL PrusaSlicer preference (top-level bare `key = value` line in
+ * <dataDir>/PrusaSlicer.ini, before any [section] — verified vs AppConfig.cpp
+ * save() which writes the empty-section keys first). We edit it in place,
+ * preserving every other line, and only when it isn't already on.
+ *
+ * IMPORTANT: PrusaSlicer reads PrusaSlicer.ini at launch and OVERWRITES it on
+ * exit, so a change we make only takes effect for a GUI started AFTER the write
+ * — and would be clobbered if a GUI is already running. Callers should enable
+ * this BEFORE launching the editor and surface `changed` (restart needed) to the
+ * user when the app is already open.
+ */
+export function ensureBackgroundProcessing(): BackgroundProcessingResult {
+  if (!existsSync(APP_INI)) {
+    return { enabled: false, changed: false, noConfig: true };
+  }
+  let text: string;
+  try {
+    text = readFileSync(APP_INI, "utf8");
+  } catch {
+    return { enabled: false, changed: false, noConfig: true };
+  }
+
+  const lines = text.split(/\r?\n/);
+  // Top-level keys live before the FIRST [section] header.
+  let firstSection = lines.findIndex((l) => l.trim().startsWith("["));
+  if (firstSection === -1) firstSection = lines.length;
+
+  const keyRe = /^\s*background_processing\s*=\s*(\S+)/i;
+  for (let i = 0; i < firstSection; i++) {
+    const m = lines[i].match(keyRe);
+    if (m) {
+      const on = m[1] === "1" || m[1].toLowerCase() === "true";
+      if (on) return { enabled: true, changed: false, noConfig: false };
+      // Present but off → flip it in place.
+      lines[i] = lines[i].replace(/=\s*\S+/, "= 1");
+      writeIniSafely(lines.join("\n"));
+      return { enabled: true, changed: true, noConfig: false };
+    }
+  }
+
+  // Not present anywhere in the top-level block → insert it as the first
+  // top-level line (still before any [section]).
+  lines.splice(firstSection, 0, "background_processing = 1");
+  writeIniSafely(lines.join("\n"));
+  return { enabled: true, changed: true, noConfig: false };
+}
+
+/** Write the updated PrusaSlicer.ini, swallowing errors (non-fatal: the worst
+ *  case is the user clicks Slice once, exactly as before). */
+function writeIniSafely(contents: string): void {
+  try {
+    writeFileSync(APP_INI, contents, "utf8");
+  } catch {
+    /* leave the pref unchanged; the editor still opens, user clicks Slice */
+  }
+}
+
 /** Read the last-selected printer preset name from PrusaSlicer.ini [presets]. */
 function readSelectedPrinter(): string | undefined {
   try {

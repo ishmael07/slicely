@@ -14,7 +14,7 @@ import {
   getStatus,
   getModelInfo,
   slicePlates,
-  openInGui,
+  openModelInEditorSliced,
   openGcodeInGui,
   writeEffectiveConfig,
   recommendSettings,
@@ -322,11 +322,15 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "open_in_slicer",
     description:
-      "Open a MODEL in the regular, editable PrusaSlicer editor with slicing settings ALREADY APPLIED, ready to " +
-      "slice (the user just presses Slice). This is the DEFAULT for 'open it' / 'open in PrusaSlicer' / 'let me " +
-      "tweak it myself' / 'take over manually'. By default it reuses the settings of the most recent slice (or " +
-      "recommends from the model's geometry). Pass any setting below to open with that specific value. NOT the " +
-      "finished G-code viewer — for 'show me the finished slice', use slice_and_open.",
+      "Open a MODEL in the regular, EDITABLE PrusaSlicer editor with slicing settings ALREADY APPLIED. This is the " +
+      "DEFAULT for 'open it' / 'open in PrusaSlicer' / 'let me tweak it myself' / 'slice it and open in the editor' " +
+      "/ 'take over manually'. When PrusaSlicer is closed, Slicely also turns on its background-processing " +
+      "preference, so the model auto-slices as it loads — the user just clicks the Preview tab to see the finished " +
+      "toolpaths (no Slice click). If PrusaSlicer is already running, pre-slicing can't be set for that session, so " +
+      "the user presses Slice (the result message explains this and how to get auto-slice). By default it reuses " +
+      "the settings of the most recent slice (or recommends from the model's geometry). Pass any setting below to " +
+      "open with that specific value. This keeps the model EDITABLE — for the read-only finished G-code viewer, " +
+      "use slice_and_open.",
     input_schema: {
       type: "object",
       properties: {
@@ -584,15 +588,27 @@ export async function executeTool(
         }
       }
 
-      // Materialize the effective config and launch the GUI with it loaded.
+      // Materialize the effective config and open the EDITABLE editor with it
+      // loaded — in pre-sliced mode (background_processing) so the slice is ready
+      // the moment the user clicks Preview.
       const guiConfig = await writeEffectiveConfig(params, baseConfig);
-      await openInGui(paths, guiConfig);
+      const opened = await openModelInEditorSliced(paths, guiConfig);
 
       const n = Array.isArray(paths) ? paths.length : 1;
       const applied = guiConfig ? " with your slicing settings applied" : "";
-      return n > 1
-        ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied} — tweak and print from there.`
-        : `Opened ${primary} in PrusaSlicer${applied}.`;
+      // Honest guidance about the Preview/Slice step, based on what we could set.
+      const previewNote = opened.preSliced
+        ? " It'll slice in the background as it loads — click the Preview tab to see the finished toolpaths (no need to press Slice)."
+        : opened.alreadyOpen
+          ? " PrusaSlicer was already open, so press Slice to generate the toolpaths. (Tip: quit PrusaSlicer and ask me to open it again and I'll turn on auto-slice-on-load so you only click Preview.)"
+          : opened.noConfig
+            ? " Press Slice to generate the toolpaths (run PrusaSlicer's first-time setup once so I can enable auto-slicing on load)."
+            : " Press Slice to generate the toolpaths.";
+      const lead =
+        n > 1
+          ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied}.`
+          : `Opened ${primary} in PrusaSlicer${applied}.`;
+      return lead + previewNote;
     }
 
     default:

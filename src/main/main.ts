@@ -10,7 +10,7 @@ import { sessionState } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
 import {
   getStatus,
-  openInGui,
+  openModelInEditorSliced,
   openGcodeInGui,
   writeEffectiveConfig,
 } from "./prusaslicer";
@@ -107,11 +107,11 @@ async function acceptIncoming(paths: string[]) {
   return results;
 }
 
-/** Open one or more MODELS in the regular PrusaSlicer editor, ready to slice.
- *  When we have the most recent slice's settings, materialize them to an .ini
- *  and `--load` it so the editor opens with those exact settings applied — the
- *  user only has to press Slice once. (This is the DEFAULT "open in PrusaSlicer"
- *  path: the editable editor, NOT the G-code viewer.) */
+/** Open one or more MODELS in the regular, EDITABLE PrusaSlicer editor with the
+ *  most recent slice's settings loaded, in pre-sliced mode (background
+ *  processing) so the toolpaths are ready under the Preview tab — the user only
+ *  taps Preview, no Slice click. (This is the DEFAULT "open in PrusaSlicer"
+ *  path: the editable editor, NOT the read-only G-code viewer.) */
 async function openModelInEditor(path: string | string[]): Promise<void> {
   let guiConfig: string | undefined;
   // Reuse the exact params + base config of the most recent slice, if any, so
@@ -126,7 +126,7 @@ async function openModelInEditor(path: string | string[]): Promise<void> {
       /* fall back to opening the bare model */
     }
   }
-  await openInGui(path, guiConfig);
+  await openModelInEditorSliced(path, guiConfig);
 }
 
 function registerIpc(): void {
