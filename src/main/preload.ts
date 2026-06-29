@@ -22,6 +22,8 @@ const api: SlicelyApi = {
   openGcode: (path) => ipcRenderer.invoke(IPC.openGcode, path),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.updateSettings, patch),
+  updatePreferences: (patch) =>
+    ipcRenderer.invoke(IPC.updatePreferences, patch),
   pickFile: () => ipcRenderer.invoke(IPC.pickFile),
   uploadFiles: (paths) => ipcRenderer.invoke(IPC.uploadFiles, paths),
   resizeWindow: (height) => ipcRenderer.send(IPC.resizeWindow, height),

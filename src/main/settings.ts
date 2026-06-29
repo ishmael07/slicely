@@ -10,6 +10,15 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfig } from "./config";
+import { KNOWN_PRINTERS } from "./profiles";
+import type {
+  PrintPreferences,
+  PrinterPref,
+  PrintGoal,
+  PrintMaterial,
+  FeatureMode,
+  SupportStyle,
+} from "../shared/types";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -74,6 +83,9 @@ export const EFFORT_LEVELS: EffortLevel[] = [
 export interface Settings {
   model: string;
   effort: EffortLevel;
+  /** The user's persistent printing preferences (printer + slice defaults).
+   *  Empty object = nothing saved yet. */
+  preferences: PrintPreferences;
 }
 
 const SETTINGS_FILE = () => join(getConfig().workdir, "settings.json");
@@ -88,7 +100,100 @@ function defaults(): Settings {
   const model = MODEL_CATALOG.some((m) => m.id === cfg.model)
     ? cfg.model
     : "claude-opus-4-8";
-  return { model, effort };
+  return { model, effort, preferences: {} };
+}
+
+const GOALS = ["draft", "quality", "functional"];
+const MATERIALS = ["PLA", "PETG", "ABS"];
+const FEATURE_MODES = ["auto", "on", "off"];
+const SUPPORT_STYLES = ["grid", "organic", "snug"];
+
+/** Validate + normalize a stored/incoming preferences object, dropping anything
+ *  malformed so a hand-edited or stale settings.json can't poison a slice. */
+function sanitizePreferences(raw: unknown): PrintPreferences {
+  const out: PrintPreferences = {};
+  if (!raw || typeof raw !== "object") return out;
+  const p = raw as Record<string, unknown>;
+
+  // Printer: a known catalog key, or "custom" with explicit bed + nozzle.
+  if (p.printer && typeof p.printer === "object") {
+    const pr = p.printer as Record<string, unknown>;
+    const key = typeof pr.key === "string" ? pr.key : "";
+    if (key === "custom") {
+      const bed = pr.bed as Record<string, unknown> | undefined;
+      const nozzle = num(pr.nozzleMm);
+      const printer: PrinterPref = { key: "custom" };
+      if (typeof pr.label === "string") printer.label = pr.label;
+      // Bed dims must be finite and POSITIVE — a 0/negative bed would poison the
+      // synthesized config and the plate-fit math (everything reads "oversized").
+      const bx = pos(bed?.x),
+        by = pos(bed?.y),
+        bz = pos(bed?.z);
+      if (bx !== undefined && by !== undefined && bz !== undefined) {
+        printer.bed = { x: bx, y: by, z: bz };
+      }
+      if (nozzle !== undefined && nozzle > 0) printer.nozzleMm = nozzle;
+      // A custom printer is only useful with at least a bed; else drop it.
+      if (printer.bed) out.printer = printer;
+    } else if (KNOWN_PRINTERS[key]) {
+      out.printer = { key, label: KNOWN_PRINTERS[key].label };
+    }
+  }
+
+  if (typeof p.material === "string" && MATERIALS.includes(p.material)) {
+    out.material = p.material as PrintMaterial;
+  }
+  if (typeof p.goal === "string" && GOALS.includes(p.goal)) {
+    out.goal = p.goal as PrintGoal;
+  }
+  const fill = num(p.fillDensityPct);
+  if (fill !== undefined) out.fillDensityPct = clampPct(fill);
+  if (typeof p.fillPattern === "string" && p.fillPattern) {
+    out.fillPattern = p.fillPattern;
+  }
+  if (typeof p.supports === "string" && FEATURE_MODES.includes(p.supports)) {
+    out.supports = p.supports as FeatureMode;
+  }
+  if (
+    typeof p.supportStyle === "string" &&
+    SUPPORT_STYLES.includes(p.supportStyle)
+  ) {
+    out.supportStyle = p.supportStyle as SupportStyle;
+  }
+  if (typeof p.brim === "string" && FEATURE_MODES.includes(p.brim)) {
+    out.brim = p.brim as FeatureMode;
+  }
+  const brimW = num(p.brimWidthMm);
+  if (brimW !== undefined && brimW >= 0) out.brimWidthMm = brimW;
+
+  return out;
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+/** A finite, strictly-positive number, or undefined. */
+function pos(v: unknown): number | undefined {
+  const n = num(v);
+  return n !== undefined && n > 0 ? n : undefined;
+}
+function clampPct(n: number): number {
+  return Math.min(100, Math.max(0, Math.round(n)));
+}
+
+/** Resolve the effective bed + nozzle for a saved printer preference. A custom
+ *  printer uses its typed geometry; a known key uses the catalog. Returns
+ *  undefined when no printer is saved. */
+export function printerGeometry(
+  pref: PrinterPref | undefined,
+): { bed: { x: number; y: number; z: number }; nozzleMm: number } | undefined {
+  if (!pref) return undefined;
+  if (pref.key === "custom") {
+    if (!pref.bed) return undefined;
+    return { bed: pref.bed, nozzleMm: pref.nozzleMm ?? 0.4 };
+  }
+  const known = KNOWN_PRINTERS[pref.key];
+  return known ? { bed: known.bed, nozzleMm: known.nozzleMm } : undefined;
 }
 
 export function getSettings(): Settings {
@@ -106,6 +211,7 @@ export function getSettings(): Settings {
         saved.effort && (EFFORT_LEVELS as string[]).includes(saved.effort)
           ? (saved.effort as EffortLevel)
           : base.effort,
+      preferences: sanitizePreferences(saved.preferences),
     };
   } catch {
     cached = base;
@@ -124,6 +230,33 @@ export function updateSettings(patch: Partial<Settings>): Settings {
     next.effort = patch.effort;
   }
 
+  return persist(next);
+}
+
+/**
+ * Merge a partial preferences patch into the saved preferences and persist.
+ * Each field is validated; a field set to `null` is CLEARED (so the user can
+ * un-set a saved default from the UI). Returns the full updated settings.
+ */
+export function updatePreferences(
+  patch: Partial<Record<keyof PrintPreferences, unknown>>,
+): Settings {
+  const cur = getSettings();
+  // Build a candidate object: start from current, apply nulls as deletions and
+  // everything else through the sanitizer (which silently drops bad values).
+  const merged: Record<string, unknown> = { ...cur.preferences };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete merged[k];
+    else merged[k] = v;
+  }
+  const next: Settings = {
+    ...cur,
+    preferences: sanitizePreferences(merged),
+  };
+  return persist(next);
+}
+
+function persist(next: Settings): Settings {
   cached = next;
   try {
     writeFileSync(SETTINGS_FILE(), JSON.stringify(next, null, 2), "utf8");
@@ -131,6 +264,11 @@ export function updateSettings(patch: Partial<Settings>): Settings {
     /* non-fatal — settings just won't persist this session */
   }
   return next;
+}
+
+/** The user's saved printing preferences (printer + slice defaults). */
+export function getPreferences(): PrintPreferences {
+  return getSettings().preferences;
 }
 
 export function modelOption(id: string): ModelOption | undefined {

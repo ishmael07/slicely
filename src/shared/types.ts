@@ -76,8 +76,18 @@ export interface SliceParams {
   topSolidLayers?: number;
   bottomSolidLayers?: number;
   supportMaterial?: boolean;
-  /** Overhang threshold in degrees (PrusaSlicer support_material_threshold; lower = fewer supports, 0 = auto). */
+  /** Overhang threshold in degrees (PrusaSlicer support_material_threshold).
+   *  0 = PrusaSlicer's AUTOMATIC overhang detection (most accurate). A LOWER
+   *  angle produces MORE supports, HIGHER produces FEWER. (Verified vs source —
+   *  the inverse of an earlier, mistaken comment.) */
   supportThresholdDeg?: number;
+  /** Support generation style — PrusaSlicer support_material_style: "grid"
+   *  (classic/normal) or "organic" (tree, lighter & easier to remove; needs
+   *  PrusaSlicer ≥ 2.6). "snug" is also valid. */
+  supportStyle?: string;
+  /** Only grow supports from the build plate, never on top of the model
+   *  (support_material_buildplate_only). */
+  supportBuildplateOnly?: boolean;
   brimWidthMm?: number; // 0 = none
   nozzleDiameterMm?: number; // e.g. 0.4
 
@@ -122,6 +132,14 @@ export interface SliceMetrics {
   plateCount?: number;
   /** How many parts/copies are on this plate. */
   partsOnPlate?: number;
+  /** True when the sliced G-code actually contains support extrusions
+   *  (detected by scanning for ";TYPE:Support material" lines). This is the
+   *  ground-truth signal that supports were generated — not just requested. */
+  supportsGenerated?: boolean;
+  /** Plain-language notes about anything Slicely auto-corrected to make this
+   *  slice succeed or print reliably (e.g. clamped a too-thick layer height,
+   *  fell back from organic→grid supports). Surfaced to the user. */
+  fixes?: string[];
 }
 
 /** Whether/where PrusaSlicer is installed and whether it's running now. */
@@ -164,6 +182,7 @@ export const IPC = {
   openGcode: "slicely:openGcode",
   getSettings: "slicely:getSettings",
   updateSettings: "slicely:updateSettings",
+  updatePreferences: "slicely:updatePreferences",
   uploadFiles: "slicely:uploadFiles",
   pickFile: "slicely:pickFile",
 } as const;
@@ -178,6 +197,57 @@ export interface ConfigState {
 
 /** A reasoning-effort tier the user can pick. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Tri-state for supports/brim in the user's saved defaults:
+ *   - "auto": let Slicely decide from the model's real geometry (recommended).
+ *   - "on":   always generate them, regardless of geometry.
+ *   - "off":  never generate them. */
+export type FeatureMode = "auto" | "on" | "off";
+
+/** Support generation style the user can pin. "grid" = classic/normal,
+ *  "organic" = tree supports (lighter, easier to remove; PrusaSlicer ≥ 2.6). */
+export type SupportStyle = "grid" | "organic" | "snug";
+
+/** A printer the user has saved. Either a known catalog key (bed + nozzle come
+ *  from the catalog) OR "custom" with an explicit bed + nozzle they typed in. */
+export interface PrinterPref {
+  /** Catalog key (e.g. "prusa-mk4", "ender-3", "generic") or "custom". */
+  key: string;
+  /** Display label (catalog label, or the user's custom name). */
+  label?: string;
+  /** Custom build volume in mm — only meaningful when key === "custom". */
+  bed?: { x: number; y: number; z: number };
+  /** Custom nozzle diameter in mm — only meaningful when key === "custom". */
+  nozzleMm?: number;
+}
+
+/**
+ * The user's PERSISTENT printing preferences. Saved to disk so Slicely never
+ * has to re-ask the printer or default settings between sessions. Every field
+ * is optional: an unset field means "no saved default — decide per the model /
+ * the request". Explicit per-slice arguments always win over these.
+ */
+export interface PrintPreferences {
+  /** The saved printer (geometry + nozzle source). Unset ⇒ ask once / generic. */
+  printer?: PrinterPref;
+  /** Default filament family. Unset ⇒ PLA. */
+  material?: PrintMaterial;
+  /** Default print goal (draft/quality/functional). Unset ⇒ ask once / quality. */
+  goal?: PrintGoal;
+  /** Default infill density percent (0–100). Unset ⇒ goal-derived. */
+  fillDensityPct?: number;
+  /** Default infill pattern (e.g. "gyroid"). Unset ⇒ goal-derived. */
+  fillPattern?: string;
+  /** How to handle supports by default. Unset ⇒ "auto". */
+  supports?: FeatureMode;
+  /** Preferred support style when supports are generated. Unset ⇒ "grid". */
+  supportStyle?: SupportStyle;
+  /** How to handle a brim by default. Unset ⇒ "auto". */
+  brim?: FeatureMode;
+  /** Brim width in mm used when brim is "on" (or auto decides to add one).
+   *  Unset ⇒ geometry-derived width. */
+  brimWidthMm?: number;
+}
 
 /** A model the UI offers in its picker, with capability flags for the UI. */
 export interface ModelChoice {
@@ -195,11 +265,28 @@ export interface UserSettings {
   effort: EffortLevel;
 }
 
-/** Settings payload sent to the renderer: current selection + the catalog. */
+/** One printer the settings UI offers in its picker. */
+export interface PrinterChoice {
+  /** Catalog key (e.g. "prusa-mk4"). */
+  key: string;
+  label: string;
+  nozzleMm: number;
+  bed: { x: number; y: number; z: number };
+}
+
+/** Settings payload sent to the renderer: current selection + the catalogs. */
 export interface SettingsState {
   current: UserSettings;
   models: ModelChoice[];
   efforts: EffortLevel[];
+  /** The user's persistent printing preferences (printer + slice defaults). */
+  preferences: PrintPreferences;
+  /** Known printers Slicely can synthesize a config for (for the picker). */
+  printers: PrinterChoice[];
+  /** Filament families the UI offers. */
+  materials: PrintMaterial[];
+  /** Print goals the UI offers. */
+  goals: PrintGoal[];
 }
 
 /** Result of accepting a user-supplied CAD/mesh file into the workspace. */
@@ -253,6 +340,9 @@ export interface SlicelyApi {
   getSettings(): Promise<SettingsState>;
   /** Persist a model/effort change; returns the updated selection. */
   updateSettings(patch: Partial<UserSettings>): Promise<SettingsState>;
+  /** Persist a change to the user's printing preferences (printer + slice
+   *  defaults). Returns the full updated settings state. */
+  updatePreferences(patch: Partial<PrintPreferences>): Promise<SettingsState>;
   /** Open a native file picker for CAD/mesh files; returns accepted uploads. */
   pickFile(): Promise<UploadResult[]>;
   /** Accept dropped files by absolute path; returns accepted uploads. */

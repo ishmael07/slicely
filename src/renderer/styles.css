@@ -605,6 +605,16 @@ details.thinking[open] summary::before {
   -webkit-text-fill-color: transparent;
   font-size: 17px;
 }
+.panel .fix-note {
+  margin-top: 10px;
+  padding: 7px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
+  border: 0.5px solid rgba(251, 191, 36, 0.28);
+  border-radius: var(--radius-xs);
+}
 .panel .actions {
   display: flex;
   gap: 6px;
@@ -789,6 +799,150 @@ details.thinking[open] summary::before {
 .icon-btn:active {
   transform: scale(0.9);
 }
+
+/* ── Settings sheet (printer + slice defaults) ─────────────────────────── */
+.settings-sheet {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 8px 12px 0;
+  padding: 13px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 0.5px solid var(--border-bright);
+  box-shadow: var(--shadow);
+  animation: slide-down 0.28s var(--ease);
+}
+.ss-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ss-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.ss-control {
+  -webkit-app-region: no-drag;
+  flex: 1 1 auto;
+  max-width: 62%;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 6px 9px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ss-control:hover {
+  border-color: var(--border-bright);
+}
+.ss-control:focus {
+  border-color: var(--accent-glow);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+select.ss-control {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%239a9aa6' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 26px;
+}
+.ss-control option {
+  background: #1e1e24;
+  color: var(--text);
+}
+.ss-num {
+  max-width: 90px;
+  cursor: text;
+}
+/* Segmented tri-state control (auto / on / off) */
+.ss-seg {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  background: var(--panel-2);
+  border: 0.5px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+.ss-seg button {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+  text-transform: capitalize;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.ss-seg button:hover {
+  color: var(--text);
+}
+.ss-seg button.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #1a1006;
+}
+.ss-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-xs);
+  background: rgba(0, 0, 0, 0.18);
+  border: 0.5px solid var(--border);
+}
+.ss-custom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+.ss-custom-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-faint);
+}
+.ss-custom-grid input {
+  -webkit-app-region: no-drag;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 6px 8px;
+  outline: none;
+}
+.ss-custom-grid input:focus {
+  border-color: var(--accent-glow);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.ss-save {
+  align-self: flex-end;
+  font-size: 11px;
+}
+.ss-hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
 /* ── Composer model/effort dropdowns (two compact triggers + menus) ─────── */
 .composer-bar {
   display: flex;

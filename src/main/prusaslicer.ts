@@ -19,7 +19,7 @@
 //        slice-in-progress isn't mistaken for the user having the GUI open;
 //        LaunchServices (`lsappinfo`) is the authoritative GUI-app signal.
 import { spawn, execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type {
@@ -246,8 +246,6 @@ export async function slice(
   const stem = outName ?? `${base}${multi ? "-plate" : ""}`;
   const gcodePath = join(cfg.slicesDir, `${stem}.gcode`);
 
-  const args: string[] = ["--export-gcode", ...inputs, "--output", gcodePath];
-
   // Load a printer/filament config. CLI overrides below take precedence over
   // --load values (priority: overrides > --load > 3mf-embedded > compiled
   // defaults). A bare slice with no --load still succeeds against built-in
@@ -258,65 +256,183 @@ export async function slice(
       : cfg.prusaConfigIni && existsSync(cfg.prusaConfigIni)
         ? cfg.prusaConfigIni
         : undefined;
-  if (loadIni) {
-    args.push("--load", loadIni);
-  }
 
-  // ── CLI setting overrides ─────────────────────────────────────────────────
-  // Shared with the GUI-open path (writeEffectiveConfig) so the GUI session
-  // and a headless slice are built from IDENTICAL settings.
-  args.push(...settingArgs(params));
+  // The nozzle Slicely will reason about for the layer-height clamp: explicit
+  // param wins, else read it from the loaded config, else PrusaSlicer's 0.4.
+  const nozzleMm =
+    (typeof params.nozzleDiameterMm === "number" && params.nozzleDiameterMm > 0
+      ? params.nozzleDiameterMm
+      : undefined) ??
+    (await readNozzleFromConfig(loadIni)) ??
+    0.4;
 
-  // ── Plate / multi-part / transforms ───────────────────────────────────────
-  // Multiple inputs auto-arrange by default; only disable when asked.
-  if (multi && params.arrange === false) {
-    args.push("--dont-arrange");
-  }
-  if (params.merge) {
-    args.push("--merge");
-  }
-  // --duplicate makes N auto-arranged copies of a SINGLE model; meaningless and
-  // contradictory alongside multiple distinct inputs, so guard on !multi.
-  if (!multi && typeof params.copies === "number" && params.copies > 1) {
-    args.push("--duplicate", String(Math.round(params.copies)));
-  }
-  if (typeof params.scale === "number" && params.scale > 0 && params.scale !== 1) {
-    args.push("--scale", String(params.scale));
-  }
-  if (typeof params.rotateDeg === "number" && params.rotateDeg !== 0) {
-    args.push("--rotate", String(params.rotateDeg));
-  }
-  // Filament colour: preview-only on a single-extruder FDM print. We still pass
-  // it so the GUI/preview matches; the agent/UI tells the user it won't change
-  // the physical print. Normalize to #RRGGBB.
-  const colour = normalizeHexColour(params.filamentColour);
-  if (colour) {
-    args.push("--filament-colour", colour);
-  }
+  // Build the full CLI args from a (possibly auto-corrected) params object.
+  const buildArgs = (p: SliceParams): string[] => {
+    const args: string[] = ["--export-gcode", ...inputs, "--output", gcodePath];
+    if (loadIni) args.push("--load", loadIni);
 
-  const { code, stdout, stderr } = await run(bin, args, 300_000, true);
+    // ── CLI setting overrides ───────────────────────────────────────────────
+    // Shared with the GUI-open path (writeEffectiveConfig) so the GUI session
+    // and a headless slice are built from IDENTICAL settings.
+    args.push(...settingArgs(p));
 
-  if (!existsSync(gcodePath)) {
-    // PrusaSlicer prints this exact message and writes NO g-code when every
-    // object ended up outside the (single) bed — i.e. the plate was over-packed
-    // and the CLI dropped the off-bed parts. Surface that as an actionable error
-    // rather than a generic "slicing failed". (Verified vs PrusaSlicer source,
-    // ProcessActions.cpp: "Nothing to print … no object is fully inside the
-    // print volume".)
-    const out = `${stdout}\n${stderr}`;
-    if (/nothing to print|no object is fully inside the print volume/i.test(out)) {
-      throw new Error(
-        "Nothing landed on the bed — the plate is over-packed or a part sits outside the print volume. Reduce copies, scale parts down, or split across more plates.",
-      );
+    // ── Plate / multi-part / transforms ─────────────────────────────────────
+    // Multiple inputs auto-arrange by default; only disable when asked.
+    if (multi && p.arrange === false) args.push("--dont-arrange");
+    if (p.merge) args.push("--merge");
+    // --duplicate makes N auto-arranged copies of a SINGLE model; meaningless and
+    // contradictory alongside multiple distinct inputs, so guard on !multi.
+    if (!multi && typeof p.copies === "number" && p.copies > 1) {
+      args.push("--duplicate", String(Math.round(p.copies)));
     }
-    const reason =
-      stderr.trim() ||
-      stdout.trim() ||
-      `exit ${code}. The print may be empty or outside the print volume.`;
-    throw new Error(`Slicing failed: ${reason}`);
+    if (typeof p.scale === "number" && p.scale > 0 && p.scale !== 1) {
+      args.push("--scale", String(p.scale));
+    }
+    if (typeof p.rotateDeg === "number" && p.rotateDeg !== 0) {
+      args.push("--rotate", String(p.rotateDeg));
+    }
+    // Filament colour: preview-only on a single-extruder FDM print. We still
+    // pass it so the GUI/preview matches; the agent/UI tells the user it won't
+    // change the physical print. Normalize to #RRGGBB.
+    const colour = normalizeHexColour(p.filamentColour);
+    if (colour) args.push("--filament-colour", colour);
+    return args;
+  };
+
+  // ── Slice with a bounded auto-remediation loop ────────────────────────────
+  // PrusaSlicer prints a fatal validation error to stderr (and writes NO gcode)
+  // for certain bad settings. Several of those Slicely can fix automatically —
+  // clamp a too-thick layer height, fall back from organic→grid supports — and
+  // re-slice, instead of just failing in the user's face. Each fix is applied
+  // at most once; the loop is capped so a mis-classified error can't spin.
+  // (Error strings verified vs PrusaSlicer source version_2.9.5, Print::validate.)
+  let effective: SliceParams = { ...params };
+  const fixes: string[] = [];
+  const MAX_ATTEMPTS = 4;
+  let lastReason = "";
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // Stale output from a previous failed attempt must not be mistaken for
+    // success — remove it before each run.
+    if (existsSync(gcodePath)) {
+      try {
+        unlinkSync(gcodePath);
+      } catch {
+        /* if we can't remove it, parseMetrics still reflects this run's content */
+      }
+    }
+
+    const { code, stdout, stderr } = await run(bin, buildArgs(effective), 300_000, true);
+
+    if (existsSync(gcodePath)) {
+      const metrics = await parseMetrics(gcodePath);
+      if (fixes.length) metrics.fixes = fixes;
+      return metrics;
+    }
+
+    // No gcode written → classify the failure and try to auto-correct.
+    const out = `${stdout}\n${stderr}`;
+    lastReason = stderr.trim() || stdout.trim() || `exit ${code}.`;
+
+    const fix = planFix(out, effective, nozzleMm, fixes);
+    if (!fix) break; // unrecoverable, or we already tried everything we know
+    effective = fix.params;
+    fixes.push(fix.note);
   }
 
-  return parseMetrics(gcodePath);
+  // Out of fixes (or none applied) — surface the most actionable message.
+  if (
+    /nothing to print|no object is fully inside the print volume|all objects are outside/i.test(
+      lastReason,
+    )
+  ) {
+    throw new Error(
+      "Nothing landed on the bed — the plate is over-packed or a part sits outside the print volume. Reduce copies, scale parts down, or split across more plates.",
+    );
+  }
+  throw new Error(
+    `Slicing failed: ${lastReason || "the print may be empty or outside the print volume."}`,
+  );
+}
+
+/** A single auto-correction: the corrected params plus a user-facing note. */
+interface SliceFix {
+  params: SliceParams;
+  note: string;
+}
+
+/**
+ * Inspect PrusaSlicer's failure output and, when it matches a known FATAL
+ * validation error Slicely can safely correct, return the corrected params +
+ * an explanation. Returns undefined when the error is unrecognized or the fix
+ * was already applied (so the caller stops instead of looping). Error strings
+ * are matched as stable substrings (PrusaSlicer localizes them, so we anchor on
+ * the English core and accept this is best-effort under other locales).
+ */
+function planFix(
+  out: string,
+  params: SliceParams,
+  nozzleMm: number,
+  already: string[],
+): SliceFix | undefined {
+  const tried = (tag: string) => already.some((a) => a.startsWith(tag));
+
+  // 1) Layer height (or first layer) thicker than the nozzle can print → FATAL
+  //    "Layer height can't be greater than nozzle diameter". Clamp to the safe
+  //    PrusaSlicer ceiling (~80% of nozzle) and re-slice.
+  if (
+    /layer height can'?t be greater than nozzle diameter/i.test(out) &&
+    !tried("layer-height")
+  ) {
+    const safe = round2(0.8 * nozzleMm);
+    return {
+      params: { ...params, layerHeightMm: safe },
+      note: `layer-height: clamped to ${safe} mm (a ${nozzleMm} mm nozzle can't print thicker layers).`,
+    };
+  }
+
+  // 2) Organic (tree) supports rejected — geometry constraints or an older
+  //    PrusaSlicer without organic. Fall back to classic grid supports.
+  if (
+    /organic support|variable layer height is not supported with organic/i.test(out) &&
+    params.supportStyle === "organic" &&
+    !tried("supports")
+  ) {
+    return {
+      params: { ...params, supportStyle: "grid" },
+      note: "supports: fell back from organic (tree) to grid — organic wasn't accepted for this model/version.",
+    };
+  }
+
+  // 3) Extrusion width invalid for this layer height / nozzle → drop our width
+  //    overrides (we don't set any today, but a loaded profile might) by pinning
+  //    nothing special; safest is to clear supportStyle-independent width issues
+  //    via a coarser layer height. Only act once.
+  if (
+    /too low to be printable at a layer height|excessive .* to be printable with a nozzle diameter/i.test(
+      out,
+    ) &&
+    !tried("extrusion-width")
+  ) {
+    const safe = round2(0.5 * nozzleMm); // a middle-of-the-road, widely-valid layer
+    return {
+      params: { ...params, layerHeightMm: safe },
+      note: `extrusion-width: set layer height to ${safe} mm to satisfy extrusion-width limits for this nozzle.`,
+    };
+  }
+
+  return undefined;
+}
+
+/** Best-effort read of nozzle_diameter from a flat config .ini (first value of
+ *  a possibly comma-separated multi-extruder list). Undefined if absent. */
+async function readNozzleFromConfig(
+  configIni?: string,
+): Promise<number | undefined> {
+  if (!configIni || !existsSync(configIni)) return undefined;
+  const text = await readFile(configIni, "utf8").catch(() => "");
+  const m = text.match(/^\s*nozzle_diameter\s*=\s*([0-9.]+)/mi);
+  return m ? Number(m[1]) : undefined;
 }
 
 /**
@@ -399,19 +515,49 @@ function settingArgs(params: SliceParams): string[] {
 
   // support_material is a boolean flag — never pass a value. Always emit the
   // explicit form so a loaded profile's default can't silently flip it.
+  // (CLI flags verified vs PrusaSlicer source version_2.9.5: support_material,
+  // support_material_threshold, support_material_style, and
+  // support_material_buildplate_only are all auto-exposed as --dashed flags.)
   if (typeof params.supportMaterial === "boolean") {
     args.push(params.supportMaterial ? "--support-material" : "--no-support-material");
-    if (params.supportMaterial && typeof params.supportThresholdDeg === "number") {
-      // 90 = vertical only, lower = fewer supports, 0 = full auto.
-      args.push(
-        "--support-material-threshold",
-        String(clamp(Math.round(params.supportThresholdDeg), 0, 90)),
-      );
+    if (params.supportMaterial) {
+      // Force automatic overhang-based generation ON. Without this, a loaded
+      // profile that pins support_material_auto=0 would make threshold 0
+      // generate supports ONLY inside enforcer volumes — i.e. silently NONE for
+      // a typical model. Pinning it guarantees our auto-detect actually detects.
+      // (Verified vs source: support_auto = support_material && support_material_auto.)
+      args.push("--support-material-auto");
+      if (typeof params.supportThresholdDeg === "number") {
+        // 0 = PrusaSlicer's AUTOMATIC overhang detection (most accurate). A
+        // LOWER angle yields MORE supports, a HIGHER angle yields FEWER (verified
+        // vs source — the inverse of an earlier, mistaken comment). 90 ≈ none.
+        args.push(
+          "--support-material-threshold",
+          String(clamp(Math.round(params.supportThresholdDeg), 0, 90)),
+        );
+      }
+      if (params.supportStyle) {
+        // grid (classic) | organic (tree) | snug. Organic needs PrusaSlicer
+        // ≥ 2.6; the slice() remediation loop falls back to grid if it errors.
+        args.push("--support-material-style", params.supportStyle);
+      }
+      if (params.supportBuildplateOnly) {
+        args.push("--support-material-buildplate-only");
+      }
     }
   }
 
   if (typeof params.brimWidthMm === "number") {
-    args.push("--brim-width", String(params.brimWidthMm));
+    // brim_type defaults to outer_only, so a positive width alone yields a brim;
+    // a 0 width = no brim. Pin brim_type explicitly so a loaded profile can't
+    // leave brim_type=no_brim and silently swallow our width (verified vs
+    // source: btOuterOnly is the default, no_brim disables regardless of width).
+    const w = params.brimWidthMm;
+    if (w > 0) {
+      args.push("--brim-width", String(w), "--brim-type", "outer_only");
+    } else {
+      args.push("--brim-width", "0", "--brim-type", "no_brim");
+    }
   }
   if (typeof params.nozzleDiameterMm === "number") {
     args.push("--nozzle-diameter", String(params.nozzleDiameterMm));
@@ -588,6 +734,15 @@ export async function parseMetrics(gcodePath: string): Promise<SliceMetrics> {
 
   const layerCount = (text.match(/;LAYER_CHANGE/g) || []).length || undefined;
 
+  // Ground-truth support detection from the G-code body. PrusaSlicer always
+  // emits ";TYPE:<role>" processor tags (NOT gated by gcode_comments). Support
+  // extrusions use the exact role strings "Support material" and "Support
+  // material interface". Casing is significant: capital S, lowercase remainder.
+  // (Verified vs PrusaSlicer source 2.9.5.) We deliberately do NOT infer "brim"
+  // from ";TYPE:Skirt/Brim" — that role covers skirts too, so it can't prove a
+  // brim; the summary reports the requested brim width instead.
+  const supportsGenerated = /;TYPE:Support material/.test(text) || undefined;
+
   return {
     gcodePath,
     estimatedPrintTime: first(
@@ -601,6 +756,7 @@ export async function parseMetrics(gcodePath: string): Promise<SliceMetrics> {
       firstNum(/; total filament cost = ([\d.]+)/) ??
       firstNum(/; filament cost = ([\d.]+)/),
     layerCount,
+    supportsGenerated,
   };
 }
 
@@ -751,6 +907,19 @@ export interface RecommendInput {
   nozzleMm?: number; // default 0.4
   /** Printer build volume in mm; defaults to a Prusa MK-class 250×210×210. */
   bed?: { x: number; y: number; z: number };
+  /** How to handle supports (default "auto" — let PrusaSlicer's real overhang
+   *  analysis decide). "on" forces them, "off" disables them. */
+  supports?: "auto" | "on" | "off";
+  /** Preferred support style when supports are generated (default grid). */
+  supportStyle?: "grid" | "organic" | "snug";
+  /** How to handle a brim (default "auto" — geometry-derived). */
+  brim?: "auto" | "on" | "off";
+  /** Preferred brim width in mm (used when brim is "on", or as the auto width). */
+  brimWidthMm?: number;
+  /** Saved default infill density percent (overrides the goal-derived value). */
+  fillDensityPct?: number;
+  /** Saved default infill pattern (overrides the goal-derived value). */
+  fillPattern?: string;
 }
 
 export interface Recommendation {
@@ -827,6 +996,15 @@ export function recommendSettings(
     rationale.push(`50% gyroid infill, 4 walls — strength for a functional part.`);
   }
 
+  // Saved-default infill overrides the goal-derived choice (the user pinned it).
+  if (typeof input.fillDensityPct === "number") {
+    fillDensityPct = clamp(Math.round(input.fillDensityPct), 0, 100);
+    rationale.push(`Infill ${fillDensityPct}% (your saved default).`);
+  }
+  if (input.fillPattern) {
+    fillPattern = input.fillPattern;
+  }
+
   // ── Solid shells: derive layer COUNT from a target thickness ────────────
   // Prusa min thickness: ~0.7 mm top, ~0.5 mm bottom; scales with layer height.
   const topSolidLayers = Math.max(3, Math.ceil(0.7 / layerHeightMm));
@@ -837,38 +1015,72 @@ export function recommendSettings(
   const footprintArea = info.sizeX * info.sizeY;
   const aspectTall = footprintMin > 0 ? info.sizeZ / footprintMin : 0;
 
-  // Supports: we can't see overhang angles from the bounding box, so use
-  // PrusaSlicer auto-support (threshold 50°) and only turn it ON when the
-  // geometry strongly suggests overhangs (tall vs. its base).
-  const supportMaterial = aspectTall > 2.2;
-  const supportThresholdDeg = 50;
-  if (supportMaterial) {
+  // ── Supports ─────────────────────────────────────────────────────────────
+  // A bounding box can't reveal overhang angles, so the ACCURATE default is to
+  // hand the decision to PrusaSlicer's real overhang analysis: enable supports
+  // with threshold 0 (= PrusaSlicer's automatic detection, extrusion-width
+  // based) so it places supports ONLY where the actual mesh needs them, then
+  // Slicely reads the sliced G-code to report whether any were generated. The
+  // tall/narrow heuristic is kept only as a HINT in the rationale.
+  const supportsMode = input.supports ?? "auto";
+  const supportStyle = input.supportStyle ?? "grid";
+  let supportMaterial: boolean;
+  let supportThresholdDeg: number;
+  if (supportsMode === "off") {
+    supportMaterial = false;
+    supportThresholdDeg = 0;
+    rationale.push(`Supports off (your setting).`);
+  } else if (supportsMode === "on") {
+    supportMaterial = true;
+    supportThresholdDeg = 0; // automatic placement where overhangs exist
     rationale.push(
-      `Tall relative to its base (${info.sizeZ.toFixed(0)} vs ${footprintMin.toFixed(
-        0,
-      )} mm) → auto-supports on (50° threshold). Check the preview.`,
+      `Supports on (your setting), placed automatically where overhangs need them${
+        supportStyle === "organic" ? " — organic (tree) style" : ""
+      }.`,
     );
   } else {
+    // auto: let PrusaSlicer detect overhangs from the real mesh.
+    supportMaterial = true;
+    supportThresholdDeg = 0;
     rationale.push(
-      `Squat profile → supports off. If the model has steep overhangs, ask me to turn them on.`,
+      aspectTall > 2.2
+        ? `Tall relative to its base (${info.sizeZ.toFixed(0)} vs ${footprintMin.toFixed(
+            0,
+          )} mm) → likely overhangs. Supports auto-detected from the real mesh; I'll tell you if any were added.`
+        : `Supports auto-detected from the real mesh — PrusaSlicer adds them only where overhangs need them. I'll report whether any were generated.`,
     );
   }
 
-  // Brim: small footprint, tall/narrow, or warp-prone material.
-  let brimWidthMm = 0;
+  // ── Brim ───────────────────────────────────────────────────────────────
+  const brimMode = input.brim ?? "auto";
+  // Geometry/material-driven width: small footprint, tall/narrow, or warp-prone.
   const needsBrim =
     footprintArea < 100 || aspectTall > 3 || material === "ABS" || material === "PETG";
-  if (needsBrim) {
-    brimWidthMm = material === "ABS" || aspectTall > 5 ? 8 : 5;
-    rationale.push(
-      `${brimWidthMm} mm brim for first-layer adhesion (${
-        footprintArea < 100
-          ? "small footprint"
-          : aspectTall > 3
-            ? "tall/narrow"
-            : material + " adhesion"
-      }).`,
-    );
+  const autoBrimWidth = needsBrim ? (material === "ABS" || aspectTall > 5 ? 8 : 5) : 0;
+  let brimWidthMm: number;
+  if (brimMode === "off") {
+    brimWidthMm = 0;
+    rationale.push(`Brim off (your setting).`);
+  } else if (brimMode === "on") {
+    brimWidthMm = input.brimWidthMm && input.brimWidthMm > 0 ? input.brimWidthMm : 5;
+    rationale.push(`${brimWidthMm} mm brim (your setting) for first-layer adhesion.`);
+  } else {
+    // auto
+    brimWidthMm =
+      input.brimWidthMm && input.brimWidthMm > 0 && needsBrim
+        ? input.brimWidthMm
+        : autoBrimWidth;
+    if (brimWidthMm > 0) {
+      rationale.push(
+        `${brimWidthMm} mm brim for first-layer adhesion (${
+          footprintArea < 100
+            ? "small footprint"
+            : aspectTall > 3
+              ? "tall/narrow"
+              : material + " adhesion"
+        }).`,
+      );
+    }
   }
 
   // ── Material cautions ───────────────────────────────────────────────────
@@ -916,6 +1128,9 @@ export function recommendSettings(
       bottomSolidLayers,
       supportMaterial,
       supportThresholdDeg,
+      // Only carry a style when supports are on, so the CLI flag isn't emitted
+      // (harmlessly) for a no-support slice.
+      supportStyle: supportMaterial ? supportStyle : undefined,
       brimWidthMm,
       nozzleDiameterMm: nozzle,
     },
@@ -930,7 +1145,9 @@ export function recommendSettings(
  * the largest part (the plate prints at one resolution), but supports and brim
  * are aggregated conservatively across ALL parts so a tall/awkward part isn't
  * left unsupported just because it isn't the primary:
- *   - supports ON if ANY part needs them (threshold = the lowest any part wants)
+ *   - supports ON if ANY part needs them (threshold = the lowest any part wants;
+ *     with auto-detect every part requests automatic placement, so PrusaSlicer
+ *     still adds them only where each part's real geometry needs them)
  *   - brim = the WIDEST any part wants (best adhesion for the trickiest part)
  * Warnings from every part are merged (deduped).
  */
@@ -956,17 +1173,12 @@ export function recommendForPlate(
   const minThreshold = Math.min(
     ...recs
       .filter((r) => r.params.supportMaterial)
-      .map((r) => r.params.supportThresholdDeg ?? 50),
+      .map((r) => r.params.supportThresholdDeg ?? 0),
   );
   // Brim: the widest any part wants.
   const maxBrim = Math.max(...recs.map((r) => r.params.brimWidthMm ?? 0));
 
   const rationale = [...base.rationale];
-  if (anySupport && !base.params.supportMaterial) {
-    rationale.push(
-      `Supports turned on for the plate — at least one part needs them.`,
-    );
-  }
   if (maxBrim > (base.params.brimWidthMm ?? 0)) {
     rationale.push(
       `Brim widened to ${maxBrim} mm — the trickiest part on the plate needs it.`,
@@ -982,8 +1194,9 @@ export function recommendForPlate(
       supportThresholdDeg: anySupport
         ? Number.isFinite(minThreshold)
           ? minThreshold
-          : 50
+          : 0
         : base.params.supportThresholdDeg,
+      supportStyle: anySupport ? base.params.supportStyle : undefined,
       brimWidthMm: maxBrim,
     },
     rationale,

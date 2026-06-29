@@ -4,9 +4,16 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
 import { join } from "node:path";
 import { IPC } from "../shared/types";
-import type { AgentEvent, UserSettings, SettingsState } from "../shared/types";
+import type {
+  AgentEvent,
+  UserSettings,
+  SettingsState,
+  PrintPreferences,
+  PrintMaterial,
+  PrintGoal,
+} from "../shared/types";
 import { configState } from "./config";
-import { sessionState } from "./agent/state";
+import { sessionState, seedSessionFromPreferences } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
 import {
   getStatus,
@@ -17,10 +24,15 @@ import {
 import {
   getSettings,
   updateSettings,
+  updatePreferences,
   MODEL_CATALOG,
   EFFORT_LEVELS,
 } from "./settings";
+import { KNOWN_PRINTERS } from "./profiles";
 import { acceptUploads, pickerExtensions } from "./uploads";
+
+const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
+const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
 
 let win: BrowserWindow | null = null;
 let agent: SlicelyAgent | null = null;
@@ -77,8 +89,9 @@ function getAgent(): SlicelyAgent {
 }
 
 function settingsState(): SettingsState {
+  const s = getSettings();
   return {
-    current: getSettings(),
+    current: { model: s.model, effort: s.effort },
     models: MODEL_CATALOG.map((m) => ({
       id: m.id,
       label: m.label,
@@ -88,6 +101,15 @@ function settingsState(): SettingsState {
       supportsMax: m.supportsMax,
     })),
     efforts: EFFORT_LEVELS,
+    preferences: s.preferences,
+    printers: Object.entries(KNOWN_PRINTERS).map(([key, p]) => ({
+      key,
+      label: p.label,
+      nozzleMm: p.nozzleMm,
+      bed: p.bed,
+    })),
+    materials: MATERIALS,
+    goals: GOALS,
   };
 }
 
@@ -182,6 +204,26 @@ function registerIpc(): void {
     IPC.updateSettings,
     async (_e, patch: Partial<UserSettings>): Promise<SettingsState> => {
       updateSettings(patch);
+      return settingsState();
+    },
+  );
+
+  // ── Printing preferences: printer + slice defaults (persisted) ───────────
+  ipcMain.handle(
+    IPC.updatePreferences,
+    async (
+      _e,
+      patch: Partial<PrintPreferences>,
+    ): Promise<SettingsState> => {
+      const next = updatePreferences(
+        patch as Partial<Record<keyof PrintPreferences, unknown>>,
+      );
+      // Re-seed the live session so the change takes effect immediately (without
+      // waiting for a new agent instance / restart).
+      seedSessionFromPreferences({
+        printer: next.preferences.printer,
+        material: next.preferences.material,
+      });
       return settingsState();
     },
   );

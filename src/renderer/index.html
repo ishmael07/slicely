@@ -22,8 +22,61 @@
             <span class="dot" id="statusDot"></span>
             <span id="statusText">checking…</span>
           </div>
+          <button id="settingsBtn" class="icon-btn" title="Printer &amp; slicing settings">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
       </header>
+
+      <!-- Settings sheet (printer + slice defaults), slides down from the top -->
+      <div id="settingsSheet" class="settings-sheet hidden">
+        <div class="ss-row">
+          <label class="ss-label" for="ssPrinter">Printer</label>
+          <select id="ssPrinter" class="ss-control"></select>
+        </div>
+        <!-- Custom bed/nozzle inputs (shown only when Printer = Custom) -->
+        <div id="ssCustom" class="ss-custom hidden">
+          <div class="ss-custom-grid">
+            <label>Bed X<input id="ssBedX" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Bed Y<input id="ssBedY" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Bed Z<input id="ssBedZ" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Nozzle<input id="ssNozzle" type="number" min="0.1" max="2" step="0.05" placeholder="mm" /></label>
+          </div>
+          <button id="ssSaveCustom" class="btn primary ss-save">Save custom printer</button>
+        </div>
+        <div class="ss-row">
+          <label class="ss-label" for="ssMaterial">Material</label>
+          <select id="ssMaterial" class="ss-control"></select>
+        </div>
+        <div class="ss-row">
+          <label class="ss-label" for="ssGoal">Default goal</label>
+          <select id="ssGoal" class="ss-control"></select>
+        </div>
+        <div class="ss-row">
+          <label class="ss-label" for="ssInfill">Infill %</label>
+          <input id="ssInfill" class="ss-control ss-num" type="number" min="0" max="100" step="1" placeholder="auto" />
+        </div>
+        <div class="ss-row">
+          <label class="ss-label" for="ssPattern">Infill pattern</label>
+          <select id="ssPattern" class="ss-control"></select>
+        </div>
+        <div class="ss-row">
+          <span class="ss-label">Supports</span>
+          <div class="ss-seg" id="ssSupports" role="group" aria-label="Supports"></div>
+        </div>
+        <div class="ss-row" id="ssStyleRow">
+          <label class="ss-label" for="ssSupportStyle">Support style</label>
+          <select id="ssSupportStyle" class="ss-control"></select>
+        </div>
+        <div class="ss-row">
+          <span class="ss-label">Brim</span>
+          <div class="ss-seg" id="ssBrim" role="group" aria-label="Brim"></div>
+        </div>
+        <p class="ss-hint">Saved for every slice — Slicely won't ask again. Set "auto" to let it decide from each model.</p>
+      </div>
 
       <!-- Config warning banner (shown if keys missing) -->
       <div id="banner" class="banner hidden"></div>

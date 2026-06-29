@@ -14,6 +14,8 @@ import type {
   SettingsState,
   EffortLevel,
   UploadResult,
+  PrintPreferences,
+  FeatureMode,
 } from "../shared/types";
 // NOTE: explicit ".js" — the renderer is native browser ESM (no bundler), so
 // the import specifier must match the emitted filename exactly.
@@ -46,6 +48,23 @@ const effortMenuEl = $<HTMLDivElement>("effortMenu");
 const attachBtn = $<HTMLButtonElement>("attach");
 const attachTrayEl = $<HTMLDivElement>("attachTray");
 const dropzoneEl = $<HTMLDivElement>("dropzone");
+const settingsBtn = $<HTMLButtonElement>("settingsBtn");
+const settingsSheet = $<HTMLDivElement>("settingsSheet");
+const ssPrinter = $<HTMLSelectElement>("ssPrinter");
+const ssCustom = $<HTMLDivElement>("ssCustom");
+const ssBedX = $<HTMLInputElement>("ssBedX");
+const ssBedY = $<HTMLInputElement>("ssBedY");
+const ssBedZ = $<HTMLInputElement>("ssBedZ");
+const ssNozzle = $<HTMLInputElement>("ssNozzle");
+const ssSaveCustom = $<HTMLButtonElement>("ssSaveCustom");
+const ssMaterial = $<HTMLSelectElement>("ssMaterial");
+const ssGoal = $<HTMLSelectElement>("ssGoal");
+const ssInfill = $<HTMLInputElement>("ssInfill");
+const ssPattern = $<HTMLSelectElement>("ssPattern");
+const ssSupports = $<HTMLDivElement>("ssSupports");
+const ssStyleRow = $<HTMLDivElement>("ssStyleRow");
+const ssSupportStyle = $<HTMLSelectElement>("ssSupportStyle");
+const ssBrim = $<HTMLDivElement>("ssBrim");
 
 let busy = false;
 /** The bot bubble currently being streamed into (markdown re-rendered per delta). */
@@ -96,6 +115,7 @@ inputEl.addEventListener("keydown", (e) => {
 sendBtn.addEventListener("click", submit);
 stopBtn.addEventListener("click", () => api.cancel());
 attachBtn.addEventListener("click", pickFiles);
+settingsBtn.addEventListener("click", toggleSettingsSheet);
 
 // Model + effort dropdowns: each trigger toggles its own menu (only one open
 // at a time); both close on outside-click or Escape.
@@ -307,6 +327,188 @@ async function changeSettings(
     /* ignore */
   }
 }
+
+// ── Printer + slice-default preferences (gear → settings sheet) ───────────
+function toggleSettingsSheet(): void {
+  const willOpen = settingsSheet.classList.contains("hidden");
+  settingsSheet.classList.toggle("hidden", !willOpen);
+  settingsBtn.classList.toggle("open", willOpen);
+  if (willOpen) renderPreferences();
+}
+
+/** Render the settings sheet from the current preferences + catalogs. Built
+ *  fresh each open so it always reflects the latest saved state. */
+function renderPreferences(): void {
+  if (!settings) return;
+  const { preferences: p, printers, materials, goals } = settings;
+
+  // Printer select: known printers + a Custom option.
+  fillSelect(
+    ssPrinter,
+    [
+      { value: "", label: "Not set (ask me)" },
+      ...printers.map((pr) => ({ value: pr.key, label: pr.label })),
+      { value: "custom", label: "Custom…" },
+    ],
+    p.printer?.key ?? "",
+  );
+  // Custom bed/nozzle panel only when Custom is selected.
+  const isCustom = p.printer?.key === "custom";
+  ssCustom.classList.toggle("hidden", !isCustom);
+  if (isCustom && p.printer?.bed) {
+    ssBedX.value = String(p.printer.bed.x);
+    ssBedY.value = String(p.printer.bed.y);
+    ssBedZ.value = String(p.printer.bed.z);
+    ssNozzle.value = String(p.printer.nozzleMm ?? 0.4);
+  }
+
+  fillSelect(
+    ssMaterial,
+    [
+      { value: "", label: "Default (PLA)" },
+      ...materials.map((m) => ({ value: m, label: m })),
+    ],
+    p.material ?? "",
+  );
+  fillSelect(
+    ssGoal,
+    [
+      { value: "", label: "Ask me / quality" },
+      ...goals.map((g) => ({ value: g, label: cap(g) })),
+    ],
+    p.goal ?? "",
+  );
+  ssInfill.value = p.fillDensityPct !== undefined ? String(p.fillDensityPct) : "";
+  fillSelect(
+    ssPattern,
+    [
+      { value: "", label: "Auto (by goal)" },
+      ...["gyroid", "grid", "rectilinear", "honeycomb", "cubic", "triangles"].map(
+        (v) => ({ value: v, label: cap(v) }),
+      ),
+    ],
+    p.fillPattern ?? "",
+  );
+
+  renderSegment(ssSupports, p.supports ?? "auto", (mode) =>
+    savePref({ supports: mode }),
+  );
+  // Support style only matters when supports aren't forced off.
+  ssStyleRow.classList.toggle("hidden", (p.supports ?? "auto") === "off");
+  fillSelect(
+    ssSupportStyle,
+    [
+      { value: "grid", label: "Grid (classic)" },
+      { value: "organic", label: "Organic (tree)" },
+      { value: "snug", label: "Snug" },
+    ],
+    p.supportStyle ?? "grid",
+  );
+  renderSegment(ssBrim, p.brim ?? "auto", (mode) => savePref({ brim: mode }));
+}
+
+/** Fill a <select> with options and select the current value. */
+function fillSelect(
+  sel: HTMLSelectElement,
+  options: { value: string; label: string }[],
+  current: string,
+): void {
+  sel.innerHTML = "";
+  for (const o of options) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    if (o.value === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+/** Build a tri-state segmented control (auto / on / off). */
+function renderSegment(
+  host: HTMLElement,
+  current: FeatureMode,
+  onPick: (mode: FeatureMode) => void,
+): void {
+  host.innerHTML = "";
+  for (const mode of ["auto", "on", "off"] as FeatureMode[]) {
+    const b = el("button") as HTMLButtonElement;
+    b.textContent = mode;
+    if (mode === current) b.classList.add("active");
+    b.onclick = () => onPick(mode);
+    host.appendChild(b);
+  }
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Persist a preferences patch, then re-render the sheet from the result. */
+async function savePref(patch: Partial<PrintPreferences>): Promise<void> {
+  try {
+    settings = await api.updatePreferences(patch);
+    renderPreferences();
+  } catch {
+    /* ignore — sheet keeps its current state */
+  }
+}
+
+// Wire the select/number controls once. Each writes through savePref; an empty
+// value clears that default (sent as null so the store deletes the key).
+ssPrinter.addEventListener("change", () => {
+  const key = ssPrinter.value;
+  if (key === "") {
+    void savePref({ printer: null as unknown as undefined });
+  } else if (key === "custom") {
+    // Reveal the custom inputs; don't persist until "Save custom printer".
+    ssCustom.classList.remove("hidden");
+  } else {
+    const pr = settings?.printers.find((x) => x.key === key);
+    void savePref({ printer: { key, label: pr?.label } });
+  }
+});
+ssSaveCustom.addEventListener("click", () => {
+  const x = Number(ssBedX.value),
+    y = Number(ssBedY.value),
+    z = Number(ssBedZ.value),
+    n = Number(ssNozzle.value);
+  if (![x, y, z].every((v) => Number.isFinite(v) && v > 0)) {
+    renderError("Enter a valid bed size (X, Y, Z in mm) for the custom printer.");
+    return;
+  }
+  void savePref({
+    printer: {
+      key: "custom",
+      label: `Custom ${x}×${y}×${z}`,
+      bed: { x, y, z },
+      nozzleMm: Number.isFinite(n) && n > 0 ? n : 0.4,
+    },
+  });
+});
+ssMaterial.addEventListener("change", () =>
+  void savePref({
+    material: (ssMaterial.value || null) as PrintPreferences["material"],
+  }),
+);
+ssGoal.addEventListener("change", () =>
+  void savePref({ goal: (ssGoal.value || null) as PrintPreferences["goal"] }),
+);
+ssInfill.addEventListener("change", () => {
+  const v = ssInfill.value.trim();
+  void savePref({
+    fillDensityPct: (v === "" ? null : Number(v)) as number | undefined,
+  });
+});
+ssPattern.addEventListener("change", () =>
+  void savePref({
+    fillPattern: (ssPattern.value || null) as string | undefined,
+  }),
+);
+ssSupportStyle.addEventListener("change", () =>
+  void savePref({
+    supportStyle: ssSupportStyle.value as PrintPreferences["supportStyle"],
+  }),
+);
 
 // ── CAD file staging (stage-on-drop, slice-on-send) ──────────────────────
 async function pickFiles(): Promise<void> {
@@ -785,7 +987,18 @@ function renderMetrics(m: SliceMetrics): void {
   if (m.filamentCost !== undefined) {
     addMetric(grid, "Est. cost", m.filamentCost.toFixed(2));
   }
+  // Ground-truth support outcome from the sliced G-code (only show when known).
+  if (m.supportsGenerated !== undefined) {
+    addMetric(grid, "Supports", m.supportsGenerated ? "added" : "none needed");
+  }
   panel.appendChild(grid);
+
+  // Auto-corrections Slicely applied to make the slice succeed/print reliably.
+  if (m.fixes && m.fixes.length) {
+    const note = el("div", "fix-note");
+    note.textContent = `🔧 ${m.fixes.join(" ")}`;
+    panel.appendChild(note);
+  }
 
   // Action row. Default = open the MODEL in the regular PrusaSlicer editor with
   // these settings loaded (ready to slice). "View finished slice" is the opt-in

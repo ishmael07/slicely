@@ -27,6 +27,7 @@ import {
   resolveSliceConfig,
   KNOWN_PRINTERS,
 } from "../profiles";
+import { getPreferences, printerGeometry, updatePreferences } from "../settings";
 import { sessionState } from "./state";
 
 const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
@@ -47,32 +48,79 @@ function baseStem(p: string): string {
   return dot > 0 ? file.slice(0, dot) : file;
 }
 
-/** Build a RecommendInput from tool input, defaulting gracefully. Pulls the
- *  bed size + nozzle from the session's chosen printer so the bed-fit check and
- *  layer-height bounds match the user's actual machine. */
+/** Build a RecommendInput from tool input, layering precedence so a returning
+ *  user never re-states their setup:
+ *    explicit call args  >  saved preferences  >  built-in defaults.
+ *  Pulls the bed size + nozzle from the session's chosen printer (custom or
+ *  catalog) so the bed-fit check and layer-height bounds match the real machine,
+ *  and folds in saved goal / material / infill / supports / brim defaults. */
 function recommendInput(input: Record<string, unknown>): RecommendInput {
+  const prefs = getPreferences();
   const out: RecommendInput = {};
+
+  // Goal: explicit arg, else saved default. (recommendSettings falls back to
+  // "quality" when still unset.)
   if (typeof input.goal === "string" && (GOALS as string[]).includes(input.goal)) {
     out.goal = input.goal as PrintGoal;
+  } else if (prefs.goal) {
+    out.goal = prefs.goal;
   }
+
+  // Material: explicit arg, else session (chat-chosen), else saved default.
   if (
     typeof input.material === "string" &&
     (MATERIALS as string[]).includes(input.material)
   ) {
     out.material = input.material as PrintMaterial;
+  } else if (
+    sessionState.material &&
+    (MATERIALS as string[]).includes(sessionState.material)
+  ) {
+    out.material = sessionState.material as PrintMaterial;
+  } else if (prefs.material) {
+    out.material = prefs.material;
   }
 
-  // Printer geometry: explicit nozzle wins, else the chosen printer's nozzle.
-  const printer = sessionState.printerKey
+  // Printer geometry: explicit nozzle wins, else the chosen printer's geometry
+  // (custom typed bed/nozzle, or a known catalog entry).
+  const customGeo = printerGeometry(sessionState.customPrinter);
+  const known = sessionState.printerKey
     ? KNOWN_PRINTERS[sessionState.printerKey]
     : undefined;
   if (typeof input.nozzleMm === "number") out.nozzleMm = input.nozzleMm;
   else if (typeof input.nozzleDiameterMm === "number")
     out.nozzleMm = input.nozzleDiameterMm;
-  else if (printer) out.nozzleMm = printer.nozzleMm;
-  if (printer) out.bed = printer.bed;
+  else if (customGeo) out.nozzleMm = customGeo.nozzleMm;
+  else if (known) out.nozzleMm = known.nozzleMm;
+  if (customGeo) out.bed = customGeo.bed;
+  else if (known) out.bed = known.bed;
+
+  // Saved slice defaults (no per-call override exists for these in the schema,
+  // so they're applied directly; the agent overrides via explicit support/brim
+  // booleans/widths, handled in explicitParams).
+  if (prefs.supports) out.supports = prefs.supports;
+  if (prefs.supportStyle) out.supportStyle = prefs.supportStyle;
+  if (prefs.brim) out.brim = prefs.brim;
+  if (typeof prefs.brimWidthMm === "number") out.brimWidthMm = prefs.brimWidthMm;
+  if (typeof prefs.fillDensityPct === "number")
+    out.fillDensityPct = prefs.fillDensityPct;
+  if (prefs.fillPattern) out.fillPattern = prefs.fillPattern;
 
   return out;
+}
+
+/** The custom (typed) printer geometry for the session, if one is saved — for
+ *  passing to resolveSliceConfig so synthesized configs use the real bed/nozzle. */
+function customGeometry():
+  | { label?: string; bed: { x: number; y: number; z: number }; nozzleMm: number }
+  | undefined {
+  const geo = printerGeometry(sessionState.customPrinter);
+  if (!geo) return undefined;
+  return {
+    label: sessionState.customPrinter?.label,
+    bed: geo.bed,
+    nozzleMm: geo.nozzleMm,
+  };
 }
 
 /** Emit a structured side-channel event to the renderer. */
@@ -107,7 +155,17 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
     description: "Override infill pattern, e.g. gyroid, rectilinear, grid, honeycomb.",
   },
   perimeters: { type: "integer", description: "Override wall count." },
-  supportMaterial: { type: "boolean", description: "Override supports on/off." },
+  supportMaterial: {
+    type: "boolean",
+    description:
+      "Override supports on/off. By default Slicely enables PrusaSlicer's automatic overhang detection (supports added only where the real mesh needs them); set false to force them off.",
+  },
+  supportStyle: {
+    type: "string",
+    enum: ["grid", "organic", "snug"],
+    description:
+      "Support style when supports are generated: grid (classic), organic (tree — lighter, easier to remove; needs PrusaSlicer ≥ 2.6), or snug. Default grid.",
+  },
   brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
   nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
   copies: {
@@ -343,6 +401,11 @@ export const TOOLS: Anthropic.Tool[] = [
         fillPattern: { type: "string", description: 'Infill pattern, e.g. "gyroid", "grid".' },
         perimeters: { type: "number", description: "Number of perimeter walls." },
         supportMaterial: { type: "boolean", description: "Enable/disable supports." },
+        supportStyle: {
+          type: "string",
+          enum: ["grid", "organic", "snug"],
+          description: "Support style: grid (classic), organic (tree), or snug.",
+        },
         brimWidthMm: { type: "number", description: "Brim width in mm (0 = none)." },
         nozzleDiameterMm: { type: "number", description: "Nozzle diameter in mm (e.g. 0.4)." },
       },
@@ -438,9 +501,19 @@ export async function executeTool(
 
     case "check_printer_setup": {
       const state = getProfileState();
+      const prefs = getPreferences();
       const printerList = Object.entries(KNOWN_PRINTERS)
         .map(([key, p]) => `  ${key}: ${p.label}`)
         .join("\n");
+      // A saved printer (custom or catalog) means the user already told us once —
+      // never re-ask. The session was seeded from it at startup.
+      if (prefs.printer) {
+        const label =
+          prefs.printer.label ??
+          KNOWN_PRINTERS[prefs.printer.key]?.label ??
+          prefs.printer.key;
+        return `Printer already saved (persists across sessions): ${label}. Good to slice — don't ask the user again.`;
+      }
       if (sessionState.printerKey) {
         const p = KNOWN_PRINTERS[sessionState.printerKey];
         return `Printer already set this session: ${p?.label ?? sessionState.printerKey}. Good to slice.`;
@@ -467,10 +540,13 @@ export async function executeTool(
         return `Unknown printer "${key}". Valid keys: ${Object.keys(KNOWN_PRINTERS).join(", ")}.`;
       }
       sessionState.printerKey = key;
+      sessionState.customPrinter = undefined;
       // Invalidate any cached recommendation — nozzle/bed may have changed.
       sessionState.lastRecommendation = {};
+      // PERSIST the choice so the user is never asked again across sessions.
       const p = KNOWN_PRINTERS[key];
-      return `Printer set to ${p.label} (${p.bed.x}×${p.bed.y}×${p.bed.z} mm bed, ${p.nozzleMm} mm nozzle). Slices will now match this machine.`;
+      updatePreferences({ printer: { key, label: p.label } });
+      return `Printer set to ${p.label} (${p.bed.x}×${p.bed.y}×${p.bed.z} mm bed, ${p.nozzleMm} mm nozzle) and saved as your default — I won't ask again. Slices will now match this machine.`;
     }
 
     case "inspect_model": {
@@ -576,6 +652,7 @@ export async function executeTool(
         baseConfig = resolveSliceConfig(
           sessionState.printerKey,
           sessionState.material,
+          customGeometry(),
         ).configIni;
         if (SLICEABLE_PART_EXTS.has(extLower(primary))) {
           const rec = recommendSettings(
@@ -680,10 +757,12 @@ async function runSlice(
 
   const params: SliceParams = { ...rec.params, ...explicit };
 
-  // Config: user's own → synthesized (printer + material) → defaults.
+  // Config: user's own → synthesized (printer + material) → defaults. Pass the
+  // custom typed geometry when the saved printer isn't a catalog entry.
   const resolved = resolveSliceConfig(
     sessionState.printerKey,
     sessionState.material,
+    customGeometry(),
   );
   // Remember exactly what we sliced, so open_in_slicer can open the GUI with
   // identical settings.
@@ -720,16 +799,38 @@ async function runSlice(
           ? ` ${params.copies} copies auto-arranged.`
           : "";
 
+  // Ground-truth support/brim outcome from the sliced G-code (not just what we
+  // requested). With auto-detect, supports are REQUESTED with automatic
+  // placement, but PrusaSlicer only actually generates them where overhangs
+  // need them — so report what the toolpaths really contain.
+  const anyGenSupports = job.plates.some((m) => m.supportsGenerated);
+  const requestedSupports = !!params.supportMaterial;
+  const supportNote = !requestedSupports
+    ? "supports off"
+    : anyGenSupports
+      ? `supports added where the mesh needed them${
+          params.supportStyle === "organic" ? " (organic/tree)" : ""
+        }`
+      : "supports enabled but none were needed (no overhangs detected)";
+  const brimNote =
+    (params.brimWidthMm ?? 0) > 0 ? `${params.brimWidthMm} mm brim` : "no brim";
+
+  // Auto-fixes applied during slicing (e.g. clamped layer height, organic→grid).
+  const allFixes = [...new Set(job.plates.flatMap((m) => m.fixes ?? []))];
+  const fixesNote = allFixes.length
+    ? `\n🔧 Auto-corrected to make it slice: ${allFixes.join(" ")}`
+    : "";
+
   const usedLine =
     `Used settings: ${params.layerHeightMm ?? "default"} mm layers, ` +
     `${params.fillDensityPct ?? "default"}% ${params.fillPattern ?? ""} infill, ` +
     `${params.perimeters ?? "default"} walls, ` +
-    `supports ${params.supportMaterial ? "on" : "off"}, ` +
-    `brim ${params.brimWidthMm ?? 0} mm` +
+    `${supportNote}, ${brimNote}` +
     (hasExplicit ? " (your overrides applied)" : " (recommended)") +
     "." +
     plateNote +
     colourNote +
+    fixesNote +
     (baselineWarnings.length ? `\nHeads up: ${baselineWarnings.join(" ")}` : "") +
     oversizedNote;
 
@@ -819,6 +920,10 @@ function explicitParams(input: Record<string, unknown>): SliceParams {
       : {}),
     ...(typeof input.supportMaterial === "boolean"
       ? { supportMaterial: input.supportMaterial }
+      : {}),
+    ...(typeof input.supportStyle === "string" &&
+    ["grid", "organic", "snug"].includes(input.supportStyle)
+      ? { supportStyle: input.supportStyle }
       : {}),
   };
 }

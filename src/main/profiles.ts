@@ -224,11 +224,36 @@ export function synthesizeConfigForPrinter(
   printer: PrinterPreset;
 } {
   const printer = KNOWN_PRINTERS[printerKey] ?? KNOWN_PRINTERS.generic;
+  const path = writeSynthConfig(printerKey, printer, material);
+  return { path, printer };
+}
+
+/** Synthesize a config for an explicit (custom) printer geometry the user typed
+ *  in — same realistic-estimate role as synthesizeConfigForPrinter, but for a
+ *  bed/nozzle that isn't in the catalog. */
+export function synthesizeConfigForGeometry(
+  label: string,
+  bed: { x: number; y: number; z: number },
+  nozzleMm: number,
+  material = "PLA",
+): { path: string; printer: PrinterPreset } {
+  const printer: PrinterPreset = { label, nozzleMm, bed };
+  const path = writeSynthConfig("custom", printer, material);
+  return { path, printer };
+}
+
+/** Write a flat config.ini for a printer preset + material, returning its path.
+ *  `stem` keys the filename so custom and known printers don't collide. */
+function writeSynthConfig(
+  stem: string,
+  printer: PrinterPreset,
+  material: string,
+): string {
   const fil = MATERIAL_FILAMENT[material] ?? MATERIAL_FILAMENT.PLA;
   const cfg = getConfig();
   const dir = join(cfg.workdir, "configs");
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${printerKey}-${material}.ini`);
+  const path = join(dir, `${stem}-${material}.ini`);
 
   // bed_shape is a comma-separated list of "XxY" rectangle vertices.
   const { x, y, z } = printer.bed;
@@ -249,17 +274,21 @@ export function synthesizeConfigForPrinter(
     `filament_cost = ${fil.costPerKg}\n`;
 
   writeFileSync(path, ini, "utf8");
-  return { path, printer };
+  return path;
 }
 
 /** Resolve the best config + printer geometry to slice with, given the user's
  *  optional printer choice + material. Order of preference:
  *    1. user's own exported config.ini (highest fidelity)
- *    2. a synthesized config for a chosen/known printer + material
- *    3. nothing (bare slice against PrusaSlicer defaults) */
+ *    2. a synthesized config for a chosen printer (custom geometry or known
+ *       catalog key) + material
+ *    3. nothing (bare slice against PrusaSlicer defaults)
+ *  `custom` (if given) takes precedence over `printerKey`: it carries an
+ *  explicit bed/nozzle the user typed in the settings panel. */
 export function resolveSliceConfig(
   printerKey?: string,
   material = "PLA",
+  custom?: { label?: string; bed: { x: number; y: number; z: number }; nozzleMm: number },
 ): {
   configIni?: string;
   printer?: PrinterPreset;
@@ -268,6 +297,15 @@ export function resolveSliceConfig(
   const state = getProfileState();
   if (state.userConfigIni) {
     return { configIni: state.userConfigIni, source: "user-config" };
+  }
+  if (custom) {
+    const { path, printer } = synthesizeConfigForGeometry(
+      custom.label ?? "Custom printer",
+      custom.bed,
+      custom.nozzleMm,
+      material,
+    );
+    return { configIni: path, printer, source: "synthesized" };
   }
   if (printerKey && KNOWN_PRINTERS[printerKey]) {
     const { path, printer } = synthesizeConfigForPrinter(printerKey, material);
