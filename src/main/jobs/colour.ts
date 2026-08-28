@@ -36,6 +36,23 @@ export function planColours(parts: JobPart[], slots: FilamentSlot[]): ColourPlan
 
   const assignments: ColourAssignment[] = parts.map((part) => resolveOne(part, usable, singleExtruder));
 
+  // A substituted colour must never be silent: the user asked for one colour
+  // and will get another, and they can only fix that by loading the spool they
+  // wanted. Grouped by requested colour so one swap doesn't produce ten
+  // near-identical lines.
+  const substituted = new Map<string, string>();
+  assignments.forEach((a, i) => {
+    if (a.reason !== "nearest-colour") return;
+    const requested = parts[i]?.colourHex;
+    if (requested) substituted.set(requested.toLowerCase(), a.colourHex);
+  });
+  for (const [requested, got] of substituted) {
+    warnings.push(
+      `No ${requested} filament is loaded — using the closest loaded colour, ${got}. ` +
+        `Load ${requested} in a slot if you want an exact match.`,
+    );
+  }
+
   // Tool-change estimate: count colour changes between CONSECUTIVE parts in
   // the given order (a proxy for print order — the planner is responsible
   // for actually grouping by colour before this list is finalized per

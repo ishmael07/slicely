@@ -361,6 +361,16 @@ a {
   gap: 11px;
   -webkit-overflow-scrolling: touch;
 }
+
+/* #messages is a COLUMN flex container, so flex-shrink applies to its
+   children's HEIGHT. Left at the default of 1, every message block gets
+   vertically crushed once the transcript is taller than the viewport — model
+   cards collapsed to a few pixels of border, and the sources note was sliced
+   down to a clipped strip of text. Nothing in a scrolling transcript should
+   ever shrink: it scrolls instead. */
+#messages > * {
+  flex: 0 0 auto;
+}
 .enter {
   animation: enter 0.35s var(--ease) both;
 }

@@ -149,14 +149,17 @@ export async function planJob(
 
   // ── 4. Colour plan ───────────────────────────────────────────────────────
   const colourPlan = planColours(jobParts, opts.slots ?? []);
-  const assignmentByPath = new Map(colourPlan.assignments.map((a) => [a.partPath, a]));
-  for (const p of jobParts) {
-    const a = assignmentByPath.get(p.path);
-    if (a) {
-      p.extruder = a.extruder;
-      p.colourHex = a.colourHex;
-    }
-  }
+  // Apply POSITIONALLY: planColours returns exactly one assignment per input
+  // part, in order. Keying by file path collided whenever the same STL was
+  // requested in two colours — the last assignment overwrote the first, so
+  // asking for three red cubes and two yellow ones produced five of whichever
+  // colour resolved last, even when the requested colour was loaded.
+  colourPlan.assignments.forEach((a, i) => {
+    const p = jobParts[i];
+    if (!p) return;
+    p.extruder = a.extruder;
+    p.colourHex = a.colourHex;
+  });
   notes.push(...colourPlan.warnings);
 
   // ── 6a. Height-oversized parts never reach the packer ───────────────────
@@ -171,13 +174,31 @@ export async function planJob(
 
   // ── 5. Pack (grouped by colour when requested/defaulted) ────────────────
   const distinctColours = new Set(packable.map((p) => p.colourHex ?? ""));
-  const groupByColour = opts.groupByColour ?? distinctColours.size > 1;
+  // A printer with two or more loaded slots (AMS/MMU) changes filament on
+  // its own MID-PLATE — putting several colours on one plate is the whole
+  // point of it. Only a single-extruder printer benefits from one colour per
+  // plate, where the "tool change" is the user swapping the spool by hand
+  // between plates. Defaulting to grouped regardless defeated multi-colour
+  // printing on exactly the machines that support it.
+  const usableSlots = (opts.slots ?? []).filter((sl) => sl.loaded !== false).length;
+  const multiMaterial = usableSlots >= 2;
+  const groupByColour =
+    opts.groupByColour ?? (distinctColours.size > 1 && !multiMaterial);
 
   const bed: BedArea = { w: opts.bed.x, d: opts.bed.y };
   const spacing = opts.spacingMm ?? DEFAULT_SPACING;
 
   const packedPlates: Plate[] = [];
   const packOversized: PlatePart[] = [];
+  // Identity for packing: a part's position in `packable`. See toPlateParts.
+  const indexOf = new Map(packable.map((p, i) => [p, i]));
+
+  if (multiMaterial && distinctColours.size > 1 && opts.groupByColour !== true) {
+    notes.push(
+      `Printer has ${usableSlots} filament slots loaded, so colours share a plate — ` +
+        `it swaps filament itself mid-print.`,
+    );
+  }
 
   if (groupByColour && distinctColours.size > 1) {
     const byColour = new Map<string, JobPart[]>();
@@ -188,7 +209,7 @@ export async function planJob(
       else byColour.set(key, [p]);
     }
     for (const group of byColour.values()) {
-      const { plates, oversized } = packPlates(toPlateParts(group), bed, spacing);
+      const { plates, oversized } = packPlates(toPlateParts(group, indexOf), bed, spacing);
       packedPlates.push(...plates);
       packOversized.push(...oversized);
     }
@@ -196,18 +217,21 @@ export async function planJob(
       `Grouped parts by colour across ${byColour.size} colour group(s) so each plate needs the fewest tool changes.`,
     );
   } else {
-    const { plates, oversized } = packPlates(toPlateParts(packable), bed, spacing);
+    const { plates, oversized } = packPlates(toPlateParts(packable, indexOf), bed, spacing);
     packedPlates.push(...plates);
     packOversized.push(...oversized);
   }
 
   // ── Build JobPlate[] ─────────────────────────────────────────────────────
-  const partByPath = new Map(jobParts.map((p) => [p.path, p]));
+  // NOTE: `plate.parts[].path` holds the packable INDEX, not a file path —
+  // see toPlateParts. Two entries for the same STL in different colours are
+  // genuinely different parts, and keying by file path merged them into one
+  // (losing a colour). The index keeps them distinct.
   const jobPlates: JobPlate[] = packedPlates.map((plate, i) => {
     const counts = new Map<string, number>();
     for (const pp of plate.parts) counts.set(pp.path, (counts.get(pp.path) ?? 0) + 1);
-    const plateParts: JobPart[] = [...counts.entries()].map(([path, copies]) => ({
-      ...partByPath.get(path)!,
+    const plateParts: JobPart[] = [...counts.entries()].map(([idx, copies]) => ({
+      ...packable[Number(idx)],
       copies,
     }));
     const colours = [...new Set(plateParts.map((p) => p.colourHex).filter((c): c is string => !!c))];
@@ -226,8 +250,8 @@ export async function planJob(
   // ── 6b. Bed-footprint-oversized parts ────────────────────────────────────
   const oversizedCounts = new Map<string, number>();
   for (const pp of packOversized) oversizedCounts.set(pp.path, (oversizedCounts.get(pp.path) ?? 0) + 1);
-  const oversizedFromPack: JobPart[] = [...oversizedCounts.entries()].map(([path, copies]) => ({
-    ...partByPath.get(path)!,
+  const oversizedFromPack: JobPart[] = [...oversizedCounts.entries()].map(([idx, copies]) => ({
+    ...packable[Number(idx)],
     copies,
   }));
   const oversized = [...oversizedFromPack, ...tooTall];
@@ -263,10 +287,24 @@ export async function planJob(
   return job;
 }
 
-function toPlateParts(list: JobPart[]): PlatePart[] {
+/**
+ * Flatten parts (and their copies) into the footprints packPlates works with.
+ *
+ * `PlatePart.path` carries the part's INDEX in `packable`, not a file path.
+ * packPlates only needs an opaque identity, and the file path is not one: the
+ * same STL requested in two colours is two different parts, and keying by path
+ * merged them into one — silently dropping a colour. The index is unique per
+ * part, and `indexOf` maps back to it after packing (the same JobPart objects
+ * appear in the colour subsets, so identity lookup works there too).
+ */
+function toPlateParts(
+  list: JobPart[],
+  indexOf: Map<JobPart, number>,
+): PlatePart[] {
   const out: PlatePart[] = [];
   for (const p of list) {
-    for (let i = 0; i < p.copies; i++) out.push({ path: p.path, w: p.sizeX, d: p.sizeY });
+    const id = String(indexOf.get(p) ?? 0);
+    for (let i = 0; i < p.copies; i++) out.push({ path: id, w: p.sizeX, d: p.sizeY });
   }
   return out;
 }
