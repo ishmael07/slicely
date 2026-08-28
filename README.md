@@ -1,10 +1,30 @@
 # Slicely
 
-**An AI agent that finds free, open-source 3D-printable models online and slices them with PrusaSlicer — in a little chat-bar app for your Mac.**
+**Vibe 3D printing.** Say what you want to print — Slicely finds it across a dozen model sources, works out how to slice it, and sends it to your printer. Run it as a **website anyone can open**, or as a **macOS app**.
 
-Tell Slicely what you want to print ("I want to 3D print a model car"). It searches Thingiverse, Printables, and MakerWorld, shows you the options, downloads the one you pick straight into your workspace, reads its real dimensions, recommends optimal slicing settings, and slices it — giving you accurate print-time, filament, and cost numbers. All through a conversation.
+Slicely finds, slices, and prints. It is not a CAD modeler — it works with models that already exist, plus whatever you upload or paste a link to.
 
-> **MVP scope:** PrusaSlicer is the supported slicer. Thingiverse is the marketplace Slicely can download from directly in-app; Printables and MakerWorld are searched too, but their downloads open in your browser (those sites gate downloads behind login).
+```
+"I want a phone stand"  →  searches 11 sources  →  picks the best orientation
+                        →  slices for YOUR printer  →  sends it to the printer
+```
+
+---
+
+## Two ways to run it
+
+| | Web | macOS app |
+| --- | --- | --- |
+| **Install** | None — open a link | Download / `npm start` |
+| **Who** | Anyone, many at once | You |
+| **Slicing** | Server-side (headless PrusaSlicer) | Your local PrusaSlicer |
+| **Cloud printers** (Bambu, Prusa Connect) | ✅ | ✅ |
+| **LAN printers** (OctoPrint, Klipper, PrusaLink) | Only when self-hosted on the same network | ✅ |
+| **Open in the PrusaSlicer GUI** | — (no GUI on a server) | ✅ |
+
+The two share one core. Only `main.ts` and `preload.ts` touch Electron; everything else — agent, slicer, sourcing, printers, jobs — is portable Node used by both.
+
+> **Why LAN printers can't work on a public deployment:** your printer sits at `192.168.x.x` behind your router. A hosted server can't route to it, and browsers can't open raw TCP or MQTT. Cloud-connected printers work anywhere; LAN printers need Slicely running on your own network (or a tunnel like OctoEverywhere / Obico).
 
 ---
 
@@ -12,32 +32,33 @@ Tell Slicely what you want to print ("I want to 3D print a model car"). It searc
 
 | Capability | How |
 | --- | --- |
-| 🔎 **Find models** | Searches Thingiverse + Printables + MakerWorld in one query, with thumbnails, creators, and licenses. |
-| ⬇️ **Import** | Downloads a Thingiverse model's STL/3MF directly into `~/Slicely/downloads`. (Printables/MakerWorld → opens the page in your browser.) |
-| 📤 **Upload your own CAD** | Drag-and-drop or pick an **STL · 3MF · OBJ · AMF · STEP** file — or a **ZIP of parts**, which Slicely unpacks. It becomes the active model and flows straight into inspect → recommend → slice. (STEP opens in PrusaSlicer to convert; the mesh formats slice directly.) |
-| 🧩 **Multi-part & multi-plate** | Models that come as several STLs (or a ZIP) are **merged onto one plate and auto-arranged** with the same object-gap PrusaSlicer uses, so every part actually makes it into the G-code. If they (or your copies) **don't all fit one bed, Slicely splits them across multiple plates** and slices each — one metrics panel per plate ("Plate 1 of 3"). Plate packing mirrors PrusaSlicer's arranger (no part rotation, profile-derived spacing), so a plate it accepts is one the slicer can place; over-packed plates are caught, not silently shortened. Oversized parts are flagged to scale down. Open any plate in PrusaSlicer with one click. |
-| 🎛️ **Max-out slicing** | Beyond settings: make N auto-arranged **copies**, **scale**, **rotate**, **merge** parts, and set a **filament colour** (preview-only on a single-extruder printer — Slicely says so plainly). **Supports and brim are decided automatically** from geometry, and for a multi-part plate they're aggregated across **all** parts (supports on if any part needs them; brim sized for the trickiest part). |
-| 📐 **Inspect** | Runs `PrusaSlicer --info` for real dimensions, volume, triangle count, watertightness. |
-| 🧠 **Reason about the print** | Picks accurate settings from the model's geometry **and your goal** — fast (draft), detail (quality), or strength (functional) — plus material (PLA/PETG/ABS) and nozzle. Sets layer height (nozzle-bounded), infill % + pattern, walls, solid layers, supports + threshold, and brim, each with a rationale. Warns on bed-fit, non-watertight meshes, and material gotchas so prints don't fail. |
-| 🖨️ **Printer setup for newcomers** | If you've never run PrusaSlicer's wizard, Slicely detects it and asks which printer you have, then synthesizes a matching config (bed size + nozzle + **filament density/cost** so weight & cost are realistic). Forces plain-text G-code so metrics always parse. Already configured? It uses your profile — the most accurate option. |
-| 🍰 **Slice** | Slices to G-code with PrusaSlicer and reports estimated print time, filament used (g / m), cost, and layer count. "Just slice it" auto-applies the goal-aware recommended settings — no extra step. |
-| 🪄 **Show me the finished slice** | Say *"slice it and open it"*, *"show me the finished product"*, or *"open the export g-code"* and Slicely slices headlessly for accurate numbers, **then opens the finished result in PrusaSlicer's G-code viewer — the toolpath/export view, no Slice click needed**. A "View finished slice" button on every metrics panel does the same. (A plain *"open it"* instead opens the **editable** PrusaSlicer with your settings loaded, ready to slice — PrusaSlicer has no API to auto-press Slice inside the editor, so the only zero-click finished view is the G-code viewer, reserved for these explicit requests.) |
-| 💬 **Clean chat UI** | Replies render as real markdown (headings, **bold**, lists, `code`, callouts), with the model's reasoning in a collapsible "Thought process" block. |
-| 🧠 **Pick model & effort** | A dropdown under the chat box (Cursor/ChatGPT-style) lets you choose the Claude model (Opus 4.8 / Sonnet 4.6 / Haiku 4.5) and reasoning effort. Slicely only sends each model the params it supports, so the picker never errors. |
-| 🟢 **Live slicer status** | A status pill shows in real time whether PrusaSlicer is installed and whether you have it **open** — and it doesn't confuse Slicely's own background slices for the app being open. |
-| 🖥️ **Hand off** | Opens any model (or the whole multi-part plate) in the **editable PrusaSlicer** with your settings loaded, ready to slice; opens the finished **G-code in the viewer** when you ask to see the result; or reveals the G-code in Finder. |
+| 🔎 **Find models everywhere** | One query across **Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub, MakerWorld, Thangs, Yeggi, STLFinder**. Results are ranked across sources, and ones Slicely can actually download outrank ones that need a browser. A source being down never blanks your results. |
+| ⬇️ **Actually get the file** | Direct download from Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, and GitHub. |
+| 🔗 **Paste any link** | A model page, a raw `.stl`, a `.zip` of parts, or a GitHub repo — Slicely resolves it, finds the meshes, and downloads them. Unknown pages get scraped for mesh links. |
+| 📤 **Upload your own** | Drag-and-drop **STL · 3MF · OBJ · AMF · STEP**, or a **ZIP of parts** that Slicely unpacks. |
+| 🧭 **Pick the orientation** | Scores candidate poses on overhang area, bed contact, and layer count, weighted by your goal — then explains its choice in plain language. A pose that barely touches the bed is rejected as unprintable. |
+| 🧠 **Smart-slice** | Layer height, infill %, pattern, walls, solid layers, supports, and brim derived from the real geometry plus your goal (fast / detail / strength), material, and nozzle. Override anything; everything else adapts. |
+| 🧩 **Big multi-part jobs** | Dozens of parts planned as one **job**: oriented, grouped so each plate needs the fewest tool changes, packed across as many plates as it takes, then sliced in order. One plate failing doesn't stop the rest. |
+| 🎨 **Multi-colour** | Requested colours are matched against the filament **actually loaded** in your AMS/MMU — exact match where possible, nearest perceptual colour (CIE Lab) otherwise, and it says so. Estimates tool changes and purge waste. Single-extruder printers are told plainly that colour is preview-only. |
+| 🖨️ **Send it to the printer** | **OctoPrint · Klipper/Moonraker · PrusaLink · Prusa Connect · Bambu (LAN + cloud) · file/SD**. Scan your network to find printers, or add one by address. Live state, progress, temperatures, and loaded filaments. Pause / resume / cancel. |
+| 💬 **Chat UI** | Streaming markdown replies with a collapsible thought process, model cards, and slice-metric panels inline. Pick your Claude model and reasoning effort. |
+
+---
+
+## Safety: prints do not start on their own
+
+Uploading a job and *starting* it are separate. `send` uploads and **queues**; it only starts a print if you have separately armed auto-start **for that specific printer**.
+
+That's deliberate. Starting a print on a bed that still holds the last part wrecks the print, can damage the printer, and is a genuine fire risk — and no consumer FDM printer reliably senses a clear bed. The agent cannot arm auto-start; only you can, in settings. Checking the bed is your job.
 
 ---
 
 ## Requirements
 
-- **macOS** (the app drives the macOS PrusaSlicer app bundle).
-- **Node.js 18+** and npm — to install and run. (Get it from [nodejs.org](https://nodejs.org) or `brew install node`.)
-- **[PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/)** installed at `/Applications/PrusaSlicer.app` (for inspect/slice; search & import work without it).
+- **Node.js 18+**
+- **[PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/)** — at `/Applications/PrusaSlicer.app` for the macOS app, or installed on the host for the web server. Search and import work without it.
 - An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com)).
-- A free **Thingiverse App Token** ([thingiverse.com/apps/create](https://www.thingiverse.com/apps/create)) — needed only for in-app downloads.
-
----
+- Optional, for more sources: a free [Thingiverse App Token](https://www.thingiverse.com/apps/create), `GITHUB_TOKEN`, `MYMINIFACTORY_API_KEY`, `SMITHSONIAN_API_KEY`. Printables, NIH 3D, and NASA need nothing.
 
 ## Setup
 
@@ -45,64 +66,32 @@ Tell Slicely what you want to print ("I want to 3D print a model car"). It searc
 git clone https://github.com/ishmael07/slicely.git
 cd slicely
 npm install
-
-# Configure your keys
-cp .env.example .env
-#   then open .env and fill in:
-#     ANTHROPIC_API_KEY=...           (required)
-#     THINGIVERSE_APP_TOKEN=...       (for in-app downloads)
+cp .env.example .env      # then add ANTHROPIC_API_KEY
 ```
-
-### Getting the keys
-
-- **Anthropic API key** → [console.anthropic.com](https://console.anthropic.com) → *Settings → API Keys*.
-- **Thingiverse App Token** → sign in at [thingiverse.com/apps/create](https://www.thingiverse.com/apps/create), create an app (any name), and copy the **App Token** it shows. No OAuth flow needed — the static token works for search and download.
-
-### (Recommended) Give PrusaSlicer your real printer profile
-
-By default, slices use PrusaSlicer's generic built-in settings. For numbers that match *your* printer and filament:
-
-1. Open PrusaSlicer, pick your printer + print + filament presets.
-2. **File → Export → Export Config…** → save the `.ini`.
-3. In `.env`, set `PRUSASLICER_CONFIG_INI=/absolute/path/to/your-config.ini`.
-
----
 
 ## Run
 
 ```bash
-npm start
+npm run serve    # web  → http://localhost:3000
+npm start        # macOS app
+npm test         # build + full test suite
 ```
 
-This compiles the TypeScript and launches the Slicely chat-bar window.
-
-To build a distributable `.dmg`:
-
-```bash
-npm run dist:mac
-```
+For slice estimates that match your real machine: PrusaSlicer → *File → Export → Export Config…*, then set `PRUSASLICER_CONFIG_INI` to that `.ini`.
 
 ---
 
 ## Using it
 
-Type what you want to print, or click one of the example prompts:
+Type what you want, or paste a link:
 
-- *"I want to 3D print a model car"* → Slicely searches and shows cards.
-- Click **Import** on a Thingiverse card → it downloads, reads the dimensions, and recommends settings.
-- *"Slice it with 0.2mm layers and 20% infill"* → real print-time and filament metrics.
-- *"Open it in PrusaSlicer"* → opens the **editable PrusaSlicer** with your settings loaded and **auto-slicing on** (Slicely flips PrusaSlicer's background-processing preference), so just click the **Preview** tab — the toolpaths are already there, no Slice click.
-- *"Show me the finished product"* / *"open the export g-code"* → slices for accurate numbers, then opens the finished **G-code in PrusaSlicer's read-only viewer** (toolpaths + export) — zero clicks.
+- *"I want to 3D print a model car"* → searches every source, shows cards.
+- *"print 4 of these in red and blue"* → plans a job, assigns colours to real AMS slots, packs the plates.
+- *"how should this be oriented?"* → compares poses and explains the trade-off.
+- *"slice it and send it to my printer"* → slices, uploads, queues.
+- Paste `https://www.printables.com/model/...` or a GitHub repo URL → resolved and downloaded.
 
-**Upload your own model:** drag an STL (or 3MF / OBJ / AMF / STEP, or a **ZIP of parts**) anywhere onto the window, or click the **＋** button next to the composer. It's copied into your workspace, becomes the active model, and Slicely inspects + offers to slice it. Multiple parts (or a ZIP) are arranged together on one plate.
-
-**Max out a print:** ask Slicely to *"print 4 copies"*, *"scale to 50%"*, *"rotate 90°"*, *"merge the parts"*, or *"set the colour to blue"*. (On a single-extruder printer, colour only changes the preview, not the physical print — Slicely will remind you.)
-
-**Choose model & effort:** click the model pill **under the chat box** (e.g. "Opus 4.8 · high"). Pick Opus 4.8 / Sonnet 4.6 / Haiku 4.5 and a reasoning-effort tier. Your choice persists across restarts, and unavailable effort tiers are greyed out per model.
-
-> **On "live" GUI control:** PrusaSlicer exposes no API to puppeteer its already-open window, auto-press the Slice button, or open the editor straight onto its Preview tab (any action flag forces headless mode; tab control is internal). So Slicely does the honest equivalent: *"open it"* opens the **editable PrusaSlicer** with the model arranged, your settings loaded, and PrusaSlicer's **background-processing** preference turned on — so the model slices in the background as it loads and you just click **Preview** (no Slice click, no wait). If PrusaSlicer was already running when that preference had to change, it'll say to restart it once for auto-slicing to apply. When you only want to **look** at the finished result (*"show me the finished slice"*), Slicely slices **headlessly** and opens the **already-sliced G-code in the read-only viewer** (zero clicks). More reliable than fragile click-automation.
-
-For Printables/MakerWorld cards, click **Open in browser** to download from the source.
+**Connect a printer:** settings (gear) → *Connected printers* → **Scan network**, or add one by address. Test it, then optionally arm auto-start.
 
 ---
 
@@ -111,12 +100,17 @@ For Printables/MakerWorld cards, click **Open in browser** to download from the 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | ✅ | — | Powers the agent. |
-| `THINGIVERSE_APP_TOKEN` | for downloads | — | Enables in-app Thingiverse search + download. |
-| `SLICELY_MODEL` | | `claude-opus-4-8` | Default Claude model (the in-app model picker under the chat box overrides this and persists your choice). |
-| `SLICELY_EFFORT` | | `high` | Default reasoning effort: `low`/`medium`/`high`/`xhigh`/`max` (also overridable in-app). |
-| `PRUSASLICER_PATH` | | `/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer` | PrusaSlicer binary. |
-| `PRUSASLICER_CONFIG_INI` | | — | Your exported printer/filament config (strongly recommended). |
-| `SLICELY_WORKDIR` | | `~/Slicely` | Where downloads (`/downloads`) and G-code (`/slices`) are saved. |
+| `SLICELY_PORT` | | `3000` | Web server port. |
+| `SLICELY_MULTI_USER` | | off | Set for a **public** deployment: disables LAN discovery and LAN-only transports, because the server's network is not the visitor's. |
+| `SLICELY_WORKDIR` | | `~/Slicely` | Downloads, slices, and per-visitor session workspaces. |
+| `THINGIVERSE_APP_TOKEN` | | — | Thingiverse search + download. |
+| `GITHUB_TOKEN` | | — | GitHub code search (its API needs a token even for public repos). |
+| `MYMINIFACTORY_API_KEY` | | — | MyMiniFactory search. |
+| `SMITHSONIAN_API_KEY` | | — | Smithsonian (falls back to a rate-limited shared demo key). |
+| `SLICELY_MODEL` | | `claude-opus-4-8` | Default model; the in-app picker overrides and persists. |
+| `SLICELY_EFFORT` | | `high` | `low`/`medium`/`high`/`xhigh`/`max`. |
+| `PRUSASLICER_PATH` | | macOS app bundle path | PrusaSlicer binary. |
+| `PRUSASLICER_CONFIG_INI` | | — | Your exported printer/filament config (recommended). |
 
 ---
 
@@ -124,37 +118,35 @@ For Printables/MakerWorld cards, click **Open in browser** to download from the 
 
 ```
 src/
-  shared/types.ts          Types shared across main / preload / renderer + IPC contract
+  shared/         types.ts · printers.ts · sourcing.ts · jobs.ts   (contracts; no Node, no Electron)
   main/
-    config.ts              Loads .env into a typed config
-    main.ts                Electron main: frameless window + IPC wiring
-    preload.ts             contextBridge → secure window.slicely API
-    agent/
-      agent.ts             Streaming Claude tool-use loop (Anthropic SDK)
-      tools.ts             Tool schemas + executor (search/import/inspect/slice…)
-      state.ts             Per-session state (last results, active model)
-    providers/
-      thingiverse.ts       Search + direct download (App Token, Bearer auth)
-      printables.ts        GraphQL search (download → browser)
-      makerworld.ts        Best-effort search (download → browser)
-      index.ts             Parallel multi-source search + download dispatch
-    prusaslicer.ts         CLI: detect/version, --info parse, slice, metric parse, GUI open
-  renderer/
-    index.html / styles.css / renderer.ts   The chat-rectangle UI
+    session-context.ts   AsyncLocalStorage session scoping — how one process serves many visitors
+    agent/               Streaming Claude tool-use loop + tool schemas (v1 + v2)
+    sourcing/            11 providers, universal URL resolver, guarded downloader, cross-source ranking
+    printers/            6 transport drivers, registry (secrets stored separately), LAN discovery
+    jobs/                Mesh parsing, orientation scoring, colour planning, plate packing, job runner
+    prusaslicer.ts       CLI: detect, --info, slice, parse metrics, open GUI
+    plates.ts            Bin-packing that mirrors PrusaSlicer's own arranger
+    main.ts preload.ts   Electron only
+  server/         Express + SSE, per-session workspaces, rate limiting, security guards
+  web/            The zero-install browser client
+  renderer/       The macOS app UI
 ```
 
-The agent is a streaming [Anthropic tool-use loop](https://docs.anthropic.com/): Claude decides when to search, import, inspect, recommend, and slice. Each tool both feeds a result back to the model *and* emits a structured event that the UI renders as model cards or metric panels — so the chat stays readable while the rich data shows up inline.
-
-The renderer is compiled separately as an ES module (`tsconfig.renderer.json`) so it runs safely in the browser context with no Node access; the main process and preload are CommonJS. Communication is exclusively over a typed, context-isolated IPC bridge.
+**Session scoping is the key to multi-user.** Conversation state and preferences were module-level singletons — right for one Electron window, wrong for a website. `session-context.ts` carries a session id in an `AsyncLocalStorage`, and `sessionState` is a `Proxy` that resolves to the ambient session's record. Every existing call site works unchanged; Electron transparently gets a default session; each web visitor gets isolated state, their own `settings.json`, and their own workspace. Sliced G-code is addressable only by an opaque token, never a path.
 
 ---
 
 ## Notes & limitations
 
-- **Downloads:** Only Thingiverse supports unattended in-app download. Printables and MakerWorld gate downloads behind login, so Slicely hands those off to your browser. (MakerWorld's default license is also not open-source — it's there for discovery.)
-- **Slicing recommendations** are geometry-based heuristics and a starting point, not a guarantee — always eyeball the PrusaSlicer preview for overhangs before printing.
-- **Binary G-code:** Slicely parses plaintext G-code comments for metrics. If your PrusaSlicer profile outputs binary G-code (`.bgcode`), disable that option so metrics can be read.
-- This is an MVP. PrusaSlicer is the only wired-up slicer; the detection layer already recognizes OrcaSlicer/BambuStudio/Cura/SuperSlicer for a future multi-slicer release.
+- **Bambu file upload** needs FTPS, which isn't implemented — status, AMS, and control work; sending a file does not, and says so rather than failing silently.
+- **Prusa Connect** publishes no third-party API. Those endpoints are documented guesses and marked unverified in the source.
+- **Thangs / Yeggi / STLFinder** sit behind bot protection that blocks honestly-identified requests. They're best-effort discovery; Slicely does not spoof a browser to get around it.
+- **Login-gated sources** are handed to your browser rather than circumvented. That's the correct outcome, not a bug.
+- **Orientation scoring** is a heuristic over face normals — a real area computation, but a proxy for support *volume*, not a physics simulation. Eyeball the preview.
+- **Binary G-code:** metrics are parsed from plaintext G-code comments. Disable `.bgcode` output in your profile.
+- **AGPL:** running PrusaSlicer as a network service triggers AGPL §13. See [`src/server/LICENSING.md`](src/server/LICENSING.md) before deploying publicly.
+- PrusaSlicer is the only wired-up slicer; detection already recognises OrcaSlicer / BambuStudio / Cura / SuperSlicer for a future release.
 
 ## License
 
