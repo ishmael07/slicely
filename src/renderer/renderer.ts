@@ -20,6 +20,7 @@ import type {
 // NOTE: explicit ".js" — the renderer is native browser ESM (no bundler), so
 // the import specifier must match the emitted filename exactly.
 import { renderMarkdown } from "./markdown.js";
+import { initPrinters, sendAction, onPrintersChanged } from "./printers.js";
 
 declare global {
   interface Window {
@@ -101,6 +102,7 @@ updateSendState();
 void refreshStatus();
 void checkConfig();
 void loadSettings();
+void initPrinters();
 
 api.onAgentEvent(handleAgentEvent);
 
@@ -1004,7 +1006,30 @@ function renderMetrics(m: SliceMetrics): void {
   // these settings loaded (ready to slice). "View finished slice" is the opt-in
   // G-code viewer (the finished toolpath / export view). Reveal opens Finder.
   const actions = el("div", "actions");
-  const openBtn = el("button", "btn primary") as HTMLButtonElement;
+
+  // Send to the connected printer — the action that turns this slice into an
+  // actual print. Leads the row; absent when no printer is connected. It is
+  // rebuilt on printer changes so its label always names the current target
+  // and reflects whether auto-start is armed.
+  const sendSlot = el("span", "send-slot");
+  const fillSendSlot = (): void => {
+    sendSlot.replaceChildren();
+    const btn = sendAction(m.gcodePath);
+    if (btn) sendSlot.appendChild(btn);
+  };
+  fillSendSlot();
+  const unsubscribe = onPrintersChanged(fillSendSlot);
+  // Stop tracking once this panel leaves the DOM, so old panels don't pile up
+  // as listeners for the life of the session.
+  new MutationObserver((_records, obs) => {
+    if (!document.contains(panel)) {
+      unsubscribe();
+      obs.disconnect();
+    }
+  }).observe(messagesEl, { childList: true });
+  actions.appendChild(sendSlot);
+
+  const openBtn = el("button", "btn") as HTMLButtonElement;
   openBtn.textContent = "Open in PrusaSlicer";
   openBtn.title = "Open the editable model with these settings loaded and auto-slicing on — click Preview to see toolpaths";
   openBtn.onclick = () =>

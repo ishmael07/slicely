@@ -1291,3 +1291,277 @@ select.ss-control {
 }
 
 /* Upload confirmation chip uses the existing .tool-chip styling */
+
+/* ── Printers ───────────────────────────────────────────────────────────────
+   The connected-printer pill (titlebar), its dropdown, the manage panel in the
+   settings sheet, and the toasts that report send/test results. This is the
+   surface that turns a finished slice into an actual print. */
+
+.printer-pill-wrap {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+.printer-pill {
+  font-family: var(--font);
+  cursor: pointer;
+  max-width: 190px;
+}
+.printer-pill span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.printer-pill:hover {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
+}
+/* A print in progress gets the warm accent, not the green "ready" pulse. */
+.status .dot.busy {
+  background: var(--accent);
+  animation: pulse-busy 1.6s infinite;
+}
+@keyframes pulse-busy {
+  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { box-shadow: 0 0 0 5px rgba(255, 122, 69, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 122, 69, 0); }
+}
+.status .dot.off {
+  background: var(--text-faint);
+}
+
+/* The titlebar menu drops DOWN; the composer pickers drop up. */
+#printerMenu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+  min-width: 240px;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s;
+}
+.picker-item:hover {
+  background: var(--panel-hover);
+}
+.picker-item.selected {
+  background: var(--accent-soft);
+}
+.picker-item.manage {
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 11px;
+  border-top: 0.5px solid var(--border);
+  border-radius: 0 0 var(--radius-xs) var(--radius-xs);
+  margin-top: 3px;
+  padding-top: 9px;
+}
+.picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.picker-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-blurb {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.picker-empty {
+  padding: 10px 9px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.ss-divider {
+  height: 0.5px;
+  background: var(--border);
+  margin: 12px 0 10px;
+}
+.printer-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.printer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.printer-row.found {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.printer-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.printer-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.printer-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Auto-start is a hazard toggle: warm-tinted so it never reads as routine. */
+.printer-arm {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--warn);
+  cursor: pointer;
+}
+.printer-arm input {
+  margin-top: 1px;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+.printer-actions,
+.printer-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.btn.small {
+  font-size: 10.5px;
+  padding: 4px 9px;
+}
+.btn.ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+.btn.ghost:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.btn.danger:hover {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.discovered:empty {
+  display: none;
+}
+.printer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.pf-row {
+  display: flex;
+  gap: 8px;
+}
+.pf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.pf-field.narrow {
+  flex: 0 0 78px;
+}
+.pf-field input,
+.pf-field select {
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: var(--radius-xs);
+  border: 0.5px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.pf-field input:focus,
+.pf-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pf-secrets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toasts {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  pointer-events: none;
+}
+.toast {
+  max-width: 300px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(170deg, var(--bg-1), var(--bg-0));
+  backdrop-filter: blur(22px) saturate(160%);
+  border: 0.5px solid var(--border-bright);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.24s var(--ease), transform 0.24s var(--ease);
+}
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.toast.ok {
+  border-left: 2px solid var(--ok);
+}
+.toast.err {
+  border-left: 2px solid var(--err);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status .dot.busy {
+    animation: none;
+  }
+  .toast {
+    transition: opacity 0.01s;
+  }
+}

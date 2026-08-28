@@ -18,6 +18,16 @@
           <span class="name">Slicely</span>
         </div>
         <div class="title-right">
+          <!-- Connected-printer pill: live state of the machine Slicely sends to.
+               Distinct from the PrusaSlicer status pill beside it, which is
+               about the slicer binary, not the printer. -->
+          <div class="printer-pill-wrap">
+            <button class="status printer-pill" id="printerPill" title="Connected printer">
+              <span class="dot off" id="printerDot"></span>
+              <span id="printerLabel">No printer</span>
+            </button>
+            <div id="printerMenu" class="picker-menu hidden"></div>
+          </div>
           <div class="status" id="slicerStatus" title="PrusaSlicer status">
             <span class="dot" id="statusDot"></span>
             <span id="statusText">checking…</span>
@@ -75,6 +85,10 @@
           <span class="ss-label">Brim</span>
           <div class="ss-seg" id="ssBrim" role="group" aria-label="Brim"></div>
         </div>
+
+        <!-- Connected printers: discover, add, test, arm auto-start. -->
+        <div class="ss-divider"></div>
+        <div id="printerManage" class="printer-manage"></div>
         <p class="ss-hint">Saved for every slice — Slicely won't ask again. Set "auto" to let it decide from each model.</p>
       </div>
 
@@ -140,6 +154,8 @@
           <span class="dz-sub">STL · 3MF · OBJ · AMF · STEP</span>
         </div>
       </div>
+      <!-- Transient printer feedback (send results, connection tests) -->
+      <div id="toasts" class="toasts"></div>
     </div>
     <script type="module" src="renderer.js"></script>
   </body>
