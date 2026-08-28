@@ -63,6 +63,29 @@ export interface PlanJobDeps {
  *  mistake in the source file rather than an intentional miniature. 5 mm is
  *  comfortably under any real printed part while still catching cm/inch
  *  imports, which land 10-25x too small. */
+/**
+ * Should each colour get its own plate?
+ *
+ * An explicit choice always wins — a user asking to "put the black parts on one
+ * plate and the blue on another" must get exactly that, and one asking to print
+ * them together must too. With no explicit choice, follow the hardware: a
+ * printer with two or more loaded slots (AMS/MMU) swaps filament itself
+ * mid-print, so mixing colours on one plate is the point of it; a
+ * single-extruder printer needs single-colour plates, because there the "tool
+ * change" is the user swapping a spool between plates.
+ *
+ * A job using only one colour is never split.
+ */
+export function shouldGroupByColour(input: {
+  distinctColours: number;
+  usableSlots: number;
+  explicit?: boolean;
+}): boolean {
+  if (input.distinctColours <= 1) return false;
+  if (typeof input.explicit === "boolean") return input.explicit;
+  return input.usableSlots < 2;
+}
+
 export const MIN_PLAUSIBLE_PART_MM = 5;
 
 /**
@@ -216,8 +239,11 @@ export async function planJob(
   // printing on exactly the machines that support it.
   const usableSlots = (opts.slots ?? []).filter((sl) => sl.loaded !== false).length;
   const multiMaterial = usableSlots >= 2;
-  const groupByColour =
-    opts.groupByColour ?? (distinctColours.size > 1 && !multiMaterial);
+  const groupByColour = shouldGroupByColour({
+    distinctColours: distinctColours.size,
+    usableSlots,
+    explicit: opts.groupByColour,
+  });
 
   const bed: BedArea = { w: opts.bed.x, d: opts.bed.y };
   const spacing = opts.spacingMm ?? DEFAULT_SPACING;

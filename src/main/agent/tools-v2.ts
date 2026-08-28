@@ -221,6 +221,14 @@ export const V2_TOOLS: Anthropic.Tool[] = [
           description:
             "Choose the best orientation per part (default true). Set false only if the user wants parts left as modelled.",
         },
+        groupByColour: {
+          type: "boolean",
+          description:
+            "Set TRUE when the user wants each colour on its OWN plate (\"all the black parts on one plate, blue on another\", " +
+            "\"separate the colours\", \"one colour at a time\"). Set FALSE to force every colour onto the same plate. " +
+            "Omit to let Slicely decide: a printer with 2+ loaded filament slots (AMS/MMU) mixes colours on one plate because it " +
+            "swaps filament itself, while a single-extruder printer gets one colour per plate so the user swaps spools between plates.",
+        },
       },
       required: [],
     },
@@ -526,6 +534,10 @@ export async function executeV2Tool(
         bed: geom.bed,
         maxHeightMm: geom.bed.z,
         autoOrient: input.autoOrient !== false,
+        // Only forward an explicit choice; leaving it undefined lets the
+        // planner pick based on how many filament slots the printer has.
+        groupByColour:
+          typeof input.groupByColour === "boolean" ? input.groupByColour : undefined,
         goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",
         slots,
         name: input.name ? String(input.name) : undefined,
@@ -537,7 +549,7 @@ export async function executeV2Tool(
       const plateLines = job.plates.map(
         (pl) =>
           `  Plate ${pl.index}: ${pl.parts.length} part(s)${
-            pl.colours.length > 1 ? `, ${pl.colours.length} colours` : ""
+            pl.colours.length ? `, colour(s) ${pl.colours.join(", ")}` : ""
           }${pl.rationale ? ` — ${pl.rationale}` : ""}`,
       );
       const over = job.oversized?.length

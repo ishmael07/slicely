@@ -92,3 +92,48 @@ test("normal-sized parts produce no units warning", () => {
     undefined,
   );
 });
+
+// ── Colour-splitting across plates ──────────────────────────────────────────
+// Two opposite needs, and the right default depends on the printer:
+//   • "put the black parts on one plate and the blue on another" → one colour
+//     per plate, so a single-extruder user swaps spools BETWEEN plates.
+//   • "I have an AMS, print them together" → colours share a plate, because
+//     the printer changes filament itself mid-print.
+// The default must follow the hardware, but an explicit request always wins.
+
+import { shouldGroupByColour } from "./planner";
+
+test("with 2+ loaded slots, colours share a plate by default", () => {
+  assert.equal(
+    shouldGroupByColour({ distinctColours: 2, usableSlots: 4, explicit: undefined }),
+    false,
+    "an AMS exists precisely so several colours can print on one plate",
+  );
+});
+
+test("with one slot, each colour gets its own plate by default", () => {
+  assert.equal(
+    shouldGroupByColour({ distinctColours: 2, usableSlots: 1, explicit: undefined }),
+    true,
+    "a single-extruder user swaps spools between plates, so plates must be single-colour",
+  );
+});
+
+test("an explicit request to split by colour wins, even with an AMS", () => {
+  assert.equal(
+    shouldGroupByColour({ distinctColours: 3, usableSlots: 4, explicit: true }),
+    true,
+  );
+});
+
+test("an explicit request to combine wins, even on a single extruder", () => {
+  assert.equal(
+    shouldGroupByColour({ distinctColours: 3, usableSlots: 1, explicit: false }),
+    false,
+  );
+});
+
+test("a single-colour job is never split, whatever the setting", () => {
+  assert.equal(shouldGroupByColour({ distinctColours: 1, usableSlots: 1, explicit: true }), false);
+  assert.equal(shouldGroupByColour({ distinctColours: 1, usableSlots: 4, explicit: undefined }), false);
+});
