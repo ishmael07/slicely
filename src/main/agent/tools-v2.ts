@@ -195,7 +195,8 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "colours against the filament actually loaded in the printer, group parts to minimise tool changes, and " +
       "pack them across as many plates as needed. Use this whenever there is more than one part, multiple " +
       "copies, more than one colour, or the parts won't fit one bed. Returns the plate breakdown and totals. " +
-      "It does NOT slice — call run_job for that.",
+      "It does NOT slice — call run_job for that. To give ONE model several colours without painting it, pass " +
+      "colourBands (a filament swap at each height, works on any printer).",
     input_schema: {
       type: "object",
       properties: {
@@ -220,6 +221,17 @@ export const V2_TOOLS: Anthropic.Tool[] = [
           type: "boolean",
           description:
             "Choose the best orientation per part (default true). Set false only if the user wants parts left as modelled.",
+        },
+        colourBands: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Colours stacked BOTTOM-FIRST to give ONE part several colours without painting it, e.g. " +
+            '["#000000", "#1e6fc8"] for "black bottom half, blue top half". Slicely splits the height into equal ' +
+            "bands and pauses the printer at each boundary to swap filament, so this works on ANY printer, " +
+            "including single-extruder machines with no AMS. Use it when the user wants a multi-colour version of a " +
+            "SINGLE model. Note a filament change affects the whole plate, so prefer a plate with just that part. " +
+            "Do NOT use it to give different PARTS different colours — set each part's colourHex for that.",
         },
         groupByColour: {
           type: "boolean",
@@ -538,6 +550,9 @@ export async function executeV2Tool(
         // planner pick based on how many filament slots the printer has.
         groupByColour:
           typeof input.groupByColour === "boolean" ? input.groupByColour : undefined,
+        colourBands: Array.isArray(input.colourBands)
+          ? (input.colourBands as unknown[]).map(String).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c))
+          : undefined,
         goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",
         slots,
         name: input.name ? String(input.name) : undefined,

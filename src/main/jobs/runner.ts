@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { parseMesh } from "./mesh";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
 import { synthesizeMultiMaterialConfig, distinctExtruders } from "./multimaterial";
+import { insertColourChanges, bandsToChanges } from "./colourchange";
 
 /** Job ids with a cancellation request in flight. Checked between plates
  *  (never mid-slice — PrusaSlicer's CLI has no cooperative cancellation
@@ -81,6 +82,7 @@ export async function runJob(
 
     try {
       const metrics = await sliceOnePlate(plate, job, doSlice);
+      applyColourBands(plate, job, metrics);
       plate.status = "ready";
       plate.metrics = metrics;
       plate.gcodePath = metrics.gcodePath;
@@ -171,6 +173,52 @@ async function sliceOnePlate(
   };
 
   return doSlice(primary.path, params, undefined, outNameFor(plate));
+}
+
+/**
+ * Insert filament swaps up the height of a plate, so a single part can print in
+ * several colours without being painted.
+ *
+ * Runs after slicing because it rewrites the finished G-code: PrusaSlicer's CLI
+ * ignores a project's custom_gcode_per_print_z entirely (see colourchange.ts).
+ * Notes go on the plate so the user sees the heights the swaps actually landed
+ * on, which are quantised to layer boundaries.
+ */
+function applyColourBands(plate: JobPlate, job: PrintJob, metrics: SliceMetrics): void {
+  const bands = job.colourBands;
+  if (!bands || bands.length < 2 || !metrics.gcodePath) return;
+
+  const height = Math.max(...plate.parts.map((p) => p.sizeZ), 0);
+  const changes = bandsToChanges(height, bands);
+  if (changes.length === 0) return;
+
+  try {
+    const res = insertColourChanges(metrics.gcodePath, changes);
+    const notes: string[] = [];
+    if (res.inserted > 0) {
+      notes.push(
+        `${res.inserted} filament change${res.inserted === 1 ? "" : "s"} at ` +
+          `${res.atZ.map((z) => `${z} mm`).join(", ")}. The printer pauses there — ` +
+          `load the next colour and resume.`,
+      );
+    }
+    if (plate.parts.length > 1) {
+      notes.push(
+        `Note: a filament change affects the whole plate, so all ` +
+          `${plate.parts.length} parts on it change colour at those heights.`,
+      );
+    }
+    if (res.skipped.length > 0) {
+      notes.push(`${res.skipped.length} change(s) were above the model and skipped.`);
+    }
+    metrics.fixes = [...(metrics.fixes ?? []), ...notes];
+  } catch {
+    // A failed rewrite must not lose an otherwise good slice.
+    metrics.fixes = [
+      ...(metrics.fixes ?? []),
+      "Could not add the filament changes to this plate's G-code.",
+    ];
+  }
 }
 
 function outNameFor(plate: JobPlate): string {

@@ -22,6 +22,21 @@ import { deflateRawSync, crc32 } from "node:zlib";
 import { basename } from "node:path";
 import type { Triangle } from "./mesh";
 
+/**
+ * A filament change partway up the print.
+ *
+ * This is how a SINGLE part gets more than one colour without per-triangle
+ * painting: the printer pauses at a height, you swap the spool (or an
+ * MMU/AMS swaps it), and everything above prints in the new colour. It works
+ * on any printer, including single-extruder machines with no AMS at all.
+ */
+export interface ColourChange {
+  /** Height in mm at which the new colour starts. */
+  atZ: number;
+  /** Colour that begins at this height, "#RRGGBB". */
+  colourHex: string;
+}
+
 /** One part to place in the project. */
 export interface ThreeMfPart {
   /** Source file, used only for the human-readable name metadata. */
@@ -142,6 +157,30 @@ function configXml(parts: ThreeMfPart[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${blocks.join("\n")}\n</config>\n`;
 }
 
+/**
+ * PrusaSlicer's per-height custom G-code document.
+ *
+ * type="0" is ColorChange. M600 is the standard "pause and let me swap
+ * filament" command; on a multi-material printer PrusaSlicer turns the same
+ * entry into a tool change instead.
+ */
+function customGcodeXml(changes: ColourChange[]): string {
+  const codes = changes
+    .slice()
+    .sort((a, b) => a.atZ - b.atZ)
+    .map(
+      (c) =>
+        ` <code print_z="${n(c.atZ)}" type="0" extruder="1" ` +
+        `color="${esc(c.colourHex.toUpperCase())}" extra="" gcode="M600"/>`,
+    );
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<custom_gcodes_per_print_z>\n${codes.join("\n")}\n` +
+    ` <mode value="SingleExtruder"/>\n` +
+    `</custom_gcodes_per_print_z>\n`
+  );
+}
+
 const CONTENT_TYPES =
   `<?xml version="1.0" encoding="UTF-8"?>\n` +
   `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n` +
@@ -243,18 +282,32 @@ function zip(entries: ZipEntry[]): Buffer {
 }
 
 /** Build the 3MF package in memory. Exported for testing without disk I/O. */
-export function buildThreeMf(parts: ThreeMfPart[]): Buffer {
+export function buildThreeMf(
+  parts: ThreeMfPart[],
+  colourChanges: ColourChange[] = [],
+): Buffer {
   if (parts.length === 0) throw new Error("A 3MF needs at least one part.");
-  return zip([
+  const entries: ZipEntry[] = [
     { name: "[Content_Types].xml", data: Buffer.from(CONTENT_TYPES, "utf8") },
     { name: "_rels/.rels", data: Buffer.from(RELS, "utf8") },
     { name: "3D/3dmodel.model", data: Buffer.from(modelXml(parts), "utf8") },
     { name: "Metadata/Slic3r_PE_model.config", data: Buffer.from(configXml(parts), "utf8") },
-  ]);
+  ];
+  if (colourChanges.length > 0) {
+    entries.push({
+      name: "Metadata/Slic3r_PE_custom_gcode_per_print_z.xml",
+      data: Buffer.from(customGcodeXml(colourChanges), "utf8"),
+    });
+  }
+  return zip(entries);
 }
 
-/** Write a multi-extruder 3MF project to `destPath`. */
-export function writeThreeMf(destPath: string, parts: ThreeMfPart[]): string {
-  writeFileSync(destPath, buildThreeMf(parts));
+/** Write a 3MF project to `destPath`, optionally with colour changes by height. */
+export function writeThreeMf(
+  destPath: string,
+  parts: ThreeMfPart[],
+  colourChanges: ColourChange[] = [],
+): string {
+  writeFileSync(destPath, buildThreeMf(parts, colourChanges));
   return destPath;
 }

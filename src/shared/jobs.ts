@@ -166,6 +166,16 @@ export interface PrintJob {
    *  multi-extruder plate writes a 3MF with explicit object positions, which
    *  needs the bed the packer actually used. */
   bed?: { x: number; y: number; z: number };
+  /**
+   * Colours stacked up the print, bottom first, for colouring a SINGLE part
+   * without painting it. Slicely divides the plate's height into equal bands
+   * and inserts a filament swap at each boundary.
+   *
+   * A filament swap is a property of the PRINTER, not of one object, so these
+   * bands apply to everything on the plate at that height. Planning warns when
+   * a banded plate holds more than one part.
+   */
+  colourBands?: string[];
   colourPlan?: ColourPlan;
   /** Summed across every plate, once sliced. */
   totals?: JobTotals;
@@ -200,6 +210,8 @@ export interface JobPlanOptions {
   goal?: PrintGoal;
   /** Printer slots, used to resolve the colour plan while packing. */
   slots?: FilamentSlot[];
+  /** Colours stacked up the print, bottom first — see PrintJob.colourBands. */
+  colourBands?: string[];
 }
 
 /** Progress event emitted while a job slices, so the UI can stream it. */
