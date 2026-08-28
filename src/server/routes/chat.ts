@@ -1,0 +1,145 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/chat — the zero-install client's brain. Streams the SAME agent
+// loop the Electron app uses (main/agent/agent.ts) to the browser over
+// Server-Sent Events instead of Electron IPC.
+//
+// SSE, not a raw WebSocket: it rides plain HTTP, so it survives the reverse
+// proxies / load balancers a hosted deployment sits behind (some strip
+// Upgrade headers or time out idle WS connections), and the browser's native
+// EventSource retries a dropped connection with zero client code. The
+// trade-off (one-way: server → client) is fine here because the only
+// "upload" direction we need is the initial POST body.
+// ─────────────────────────────────────────────────────────────────────────────
+import { Router } from "express";
+import type { Request, Response } from "express";
+import { SlicelyAgent } from "../../main/agent/agent";
+import { sessionState } from "../../main/agent/state";
+import type { AgentEvent } from "../../shared/types";
+import { adoptGcodeFile, withGlobalAgentLock, type ChatAgent, type SessionRecord } from "../session";
+
+function writeSse(res: Response, wire: Record<string, unknown>): void {
+  res.write(`data: ${JSON.stringify(wire)}\n\n`);
+}
+
+/**
+ * Forward one AgentEvent to the browser, widened to a plain record (not the
+ * strict AgentEvent union — see routes/jobs.ts for why) so a "metrics" event
+ * can carry an extra `gcodeId`. tools.ts's slice_model writes its G-code
+ * straight into the GLOBAL shared slices directory (it predates sessions);
+ * this is the one place that file becomes reachable from THIS session at all
+ * — without it, a chat-driven slice could never be sent to a printer via
+ * /api/printers/:id/send, which only accepts a gcodeId from the session's own
+ * registry. Chained per-response so relocating a file (async) can never
+ * reorder frames relative to the surrounding text/tool events.
+ */
+function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentEvent) => void; flush: () => Promise<void> } {
+  let chain: Promise<void> = Promise.resolve();
+  const emit = (event: AgentEvent) => {
+    chain = chain.then(async () => {
+      if (event.type === "metrics" && event.metrics.gcodePath) {
+        const adopted = await adoptGcodeFile(session, event.metrics.gcodePath).catch(() => undefined);
+        if (adopted) {
+          writeSse(res, { ...event, metrics: { ...event.metrics, gcodePath: adopted.path }, gcodeId: adopted.id });
+          return;
+        }
+      }
+      writeSse(res, event as unknown as Record<string, unknown>);
+    });
+  };
+  const flush = () => chain.catch(() => undefined);
+  return { emit, flush };
+}
+
+/**
+ * `makeAgent` defaults to a real `SlicelyAgent` (opens an Anthropic client
+ * and talks to the real API). Tests should ALWAYS override it with a stub —
+ * see routes/chat.test.ts — so exercising the SSE wire format never depends
+ * on an API key or makes a live network call.
+ */
+export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyAgent()): Router {
+  const router = Router();
+
+  router.post("/chat", async (req: Request, res: Response) => {
+    const session = req.session!;
+    const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+    if (!message) {
+      res.status(400).json({ error: "message is required" });
+      return;
+    }
+    if (session.busy) {
+      res.status(409).json({ error: "This tab is still waiting on a previous reply." });
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      // Disables response buffering on nginx-fronted deployments so events
+      // reach the browser as they're written, not batched at proxy close.
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders?.();
+
+    session.busy = true;
+    const { emit, flush } = makeEmit(session, res);
+    const onClientClose = () => session.agent?.cancel();
+    req.on("close", onClientClose);
+
+    try {
+      if (!session.agent) {
+        session.agent = makeAgent();
+      }
+      const agent = session.agent;
+      // See session.ts's header comment: main/agent/state.ts's sessionState
+      // is a process-wide singleton, not keyed per session. Serialize the
+      // tool-executing part of every chat turn, server-wide, so concurrent
+      // browsers can't interleave writes to it. This is a throughput
+      // trade-off (one active turn at a time, platform-wide) accepted
+      // deliberately in favor of correctness until state.ts is made
+      // session-aware — a src/main change outside this layer's scope.
+      await withGlobalAgentLock(() => {
+        // Re-point the singleton at THIS session's own uploaded/imported
+        // file(s) right before running its turn, while still holding the
+        // lock (so no other session's turn can run in between and no
+        // upload/import REST call runs code inside a turn at all). This
+        // closes the file-identity race a naive reuse of tools.ts would
+        // have: whichever session's turn is executing right now is
+        // guaranteed to see ITS OWN model, not whichever session uploaded
+        // most recently.
+        if (session.activeModelPaths.length > 0) {
+          sessionState.lastModelPath = session.activeModelPaths[session.activeModelPaths.length - 1];
+          sessionState.lastModelParts = session.activeModelPaths;
+        }
+        return agent.send(message, emit).then(() => {
+          // Pull back whatever the agent itself imported/downloaded/sliced
+          // during this turn (import_model/slice_model write sessionState
+          // directly) so a LATER turn from this same session — or a REST
+          // call like /api/slice — keeps working from this session's file,
+          // not whatever the singleton happens to hold once the lock frees.
+          if (sessionState.lastModelParts.length > 0) {
+            session.activeModelPaths = sessionState.lastModelParts;
+          } else if (sessionState.lastModelPath) {
+            session.activeModelPaths = [sessionState.lastModelPath];
+          }
+        });
+      });
+    } catch (err) {
+      emit({ type: "error", message: (err as Error).message ?? String(err) });
+      emit({ type: "done" });
+    } finally {
+      await flush();
+      session.busy = false;
+      session.lastActiveAt = Date.now();
+      req.off("close", onClientClose);
+      res.end();
+    }
+  });
+
+  router.post("/chat/cancel", (req: Request, res: Response) => {
+    req.session?.agent?.cancel();
+    res.json({ ok: true });
+  });
+
+  return router;
+}
