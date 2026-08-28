@@ -15,7 +15,7 @@ import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
-import { adoptGcodeFile, withGlobalAgentLock, type ChatAgent, type SessionRecord } from "../session";
+import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
 
 function writeSse(res: Response, wire: Record<string, unknown>): void {
   res.write(`data: ${JSON.stringify(wire)}\n\n`);
@@ -91,39 +91,24 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
         session.agent = makeAgent();
       }
       const agent = session.agent;
-      // See session.ts's header comment: main/agent/state.ts's sessionState
-      // is a process-wide singleton, not keyed per session. Serialize the
-      // tool-executing part of every chat turn, server-wide, so concurrent
-      // browsers can't interleave writes to it. This is a throughput
-      // trade-off (one active turn at a time, platform-wide) accepted
-      // deliberately in favor of correctness until state.ts is made
-      // session-aware — a src/main change outside this layer's scope.
-      await withGlobalAgentLock(() => {
-        // Re-point the singleton at THIS session's own uploaded/imported
-        // file(s) right before running its turn, while still holding the
-        // lock (so no other session's turn can run in between and no
-        // upload/import REST call runs code inside a turn at all). This
-        // closes the file-identity race a naive reuse of tools.ts would
-        // have: whichever session's turn is executing right now is
-        // guaranteed to see ITS OWN model, not whichever session uploaded
-        // most recently.
-        if (session.activeModelPaths.length > 0) {
-          sessionState.lastModelPath = session.activeModelPaths[session.activeModelPaths.length - 1];
-          sessionState.lastModelParts = session.activeModelPaths;
-        }
-        return agent.send(message, emit).then(() => {
-          // Pull back whatever the agent itself imported/downloaded/sliced
-          // during this turn (import_model/slice_model write sessionState
-          // directly) so a LATER turn from this same session — or a REST
-          // call like /api/slice — keeps working from this session's file,
-          // not whatever the singleton happens to hold once the lock frees.
-          if (sessionState.lastModelParts.length > 0) {
-            session.activeModelPaths = sessionState.lastModelParts;
-          } else if (sessionState.lastModelPath) {
-            session.activeModelPaths = [sessionState.lastModelPath];
-          }
-        });
-      });
+      // The request already runs inside this session's context (see
+      // sessionMiddleware), so `sessionState` below IS this visitor's own
+      // record — concurrent turns from other browsers cannot touch it.
+      // Point it at this session's uploaded/imported file(s) before the turn.
+      if (session.activeModelPaths.length > 0) {
+        sessionState.lastModelPath =
+          session.activeModelPaths[session.activeModelPaths.length - 1];
+        sessionState.lastModelParts = session.activeModelPaths;
+      }
+      await agent.send(message, emit);
+      // Pull back whatever the agent imported/downloaded/sliced this turn, so
+      // a later turn — or a REST call like /api/slice — keeps working from
+      // this session's file.
+      if (sessionState.lastModelParts.length > 0) {
+        session.activeModelPaths = sessionState.lastModelParts;
+      } else if (sessionState.lastModelPath) {
+        session.activeModelPaths = [sessionState.lastModelPath];
+      }
     } catch (err) {
       emit({ type: "error", message: (err as Error).message ?? String(err) });
       emit({ type: "done" });

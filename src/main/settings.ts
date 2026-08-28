@@ -8,8 +8,8 @@
 // instead of blindly sending params that 400 on some models (e.g. `effort` is
 // rejected on Haiku 4.5; `xhigh` is Opus 4.7+ only).
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { getConfig } from "./config";
+import { currentSessionId, sessionFile } from "./session-context";
 import { KNOWN_PRINTERS } from "./profiles";
 import type {
   PrintPreferences,
@@ -88,9 +88,13 @@ export interface Settings {
   preferences: PrintPreferences;
 }
 
-const SETTINGS_FILE = () => join(getConfig().workdir, "settings.json");
+/** Settings live in the AMBIENT SESSION's directory. Electron always runs in
+ *  the default session, so it keeps using <workdir>/settings.json exactly as
+ *  before; each web visitor gets their own file under <workdir>/sessions/<id>/. */
+const SETTINGS_FILE = () => sessionFile("settings.json");
 
-let cached: Settings | null = null;
+/** One cache entry per session, so visitors never read each other's settings. */
+const cache = new Map<string, Settings>();
 
 function defaults(): Settings {
   const cfg = getConfig();
@@ -197,12 +201,14 @@ export function printerGeometry(
 }
 
 export function getSettings(): Settings {
-  if (cached) return cached;
+  const sid = currentSessionId();
+  const hit = cache.get(sid);
+  if (hit) return hit;
   const base = defaults();
   try {
     const raw = readFileSync(SETTINGS_FILE(), "utf8");
     const saved = JSON.parse(raw) as Partial<Settings>;
-    cached = {
+    const loaded: Settings = {
       model:
         saved.model && MODEL_CATALOG.some((m) => m.id === saved.model)
           ? saved.model
@@ -213,10 +219,12 @@ export function getSettings(): Settings {
           : base.effort,
       preferences: sanitizePreferences(saved.preferences),
     };
+    cache.set(sid, loaded);
+    return loaded;
   } catch {
-    cached = base;
+    cache.set(sid, base);
+    return base;
   }
-  return cached;
 }
 
 export function updateSettings(patch: Partial<Settings>): Settings {
@@ -257,7 +265,7 @@ export function updatePreferences(
 }
 
 function persist(next: Settings): Settings {
-  cached = next;
+  cache.set(currentSessionId(), next);
   try {
     writeFileSync(SETTINGS_FILE(), JSON.stringify(next, null, 2), "utf8");
   } catch {
@@ -307,4 +315,9 @@ export function buildModelRequestParams(
   }
 
   return out;
+}
+
+/** Drop a session's cached settings (called when a web session is evicted). */
+export function disposeSessionSettings(id: string): void {
+  cache.delete(id);
 }

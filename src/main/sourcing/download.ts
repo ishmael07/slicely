@@ -17,7 +17,7 @@
 //     only) AND re-verifies the resolved path is still inside destDir before
 //     anything is written.
 import { createWriteStream, promises as fsp } from "node:fs";
-import { basename, extname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import unzipper from "unzipper";
 import type { DownloadPart, DownloadResult } from "../../shared/types";
 import { guardedFetch, safeText } from "./net";
@@ -51,7 +51,16 @@ export interface FetchToFileOptions {
  */
 export function isWithinDir(dir: string, candidate: string): boolean {
   const rel = relative(dir, candidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  if (rel === "") return true;
+  if (isAbsolute(rel)) return false;
+  // NOTE: this must check for an actual ".." PATH SEGMENT (`rel === ".."` or
+  // `rel` starting with `".." + sep`), not merely `rel.startsWith("..")` — a
+  // perfectly safe, sanitized filename like "..-evil.dll" (produced when a
+  // Windows-style "..\..\evil.dll" traversal has its backslashes swapped to
+  // "_"/"-" by the filename sanitizer) also starts with the two characters
+  // ".." without being a traversal at all, and a naive prefix check would
+  // wrongly reject it.
+  return rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 
 /**
@@ -226,23 +235,71 @@ export async function expandZipFile(
   return parts;
 }
 
+/** Extensions that are themselves ZIP containers but are a single, terminal
+ *  mesh file — never a "loose collection of meshes" archive to expand. 3MF
+ *  is a zip containing (among other things) `3D/3dmodel.model`; AMF is
+ *  usually plain XML but the spec also allows a zipped form. Both must be
+ *  saved as-is, not unpacked. (Bug fix: a .3mf download was previously
+ *  routed into the generic zip-expansion path — which correctly found no
+ *  *.stl/*.3mf/etc. loose files INSIDE the 3MF container — and was thrown
+ *  away as "no printable meshes found", silently dropping a perfectly good,
+ *  natively-sliceable file. A model shipping ONLY a .3mf, with no separate
+ *  .stl, failed to download at all.) */
+const ZIP_BASED_MESH_EXTS = new Set([".3mf", ".amf"]);
+
+/** The 3MF spec's required root part — its presence is the ground-truth
+ *  signal that a zip is a 3MF file, independent of (and more reliable than)
+ *  whatever extension the URL/Content-Disposition happened to report. */
+async function looksLike3mfContainer(zipPath: string): Promise<boolean> {
+  try {
+    const directory = await unzipper.Open.file(zipPath);
+    return directory.files.some((f) => f.path.toLowerCase() === "3d/3dmodel.model");
+  } catch {
+    return false;
+  }
+}
+
+/** Rename a file on disk to end in `ext` if it doesn't already, returning
+ *  the (possibly updated) path/name. Used when content-sniffing finds a 3MF
+ *  container under a filename that didn't already say so. */
+async function ensureExtension(path: string, fileName: string, ext: string): Promise<{ path: string; fileName: string }> {
+  if (fileName.toLowerCase().endsWith(ext)) return { path, fileName };
+  const newFileName = `${fileName}${ext}`;
+  const newPath = join(dirname(path), newFileName);
+  await fsp.rename(path, newPath);
+  return { path: newPath, fileName: newFileName };
+}
+
 /**
- * Download `url` into `destDir`, auto-expanding a ZIP into its mesh parts.
- * This is the canonical entry point used by both `downloadFromUrl` and every
- * provider's `fileUrl`-based download path.
+ * Download `url` into `destDir`, auto-expanding a ZIP-of-meshes into its
+ * mesh parts. This is the canonical entry point used by both
+ * `downloadFromUrl` and every provider's `fileUrl`-based download path.
  */
 export async function downloadUrlToDir(
   url: string,
   destDir: string,
   opts: FetchToFileOptions = {},
 ): Promise<DownloadResult> {
-  const fetched = await fetchToFile(url, destDir, opts);
+  let fetched = await fetchToFile(url, destDir, opts);
+  let ext = extname(fetched.fileName).toLowerCase();
 
-  const isZip = fetched.sniffed === "zip" || extname(fetched.fileName).toLowerCase() === ".zip";
-  if (!isZip) {
-    // Not a zip: return the single file as-is. A non-mesh extension is still
-    // returned rather than rejected here — the resolver/caller decides
-    // whether an unrecognized type is acceptable.
+  const sniffedZip = fetched.sniffed === "zip" || ext === ".zip";
+  let treatAsArchive = sniffedZip && !ZIP_BASED_MESH_EXTS.has(ext);
+
+  // Extension didn't already say .3mf/.amf, but the bytes are a zip — check
+  // for the 3MF root part before assuming this is a loose-file archive.
+  if (treatAsArchive) {
+    if (await looksLike3mfContainer(fetched.path)) {
+      treatAsArchive = false;
+      fetched = { ...fetched, ...(await ensureExtension(fetched.path, fetched.fileName, ".3mf")) };
+      ext = ".3mf";
+    }
+  }
+
+  if (!treatAsArchive) {
+    // A single terminal file: a recognized mesh (including a zip-based one
+    // like .3mf/.amf), or an unrecognized type returned as-is — the
+    // resolver/caller decides whether an unrecognized type is acceptable.
     return {
       localPath: fetched.path,
       fileName: fetched.fileName,
@@ -252,14 +309,14 @@ export async function downloadUrlToDir(
           localPath: fetched.path,
           fileName: fetched.fileName,
           sizeBytes: fetched.sizeBytes,
-          ext: extname(fetched.fileName).toLowerCase(),
+          ext,
         },
       ],
     };
   }
 
-  // It's a zip: expand into a per-download subfolder so parts stay grouped,
-  // then remove the archive itself.
+  // It's a genuine archive of loose files: expand into a per-download
+  // subfolder so parts stay grouped, then remove the archive itself.
   const stem = sanitizeFileName(basename(fetched.fileName, extname(fetched.fileName)), "archive");
   const folder = join(destDir, stem);
   const parts = await expandZipFile(fetched.path, folder);

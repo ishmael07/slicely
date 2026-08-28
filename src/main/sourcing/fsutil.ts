@@ -54,7 +54,20 @@ export function filenameFromContentDisposition(headerValue: string | null): stri
     }
   }
   const plain = /filename\s*=\s*"?([^";]+)"?/.exec(headerValue);
-  return plain?.[1]?.trim();
+  const raw = plain?.[1]?.trim();
+  if (!raw) return undefined;
+  // The plain `filename=` parameter isn't supposed to be percent-encoded
+  // (only `filename*=` is defined that way) — but some real CDNs do it
+  // anyway (observed live: Printables' files.printables.com sends
+  // `filename="Calibration%20Cube.stl"` in the plain form). Decode
+  // defensively; a name that was never encoded and happens to contain a
+  // literal '%' that isn't valid percent-encoding just throws and is used
+  // as-is untouched.
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 /** Best-effort filename from the last path segment of a URL. */

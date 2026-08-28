@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as dns from "node:dns/promises";
+// Deliberately `import ... = require(...)` (not `import * as dns from`) so
+// this resolves to the exact same raw CommonJS module object net.ts's own
+// compiled `require("node:dns/promises")` uses — TS's `import * as`
+// namespace-import emits a getter-based rebinding wrapper that
+// `t.mock.method` can't intercept (it only replaces plain data properties).
+import dns = require("node:dns/promises");
 import { isPrivateHost, assertPublicHttpUrl, clamp } from "./net";
 
 test("isPrivateHost rejects loopback, RFC1918, link-local, and localhost forms", () => {

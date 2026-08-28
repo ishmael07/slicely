@@ -20,7 +20,10 @@ export function isBotChallenge(html: string): boolean {
     head.includes("checking your browser") ||
     head.includes("challenges.cloudflare.com") ||
     head.includes("cf-browser-verification") ||
-    head.includes("please enable cookies")
+    head.includes("please enable cookies") ||
+    // Yeggi's own (non-Cloudflare) interstitial — its exact wording,
+    // verified live 2026-08-27 against a real request to yeggi.com/q/....
+    head.includes("check whether you are human or a bot")
   );
 }
 

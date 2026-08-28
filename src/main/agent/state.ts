@@ -1,6 +1,12 @@
-// Per-process session state shared between the agent loop and tool executor.
-// Slicely is a single-window personal app, so a module-level singleton is fine.
+// Conversation state shared between the agent loop and the tool executor.
+//
+// In Electron this behaves exactly like the module-level singleton it used to
+// be. On the web server, every visitor needs their own — so the exported
+// `sessionState` is a Proxy that resolves to the ambient session's record (see
+// session-context.ts). Every existing `sessionState.foo` read/write keeps
+// working unchanged; it just lands in the right session's bucket.
 import type { ModelResult, SliceParams, PrinterPref } from "../../shared/types";
+import { currentSessionId } from "../session-context";
 
 interface SessionState {
   /** The most recent search results (so the agent can reference them by id). */
@@ -34,12 +40,67 @@ interface SessionState {
   openExternal?: (url: string) => void;
 }
 
-export const sessionState: SessionState = {
-  lastResults: [],
-  lastModelPath: "",
-  lastModelParts: [],
-  lastRecommendation: {},
-};
+function freshState(): SessionState {
+  return {
+    lastResults: [],
+    lastModelPath: "",
+    lastModelParts: [],
+    lastRecommendation: {},
+  };
+}
+
+/** One record per session, created on first touch. */
+const states = new Map<string, SessionState>();
+
+function stateFor(id: string): SessionState {
+  let st = states.get(id);
+  if (!st) {
+    st = freshState();
+    states.set(id, st);
+  }
+  return st;
+}
+
+/**
+ * The ambient session's conversation state.
+ *
+ * A Proxy rather than a plain object so the ~40 existing `sessionState.x` call
+ * sites need no changes: each access resolves the current session first. Under
+ * Electron there is only ever the default session, so this is equivalent to the
+ * old singleton.
+ */
+export const sessionState: SessionState = new Proxy({} as SessionState, {
+  get(_target, prop) {
+    return stateFor(currentSessionId())[prop as keyof SessionState];
+  },
+  set(_target, prop, value) {
+    (stateFor(currentSessionId()) as unknown as Record<string | symbol, unknown>)[
+      prop
+    ] = value;
+    return true;
+  },
+  has(_target, prop) {
+    return prop in stateFor(currentSessionId());
+  },
+  deleteProperty(_target, prop) {
+    delete (stateFor(currentSessionId()) as unknown as Record<
+      string | symbol,
+      unknown
+    >)[prop];
+    return true;
+  },
+  ownKeys() {
+    return Reflect.ownKeys(stateFor(currentSessionId()));
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Reflect.getOwnPropertyDescriptor(stateFor(currentSessionId()), prop);
+  },
+});
+
+/** Drop a session's conversation state (called when a web session is evicted). */
+export function disposeSessionState(id: string): void {
+  states.delete(id);
+}
 
 /** Make the session's printer/material AUTHORITATIVELY reflect the user's saved
  *  preferences, so a returning user never has to re-state their printer or

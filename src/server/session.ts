@@ -18,16 +18,13 @@
 // step. Nothing is ever served back to a browser by a client-supplied raw
 // path — see `isInsideDir` and the gcode-token registry below.
 //
-// KNOWN LIMITATION (flagged, not hidden): main/agent/state.ts's `sessionState`
-// is a MODULE-LEVEL singleton shared by every SlicelyAgent instance in this
-// process — it remembers "the last imported model" / "the chosen printer" as
-// one global, not keyed by session. That's correct for Electron (one user,
-// one process) but means two browsers' chat turns running the agent's TOOL
-// calls concurrently could interleave and corrupt each other's context. Fixing
-// it properly means making state.ts session-aware, which is a src/main change
-// outside this layer's remit. As a stopgap, `withGlobalAgentLock` below
-// serializes the tool-executing portion of every chat turn server-wide, so at
-// worst users queue behind each other instead of corrupting shared state.
+// Per-visitor isolation of the AGENT's own state (the last imported model, the
+// chosen printer, slice defaults) is handled one level down, by
+// main/session-context.ts: `sessionMiddleware` runs each request inside that
+// session's AsyncLocalStorage context, so main/agent/state.ts's `sessionState`
+// and main/settings.ts both resolve to this visitor's own record. Concurrent
+// chat turns from different browsers are therefore safe and genuinely parallel;
+// only turns from the SAME session are serialized, via `SessionRecord.busy`.
 //
 // The session table itself lives in memory only. That is fine for a
 // single-process deployment; a multi-instance deployment would need a shared
@@ -39,6 +36,7 @@ import { basename, join, relative, resolve, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AgentEvent } from "../shared/types";
 import { getConfig } from "../main/config";
+import { runInSession, sessionContext } from "../main/session-context";
 
 // Augment Express's Request with the session this middleware attaches. Scoped
 // to this codebase only — harmless if another module never imports it.
@@ -291,8 +289,13 @@ export class SessionStore {
 
 export function sessionMiddleware(store: SessionStore): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
-    req.session = store.getOrCreate(req, res);
-    next();
+    const session = store.getOrCreate(req, res);
+    req.session = session;
+    // Run the ENTIRE request inside this session's ambient context. Everything
+    // downstream — routes, the agent loop, tool execution, settings reads —
+    // then resolves to this visitor's own state with no per-route plumbing,
+    // and AsyncLocalStorage carries it across every await.
+    runInSession(sessionContext(session.id), () => next());
   };
 }
 
@@ -325,21 +328,9 @@ export async function adoptGcodeFile(
   return { path: dest, id };
 }
 
-// ── Cross-session serialization for the agent's tool-executing path ─────────
-// See the file header: main/agent/state.ts's `sessionState` is a process-wide
-// singleton. This promise-chain mutex ensures only one chat turn is inside
-// `SlicelyAgent.send()` (and therefore inside tool execution) at a time,
-// across every session, so concurrent users can't interleave writes to it.
-let agentLockChain: Promise<unknown> = Promise.resolve();
-
-export function withGlobalAgentLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = agentLockChain.then(fn, fn);
-  // Keep the chain alive regardless of outcome, without leaking the
-  // rejection into later callers' `.then` (each `run` still carries its own
-  // rejection to ITS caller).
-  agentLockChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+// NOTE: an earlier revision serialized every chat turn server-wide with a
+// promise-chain mutex, because main/agent/state.ts was a process-global
+// singleton and concurrent turns would interleave writes to it. state.ts is now
+// session-keyed (see main/session-context.ts), so that lock has been removed —
+// concurrent visitors each run in their own context. Per-session serialization
+// is still enforced by `SessionRecord.busy`, which is the correct granularity.

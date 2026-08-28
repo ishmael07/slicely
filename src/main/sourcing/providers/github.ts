@@ -179,7 +179,11 @@ export const githubProvider: SourcePlugin = {
 export async function listMeshFilesInGithubUrl(url: string): Promise<SourcedFile[]> {
   const blob = /github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/.exec(url);
   if (blob) {
-    const [, owner, repo, ref, path] = blob;
+    const [, owner, repo, ref, rawPath] = blob;
+    // The URL's path segment is percent-encoded (e.g. "3D%20Printing"); the
+    // GitHub API's own `path` fields are NOT, so this must be decoded before
+    // it's ever compared against or joined with real API data.
+    const path = decodeURIComponent(rawPath);
     const ext = extOf(path);
     if (!isMeshExt(ext)) return [];
     return [{ id: encodeRef({ owner, repo, ref, path }), name: path.split("/").pop() ?? path, ext, preferred: true, url: rawUrl({ owner, repo, ref, path }) }];
@@ -189,9 +193,9 @@ export async function listMeshFilesInGithubUrl(url: string): Promise<SourcedFile
   const repoRoot = /github\.com\/([^/]+)\/([^/]+)\/?$/.exec(url);
   const rootMatch = tree ?? repoRoot;
   if (rootMatch) {
-    const [, owner, repo, refMaybe, subpath] = rootMatch;
+    const [, owner, repo, refMaybe, rawSubpath] = rootMatch;
     const ref = refMaybe || "HEAD";
-    const path = subpath || "";
+    const path = rawSubpath ? decodeURIComponent(rawSubpath) : "";
     return listGithubTree(owner, repo, ref, path);
   }
 
