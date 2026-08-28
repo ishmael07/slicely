@@ -16,8 +16,13 @@
 // into a flat, correctly-repeated input list.
 
 import type { JobEvent, JobPlate, PrintJob } from "../../shared/jobs";
-import type { SliceMetrics, SliceParams } from "../../shared/types";
+import type { SliceMetrics, SliceParams, PrintMaterial } from "../../shared/types";
 import { slice } from "../prusaslicer";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { parseMesh } from "./mesh";
+import { writeThreeMf, type ThreeMfPart } from "./threemf";
+import { synthesizeMultiMaterialConfig, distinctExtruders } from "./multimaterial";
 
 /** Job ids with a cancellation request in flight. Checked between plates
  *  (never mid-slice — PrusaSlicer's CLI has no cooperative cancellation
@@ -75,7 +80,7 @@ export async function runJob(
     emit({ type: "plate_start", jobId: job.id, plateIndex: plate.index });
 
     try {
-      const metrics = await sliceOnePlate(plate, job.params, doSlice);
+      const metrics = await sliceOnePlate(plate, job, doSlice);
       plate.status = "ready";
       plate.metrics = metrics;
       plate.gcodePath = metrics.gcodePath;
@@ -120,7 +125,7 @@ export async function runJob(
 
 async function sliceOnePlate(
   plate: JobPlate,
-  jobParams: SliceParams,
+  job: PrintJob,
   doSlice: SliceFn,
 ): Promise<SliceMetrics> {
   if (plate.parts.length === 0) {
@@ -143,15 +148,106 @@ async function sliceOnePlate(
   if (primaryIdx >= 0) flat.splice(primaryIdx, 1);
   const extraInputs = flat;
 
+  // A plate whose parts sit on different extruders cannot be sliced from plain
+  // STLs: PrusaSlicer's CLI assigns every input to extruder 1, so the colour
+  // plan would be silently dropped and the print would come out one colour.
+  // Build a 3MF that carries the per-object assignment instead.
+  if (distinctExtruders(plate.parts).length > 1) {
+    return sliceMultiMaterialPlate(plate, job, doSlice);
+  }
+
   const params: SliceParams = {
-    ...jobParams,
+    ...job.params,
     ...primary.overrides,
     extraInputs,
-    merge: extraInputs.length > 0 ? true : jobParams.merge,
+    // Do NOT merge. --merge fuses every input into a single object, and
+    // PrusaSlicer then fails the slice outright (exit -1) for these plates, so
+    // multi-part jobs produced no G-code at all. It is also wrong in principle:
+    // merging destroys the per-part identity that per-extruder colour
+    // assignment depends on. Parts stay separate objects and the arranger
+    // places them, which is what a plate is. `merge` remains available as an
+    // explicit user request through jobParams.
+    merge: job.params.merge,
   };
 
-  const outName = `plate-${plate.index}`;
-  return doSlice(primary.path, params, undefined, outName);
+  return doSlice(primary.path, params, undefined, outNameFor(plate));
+}
+
+function outNameFor(plate: JobPlate): string {
+  return `plate-${plate.index}`;
+}
+
+/**
+ * Slice a plate that uses more than one extruder.
+ *
+ * Writes a 3MF carrying each part's extruder assignment plus a matching
+ * multi-extruder config, then slices that. Objects get explicit positions
+ * because a 3MF build item must state one — the CLI's arranger does not run for
+ * a project file. The packer has already proven the plate fits, so this only
+ * has to lay the instances out without overlapping them.
+ */
+async function sliceMultiMaterialPlate(
+  plate: JobPlate,
+  job: PrintJob,
+  doSlice: SliceFn,
+): Promise<SliceMetrics> {
+  const bed = job.bed ?? { x: 250, y: 210, z: 210 };
+  const nozzleMm = job.params.nozzleDiameterMm ?? 0.4;
+  const material: PrintMaterial = job.material ?? "PLA";
+
+  // Each extruder takes the colour of the part assigned to it.
+  const extruders = distinctExtruders(plate.parts);
+  const colours: string[] = [];
+  for (const e of extruders) {
+    const owner = plate.parts.find((p) => (p.extruder ?? 1) === e);
+    colours[e - 1] = owner?.colourHex ?? "#FFFFFF";
+  }
+  for (let i = 0; i < colours.length; i++) {
+    if (!colours[i]) colours[i] = "#FFFFFF";
+  }
+
+  // Lay instances out in rows, wrapping when the bed runs out of width.
+  const GAP = 8;
+  const MARGIN = 15;
+  const threeMfParts: ThreeMfPart[] = [];
+  let x = MARGIN;
+  let y = MARGIN;
+  let rowDepth = 0;
+  for (const part of plate.parts) {
+    const mesh = await parseMesh(part.path);
+    for (let copy = 0; copy < part.copies; copy++) {
+      if (x + part.sizeX > bed.x - MARGIN && rowDepth > 0) {
+        x = MARGIN;
+        y += rowDepth + GAP;
+        rowDepth = 0;
+      }
+      threeMfParts.push({
+        path: part.path,
+        triangles: mesh.triangles,
+        extruder: part.extruder ?? 1,
+        offset: { x: x + part.sizeX / 2, y: y + part.sizeY / 2, z: 0 },
+      });
+      x += part.sizeX + GAP;
+      rowDepth = Math.max(rowDepth, part.sizeY);
+    }
+  }
+
+  const outName = outNameFor(plate);
+  const projectPath = join(tmpdir(), `slicely-${outName}-${Date.now()}.3mf`);
+  writeThreeMf(projectPath, threeMfParts);
+  const configIni = synthesizeMultiMaterialConfig({ bed, nozzleMm, material, colours });
+
+  // The 3MF already carries geometry, placement, and extruder assignment, so
+  // extraInputs / arrange / merge would fight it.
+  const params: SliceParams = {
+    layerHeightMm: job.params.layerHeightMm,
+    fillDensityPct: job.params.fillDensityPct,
+    fillPattern: job.params.fillPattern,
+    perimeters: job.params.perimeters,
+    supportMaterial: job.params.supportMaterial,
+    brimWidthMm: job.params.brimWidthMm,
+  };
+  return doSlice(projectPath, params, configIni, outName);
 }
 
 /** Sum whatever's known from completed plates into job.totals. Slice-derived

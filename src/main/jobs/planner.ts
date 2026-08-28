@@ -343,6 +343,7 @@ export async function planJob(
     updatedAt: now,
     status: "planned",
     plates: jobPlates,
+    bed: opts.bed,
     params,
     goal,
     material,

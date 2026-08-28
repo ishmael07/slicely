@@ -162,6 +162,10 @@ export interface PrintJob {
   material: PrintMaterial;
   /** Printer this job targets (PrinterConnection.id), when one is chosen. */
   printerId?: string;
+  /** Usable bed the job was planned against, in mm. Kept because slicing a
+   *  multi-extruder plate writes a 3MF with explicit object positions, which
+   *  needs the bed the packer actually used. */
+  bed?: { x: number; y: number; z: number };
   colourPlan?: ColourPlan;
   /** Summed across every plate, once sliced. */
   totals?: JobTotals;
