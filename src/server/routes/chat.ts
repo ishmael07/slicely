@@ -83,8 +83,19 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
 
     session.busy = true;
     const { emit, flush } = makeEmit(session, res);
-    const onClientClose = () => session.agent?.cancel();
-    req.on("close", onClientClose);
+
+    // Cancel the turn when the BROWSER goes away — listen on `res`, never on
+    // `req`. An IncomingMessage emits "close" as soon as its body has been
+    // fully read (Node >= 16), which body-parser does before this handler even
+    // runs, so `req.on("close")` fired ~1ms in and cancelled every single turn:
+    // the browser got a bare {"type":"done"} and no reply. `res` stays open for
+    // the life of the SSE stream, so its "close" means a real disconnect.
+    // Guarded anyway, because res also emits "close" after a normal res.end().
+    let turnFinished = false;
+    const onClientClose = (): void => {
+      if (!turnFinished) session.agent?.cancel();
+    };
+    res.on("close", onClientClose);
 
     try {
       if (!session.agent) {
@@ -113,10 +124,11 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
       emit({ type: "error", message: (err as Error).message ?? String(err) });
       emit({ type: "done" });
     } finally {
+      turnFinished = true;
       await flush();
       session.busy = false;
       session.lastActiveAt = Date.now();
-      req.off("close", onClientClose);
+      res.off("close", onClientClose);
       res.end();
     }
   });
