@@ -16,6 +16,12 @@ interface SessionState {
   lastSliceParams?: SliceParams;
   /** The base config .ini resolved for the most recent slice. */
   lastConfigIni?: string;
+  /** Path of the most recently sliced .gcode — the default target when the
+   *  user says "send it to the printer" without naming a file. */
+  lastGcodePath?: string;
+  /** Id of the most recently planned multi-plate job, so run_job/job_status
+   *  work without the user repeating it. */
+  lastJobId?: string;
   /** The printer the user picked this session (key into KNOWN_PRINTERS).
    *  Seeded from saved preferences; set "custom" when using customPrinter. */
   printerKey?: string;

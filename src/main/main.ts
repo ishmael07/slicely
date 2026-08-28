@@ -30,6 +30,11 @@ import {
 } from "./settings";
 import { KNOWN_PRINTERS } from "./profiles";
 import { acceptUploads, pickerExtensions } from "./uploads";
+import {
+  registerV2Ipc,
+  startPrinterPolling,
+  stopPrinterPolling,
+} from "./ipc-v2";
 
 const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
@@ -257,6 +262,9 @@ function registerIpc(): void {
     const [w] = win.getSize();
     win.setSize(w, clamped, false);
   });
+
+  // Printers, sourcing, and jobs live in their own module.
+  registerV2Ipc(() => win);
 }
 
 // Poll PrusaSlicer status and push to the renderer only when it changes, so
@@ -286,6 +294,8 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   startStatusPolling();
+  // Live printer state for the titlebar pill and the manage panel.
+  startPrinterPolling(() => win);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -294,6 +304,7 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   if (statusTimer) clearInterval(statusTimer);
+  stopPrinterPolling();
 });
 
 app.on("window-all-closed", () => {

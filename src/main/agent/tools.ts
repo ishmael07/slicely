@@ -29,6 +29,12 @@ import {
 } from "../profiles";
 import { getPreferences, printerGeometry, updatePreferences } from "../settings";
 import { sessionState } from "./state";
+import {
+  V2_TOOLS,
+  V2_TOOL_NAMES,
+  executeV2Tool,
+  v2ToolLabel,
+} from "./tools-v2";
 
 const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
 const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
@@ -197,7 +203,9 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
   },
 };
 
-export const TOOLS: Anthropic.Tool[] = [
+/** The v1 tool set: search/import, inspect, recommend, slice, and hand off
+ *  to the PrusaSlicer GUI. Combined with V2_TOOLS into TOOLS below. */
+const V1_TOOLS: Anthropic.Tool[] = [
   {
     name: "search_models",
     description:
@@ -412,6 +420,12 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
 ];
+
+/**
+ * Every tool the agent can call: the v1 slicing/inspection set plus the v2
+ * sourcing, printer, and job tools.
+ */
+export const TOOLS: Anthropic.Tool[] = [...V1_TOOLS, ...V2_TOOLS];
 
 /** Execute one tool call. Returns the string fed back to the model as the
  *  tool_result, and emits structured UI events as a side effect. */
@@ -689,6 +703,8 @@ export async function executeTool(
     }
 
     default:
+      // Not a v1 tool — hand it to the v2 executor (sourcing/printers/jobs).
+      if (V2_TOOL_NAMES.has(name)) return executeV2Tool(name, input, emit);
       return `Error: unknown tool "${name}".`;
   }
 }
@@ -778,6 +794,12 @@ async function runSlice(
 
   // Emit one metrics panel per plate.
   for (const m of job.plates) emit({ type: "metrics", metrics: m });
+
+  // Remember plate 1's G-code so a follow-up "send it to the printer"
+  // needs no arguments.
+  if (job.plates[0]?.gcodePath) {
+    sessionState.lastGcodePath = job.plates[0].gcodePath;
+  }
 
   const plateCount = job.plates.length;
   const colourNote = params.filamentColour
@@ -882,7 +904,7 @@ export function toolLabel(name: string, input: Record<string, unknown>): string 
     case "open_in_slicer":
       return "Opening PrusaSlicer…";
     default:
-      return `Running ${name}…`;
+      return v2ToolLabel(name, input);
   }
 }
 
