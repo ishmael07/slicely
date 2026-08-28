@@ -44,7 +44,19 @@ export const KNOWN_PRINTERS: Record<string, PrinterPreset> = {
   "prusa-mini": { label: "Prusa MINI", nozzleMm: 0.4, bed: { x: 180, y: 180, z: 180 } },
   "ender-3": { label: "Creality Ender 3 / V2 / Pro", nozzleMm: 0.4, bed: { x: 220, y: 220, z: 250 } },
   "ender-3-s1": { label: "Creality Ender 3 S1", nozzleMm: 0.4, bed: { x: 220, y: 220, z: 270 } },
-  "bambu-a1": { label: "Bambu A1 / P1 / X1", nozzleMm: 0.4, bed: { x: 256, y: 256, z: 256 } },
+  // Bambu's 256^3 class: A1, P1P/P1S, P2S, X1/X1C/X1E all share one build
+  // volume, so they share one entry rather than five identical ones.
+  "bambu-256": {
+    label: "Bambu A1 / P1P / P1S / P2S / X1 / X1C",
+    nozzleMm: 0.4,
+    bed: { x: 256, y: 256, z: 256 },
+  },
+  "bambu-a1-mini": { label: "Bambu A1 mini", nozzleMm: 0.4, bed: { x: 180, y: 180, z: 180 } },
+  // H2D advertises 350x320x325 as the plate, but the usable volume is
+  // 325x320x325 with one nozzle and 300x320x325 when both print. We take the
+  // single-nozzle figure: it is the common case, and the packer treating the
+  // full 350 as usable would push parts off the plate.
+  "bambu-h2d": { label: "Bambu H2D", nozzleMm: 0.4, bed: { x: 325, y: 320, z: 325 } },
   generic: { label: "Generic 0.4 mm (220×220×250)", nozzleMm: 0.4, bed: { x: 220, y: 220, z: 250 } },
 };
 

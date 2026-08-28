@@ -295,7 +295,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
         printerKey: {
           type: "string",
           description:
-            "A printer key from check_printer_setup (e.g. 'prusa-mk4', 'ender-3', 'bambu-a1', 'generic').",
+            "A printer key from check_printer_setup (e.g. 'prusa-mk4', 'ender-3', 'bambu-256', 'bambu-h2d', 'generic').",
         },
       },
       required: ["printerKey"],

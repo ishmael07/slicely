@@ -17,11 +17,12 @@
 //   - Topics: subscribe `device/<serial>/report`, publish requests to
 //     `device/<serial>/request`. Requesting a full status push uses
 //     `{"pushing":{"sequence_id":"0","command":"pushall"}}`.
-//   - File upload to LAN printers is over FTPS (implicit/explicit TLS FTP)
-//     on port 990. None of this project's dependencies (mqtt/ws/express/etc)
-//     implement FTPS, and hand-rolling it (TLS-wrapped control channel, PASV
-//     data connections, directory listing quirks) is out of scope for this
-//     pass. send() honestly reports that gap instead of pretending to upload.
+//   - File upload is over implicit FTPS on port 990 (user "bblp", password =
+//     the access code). Nothing in this project's dependencies speaks FTP, so
+//     ../ftps.ts implements the slice of RFC 959/4217 needed for one STOR.
+//     send() uploads for real; starting the print afterwards is an MQTT
+//     project_file command whose exact shape is community-derived and marked
+//     unverified at the call site.
 //
 // Cloud mode (BambuCloudDriver, transport "bambu-cloud"):
 //   - MQTT over TLS to us.mqtt.bambulab.com:8883 using an account access
@@ -52,6 +53,11 @@ import type {
   SendJobResult,
 } from "../../../shared/printers";
 import { DEFAULT_TIMEOUT_MS, describeError, normalizeColourHex, nowIso } from "../util";
+import { basename } from "node:path";
+import { ftpsUpload, BAMBU_FTPS_PORT } from "../ftps";
+
+/** Uploads are much larger than a status poll, so they get their own budget. */
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 const CLOUD_HOST = "us.mqtt.bambulab.com";
 const CLOUD_PORT = 8883;
@@ -257,10 +263,117 @@ async function sendUnsupported(
     ok: false,
     started: false,
     message:
-      "Bambu printers receive files over FTPS, which Slicely doesn't implement yet (no FTPS client in this build). " +
-      'Copy the G-code to the printer via the Bambu Handy app / SD card, or use the "file" transport to stage it, ' +
-      "until FTPS support lands.",
+      "Bambu Cloud has no documented file-submission API, so Slicely can't upload through it. " +
+      "Add the same printer as a Bambu Lab (LAN) connection to send files over your local network, " +
+      "or use the Bambu Handy app.",
   };
+}
+
+/**
+ * Upload to a LAN Bambu over FTPS, then optionally start the print.
+ *
+ * Bambu accepts files only over FTPS on port 990 (see ../ftps.ts). The file
+ * is uploaded under a sanitized name, and a print is started — when and only
+ * when the caller asks and the safety gate upstream allowed it — by an MQTT
+ * project_file command naming that file.
+ *
+ * UNVERIFIED: the project_file command shape comes from community reverse
+ * engineering, not a Bambu spec. Upload is the well-corroborated half; if the
+ * start command is wrong, the file is still on the printer and can be started
+ * from its screen, which is what the message says.
+ */
+async function sendOverFtps(
+  printer: ResolvedPrinter,
+  gcodePath: string,
+  opts: SendJobOptions,
+): Promise<SendJobResult> {
+  if (!printer.host) {
+    return { ok: false, started: false, message: "Missing the printer's address." };
+  }
+  if (!printer.accessCode) {
+    return {
+      ok: false,
+      started: false,
+      message:
+        "Missing the LAN access code. Find it on the printer under Settings -> Network.",
+    };
+  }
+
+  // Bambu's firmware is fussy about filenames; keep it plain and ensure the
+  // extension it expects for a sliced job.
+  const base = (opts.jobName ?? basename(gcodePath)).replace(/[^A-Za-z0-9._-]/g, "_");
+  const remoteName = /\.(gcode|3mf)$/i.test(base) ? base : `${base}.gcode`;
+
+  let uploaded: { remoteName: string; bytes: number };
+  try {
+    uploaded = await ftpsUpload({
+      localPath: gcodePath,
+      host: printer.host,
+      port: BAMBU_FTPS_PORT,
+      user: "bblp",
+      password: printer.accessCode,
+      remoteName,
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    });
+  } catch (err) {
+    return { ok: false, started: false, message: `Upload failed: ${describeError(err)}` };
+  }
+
+  const sizeMb = (uploaded.bytes / 1_048_576).toFixed(1);
+  if (!opts.startImmediately) {
+    return {
+      ok: true,
+      started: false,
+      jobId: uploaded.remoteName,
+      message:
+        `Uploaded ${uploaded.remoteName} (${sizeMb} MB) to ${printer.label}. ` +
+        `Start it from the printer's screen once the bed is clear.`,
+    };
+  }
+
+  try {
+    const client = await connectMqtt(lanMqttOptions(printer), DEFAULT_TIMEOUT_MS);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.publish(
+          `device/${printer.serial}/request`,
+          JSON.stringify({
+            print: {
+              sequence_id: "0",
+              command: "project_file",
+              param: `Metadata/plate_1.gcode`,
+              url: `ftp:///${uploaded.remoteName}`,
+              subtask_name: uploaded.remoteName,
+              use_ams: false,
+              timelapse: false,
+              bed_leveling: true,
+              flow_cali: false,
+              vibration_cali: true,
+              layer_inspect: false,
+            },
+          }),
+          (err) => (err ? reject(err) : resolve()),
+        );
+      });
+    } finally {
+      client.end(true);
+    }
+    return {
+      ok: true,
+      started: true,
+      jobId: uploaded.remoteName,
+      message: `Uploaded ${uploaded.remoteName} (${sizeMb} MB) and asked ${printer.label} to start printing.`,
+    };
+  } catch (err) {
+    return {
+      ok: true,
+      started: false,
+      jobId: uploaded.remoteName,
+      message:
+        `Uploaded ${uploaded.remoteName} (${sizeMb} MB), but the start command failed ` +
+        `(${describeError(err)}). Start it from the printer's screen.`,
+    };
+  }
 }
 
 /** Community-documented control commands: {"print":{"sequence_id":"0","command":"pause"|"resume"|"stop"}}. */
@@ -319,7 +432,7 @@ export const BambuLanDriver: PrinterDriver = {
     return statusViaMqtt(printer, lanMqttOptions(printer), DEFAULT_TIMEOUT_MS);
   },
   async send(printer, gcodePath, opts) {
-    return sendUnsupported(printer, gcodePath, opts);
+    return sendOverFtps(printer, gcodePath, opts);
   },
   async pause(printer) {
     return controlViaMqtt(printer, lanMqttOptions(printer), DEFAULT_TIMEOUT_MS, "pause", "Paused.");

@@ -88,7 +88,7 @@ test("reportToStatus converts minutes to seconds and carries temps/progress/laye
   assert.deepEqual(status.filaments, []);
 });
 
-test("bambu-lan and bambu-cloud send() honestly report the missing FTPS upload path (ok:false, not a fake success)", async () => {
+test("bambu-lan send() attempts a real upload and reports why it failed", async () => {
   const printer = {
     id: "b1",
     label: "X1C",
@@ -97,15 +97,45 @@ test("bambu-lan and bambu-cloud send() honestly report the missing FTPS upload p
     serial: "01P00A000000000",
     accessCode: "12345678",
   };
-  const result = await BambuLanDriver.send(printer, "/tmp/whatever.gcode", { startImmediately: false });
+  // No such file, so the upload fails before any network access. The point is
+  // that LAN now goes down the FTPS path instead of refusing outright, and
+  // that the failure names the real cause.
+  const result = await BambuLanDriver.send(printer, "/tmp/definitely-missing.gcode", {
+    startImmediately: false,
+  });
   assert.equal(result.ok, false);
   assert.equal(result.started, false);
-  assert.match(result.message, /FTPS/);
+  assert.match(result.message, /Upload failed/i);
+  assert.doesNotMatch(
+    result.message,
+    /doesn't implement|not implemented/i,
+    "LAN upload is implemented now; the message must not claim otherwise",
+  );
+});
 
+test("bambu-lan send() refuses without an access code, and says where to find it", async () => {
+  const result = await BambuLanDriver.send(
+    { id: "b1", label: "X1C", transport: "bambu-lan" as const, host: "10.0.0.20", serial: "01P" },
+    "/tmp/x.gcode",
+    { startImmediately: false },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.message, /access code/i);
+});
+
+test("bambu-cloud send() still reports the gap, and points at the LAN route", async () => {
   const cloudResult = await BambuCloudDriver.send(
-    { ...printer, transport: "bambu-cloud", token: "tok" },
+    {
+      id: "b2",
+      label: "X1C",
+      transport: "bambu-cloud" as const,
+      serial: "01P00A000000000",
+      token: "tok",
+    },
     "/tmp/whatever.gcode",
     { startImmediately: false },
   );
   assert.equal(cloudResult.ok, false);
+  assert.equal(cloudResult.started, false);
+  assert.match(cloudResult.message, /LAN/i, "must point the user at the route that works");
 });

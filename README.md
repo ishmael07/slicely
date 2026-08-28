@@ -40,7 +40,7 @@ The two share one core. Only `main.ts` and `preload.ts` touch Electron; everythi
 | 🧠 **Smart-slice** | Layer height, infill %, pattern, walls, solid layers, supports, and brim derived from the real geometry plus your goal (fast / detail / strength), material, and nozzle. Override anything; everything else adapts. |
 | 🧩 **Big multi-part jobs** | Dozens of parts planned as one **job**: oriented, grouped so each plate needs the fewest tool changes, packed across as many plates as it takes, then sliced in order. One plate failing doesn't stop the rest. |
 | 🎨 **Multi-colour** | Requested colours are matched against the filament **actually loaded** in your AMS/MMU — exact match where possible, nearest perceptual colour (CIE Lab) otherwise, and it says so. Estimates tool changes and purge waste. Single-extruder printers are told plainly that colour is preview-only. |
-| 🖨️ **Send it to the printer** | **OctoPrint · Klipper/Moonraker · PrusaLink · Prusa Connect · Bambu (LAN + cloud) · file/SD**. Scan your network to find printers, or add one by address. Live state, progress, temperatures, and loaded filaments. Pause / resume / cancel. |
+| 🖨️ **Send it to the printer** | **OctoPrint · Klipper/Moonraker · PrusaLink · Prusa Connect · Bambu (LAN upload over FTPS) · file/SD**. Scan your network to find printers, or add one by address. Live state, progress, temperatures, and loaded filaments. Pause / resume / cancel. |
 | 💬 **Chat UI** | Streaming markdown replies with a collapsible thought process, model cards, and slice-metric panels inline. Pick your Claude model and reasoning effort. |
 
 ---
@@ -139,7 +139,7 @@ src/
 
 ## Notes & limitations
 
-- **Bambu file upload** needs FTPS, which isn't implemented — status, AMS, and control work; sending a file does not, and says so rather than failing silently.
+- **Bambu LAN** upload works (implicit FTPS, written against RFC 959/4217 since no dependency here speaks FTP). Starting the print afterwards uses a community-derived MQTT command; if it doesn't take, the file is already on the printer and can be started from its screen. **Bambu Cloud** has no documented file-submission API, so add the printer as a LAN connection to send to it.
 - **Prusa Connect** publishes no third-party API. Those endpoints are documented guesses and marked unverified in the source.
 - **Thangs / Yeggi / STLFinder** sit behind bot protection that blocks honestly-identified requests. They're best-effort discovery; Slicely does not spoof a browser to get around it.
 - **Login-gated sources** are handed to your browser rather than circumvented. That's the correct outcome, not a bug.
