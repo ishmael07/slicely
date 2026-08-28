@@ -1,8 +1,11 @@
 // Proves the session scoping actually isolates. This is the load-bearing
 // guarantee for multi-user web Slicely: two visitors must never see each
 // other's active model, preferences, or job.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { getConfig } from "./config";
 import {
   runInSession,
   sessionContext,
@@ -86,4 +89,18 @@ test("mutating state in the default session does not touch a named session", () 
     assert.notEqual(sessionState.lastModelPath, "/electron.stl");
   });
   assert.equal(sessionState.lastModelPath, "/electron.stl");
+});
+
+// These tests deliberately create real session directories, and SLICELY_WORKDIR
+// defaults to ~/Slicely — which on a case-insensitive filesystem is the repo
+// itself. Clean up after ourselves so a test run never leaves workspace litter.
+after(() => {
+  for (const id of [
+    "alice", "bob", "carol", "dave", "erin", "frank", "s1", "s2", "s3",
+  ]) {
+    rmSync(join(getConfig().workdir, "sessions", id), {
+      recursive: true,
+      force: true,
+    });
+  }
 });

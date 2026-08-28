@@ -33,18 +33,25 @@ export interface SessionContext {
 
 const storage = new AsyncLocalStorage<SessionContext>();
 
-/** Build the context for a session id, creating its directory on first use. */
-export function sessionContext(id: string): SessionContext {
+/**
+ * Build the context for a session id, creating its directory on first use.
+ *
+ * Pass `dir` when the caller already owns the session's directory — the web
+ * SessionStore does, and its root is configurable (and is a temp dir under
+ * test). Recomputing it here instead would silently diverge from the real
+ * session directory and scatter stray folders under the default workdir.
+ */
+export function sessionContext(id: string, dir?: string): SessionContext {
   if (id === DEFAULT_SESSION_ID) {
-    return { id, dir: getConfig().workdir };
+    return { id, dir: dir ?? getConfig().workdir };
   }
-  const dir = join(getConfig().workdir, "sessions", id);
+  const resolved = dir ?? join(getConfig().workdir, "sessions", id);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(resolved, { recursive: true });
   } catch {
     /* surfaced later if we actually fail to write */
   }
-  return { id, dir };
+  return { id, dir: resolved };
 }
 
 /**

@@ -27,7 +27,14 @@
             <span class="dot" id="statusDot"></span>
             <span id="statusText">checking…</span>
           </div>
-          <button id="settingsBtn" class="icon-btn" title="Settings &amp; printers">
+          <button id="jobsBtn" class="icon-btn" title="Print jobs (multi-part plates)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+              <rect x="4" y="4" width="16" height="4.5" rx="1.4" stroke="currentColor" stroke-width="1.6" />
+              <rect x="4" y="10.2" width="16" height="4.5" rx="1.4" stroke="currentColor" stroke-width="1.6" />
+              <rect x="4" y="16.4" width="16" height="4.5" rx="1.4" stroke="currentColor" stroke-width="1.6" />
+            </svg>
+          </button>
+          <button id="settingsBtn" class="icon-btn" title="Settings, printers &amp; sources">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.7" />
               <path
@@ -42,39 +49,69 @@
         </div>
       </header>
 
-      <!-- Settings sheet: printer picker + slice defaults + printer manager -->
+      <!-- Settings sheet: model/effort live in the composer, this sheet holds
+           slice defaults + printer connections + model sources. -->
       <div id="settingsSheet" class="sheet hidden">
+        <div class="sheet-section-title">Slice defaults</div>
         <div class="sheet-row">
-          <label class="sheet-label" for="goalSelect">Goal</label>
-          <select id="goalSelect">
-            <option value="">let Slicely ask</option>
-            <option value="draft">Draft (fast)</option>
-            <option value="quality">Quality</option>
-            <option value="functional">Functional (strong)</option>
-          </select>
+          <label class="sheet-label" for="ssPrinter">Printer</label>
+          <select id="ssPrinter"></select>
+        </div>
+        <div id="ssCustom" class="ss-custom hidden">
+          <div class="ss-custom-grid">
+            <label>Bed X<input id="ssBedX" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Bed Y<input id="ssBedY" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Bed Z<input id="ssBedZ" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+            <label>Nozzle<input id="ssNozzle" type="number" min="0.1" max="2" step="0.05" placeholder="mm" /></label>
+          </div>
+          <button id="ssSaveCustom" class="btn primary ss-save">Save custom printer</button>
         </div>
         <div class="sheet-row">
-          <label class="sheet-label" for="materialSelect">Material</label>
-          <select id="materialSelect">
-            <option value="">let Slicely ask</option>
-            <option value="PLA">PLA</option>
-            <option value="PETG">PETG</option>
-            <option value="ABS">ABS</option>
-          </select>
+          <label class="sheet-label" for="ssMaterial">Material</label>
+          <select id="ssMaterial"></select>
         </div>
-        <p class="sheet-hint">
-          Goal/material picked here are sent with your next message as context — Slicely otherwise asks once per session.
-        </p>
+        <div class="sheet-row">
+          <label class="sheet-label" for="ssGoal">Default goal</label>
+          <select id="ssGoal"></select>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label" for="ssInfill">Infill %</label>
+          <input id="ssInfill" type="number" min="0" max="100" step="1" placeholder="auto" />
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label" for="ssPattern">Infill pattern</label>
+          <select id="ssPattern"></select>
+        </div>
+        <div class="sheet-row">
+          <span class="sheet-label">Supports</span>
+          <div class="ss-seg" id="ssSupports" role="group" aria-label="Supports"></div>
+        </div>
+        <div class="sheet-row" id="ssStyleRow">
+          <label class="sheet-label" for="ssSupportStyle">Support style</label>
+          <select id="ssSupportStyle"></select>
+        </div>
+        <div class="sheet-row">
+          <span class="sheet-label">Brim</span>
+          <div class="ss-seg" id="ssBrim" role="group" aria-label="Brim"></div>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label" for="ssBrimWidth">Brim width</label>
+          <input id="ssBrimWidth" type="number" min="0" max="30" step="0.5" placeholder="auto (mm)" />
+        </div>
+        <p class="sheet-hint">Saved for every slice on this device — Slicely won't ask again. Set "auto" to let it decide from each model.</p>
+
         <div class="sheet-divider"></div>
+        <div class="sheet-section-title">Connected printers</div>
         <div class="sheet-row">
-          <span class="sheet-label">Printers</span>
+          <span class="sheet-label">&nbsp;</span>
           <div style="display: flex; gap: 6px">
-            <button class="btn small" id="discoverBtn">Scan LAN</button>
-            <button class="btn small" id="addPrinterBtn">Add</button>
+            <button class="btn ghost small" id="discoverBtn">Scan LAN</button>
+            <button class="btn ghost small" id="addPrinterBtn">Add</button>
           </div>
         </div>
         <div id="printerList"></div>
-        <div id="addPrinterForm" class="hidden" style="display: flex; flex-direction: column; gap: 8px">
+        <div id="discovered" class="discovered"></div>
+        <div id="addPrinterForm" class="printer-form hidden">
           <div class="sheet-row">
             <label class="sheet-label" for="pTransport">Type</label>
             <select id="pTransport"></select>
@@ -88,11 +125,32 @@
             <input id="pHost" type="text" placeholder="192.168.1.50" />
           </div>
           <div id="pSecretsFields"></div>
-          <button class="btn primary" id="pSave">Save printer</button>
+          <button class="btn primary ss-save" id="pSave">Connect printer</button>
         </div>
         <p id="multiUserNote" class="sheet-hint hidden">
           This is a shared hosted server, so LAN discovery and LAN-only printers (OctoPrint, Moonraker, PrusaLink, Bambu-LAN) are
           disabled — add a cloud connection (Prusa Connect / Bambu Cloud) instead.
+        </p>
+
+        <div class="sheet-divider"></div>
+        <div class="sheet-row">
+          <div class="sheet-section-title" style="margin: 0">Model sources</div>
+          <button class="btn ghost small" id="sourcesRefreshBtn">Refresh</button>
+        </div>
+        <div id="sourcesList"></div>
+        <p class="sheet-hint">Shows which of Slicely's model sources are usable right now — and what unlocks the rest.</p>
+      </div>
+
+      <!-- Jobs sheet: plan-from-staged-files lives in the attach tray; this is
+           the recent-jobs browser (plan/run/view via /api/jobs). -->
+      <div id="jobsSheet" class="sheet hidden">
+        <div class="sheet-row">
+          <div class="sheet-section-title" style="margin: 0">Recent jobs</div>
+          <button class="btn ghost small" id="jobsRefreshBtn">Refresh</button>
+        </div>
+        <div id="jobsList"></div>
+        <p class="sheet-hint">
+          Multi-part jobs plan several files onto one or more plates. Attach 2+ files, then use "Plan print job" in the tray.
         </p>
       </div>
 
@@ -102,17 +160,34 @@
 
       <footer id="composer">
         <div id="linkRow" class="link-row hidden">
-          <input id="linkInput" type="url" inputmode="url" placeholder="Paste a model link (Printables, Thingiverse, a .stl URL, …)" />
-          <button class="btn primary" id="linkGo">Fetch</button>
+          <input id="linkInput" type="text" inputmode="url" placeholder="Paste a model link, or type to search…" />
+          <button class="btn primary" id="linkGo">Go</button>
         </div>
         <div id="attachTray" class="attach-tray hidden"></div>
+        <div class="composer-bar">
+          <div class="picker-anchor">
+            <button id="modelTrigger" class="picker-trigger" title="Model">
+              <span class="dot"></span>
+              <span id="modelTriggerLabel">Model</span>
+              <span class="caret">▾</span>
+            </button>
+            <div id="modelMenu" class="picker-menu hidden"></div>
+          </div>
+          <div class="picker-anchor">
+            <button id="effortTrigger" class="picker-trigger hidden" title="Reasoning effort">
+              <span id="effortTriggerLabel">Effort</span>
+              <span class="caret">▾</span>
+            </button>
+            <div id="effortMenu" class="picker-menu hidden"></div>
+          </div>
+        </div>
         <div class="composer-row">
           <button id="attachBtn" title="Attach a 3D model (STL, 3MF, OBJ, STEP, or a ZIP of parts)">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
               <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
             </svg>
           </button>
-          <button id="linkBtn" title="Paste a link">
+          <button id="linkBtn" title="Paste a link or search for a model">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true">
               <path
                 d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"
@@ -144,6 +219,8 @@
           <span class="dz-sub">STL · 3MF · OBJ · AMF · STEP · ZIP</span>
         </div>
       </div>
+
+      <div id="toasts" class="toasts"></div>
     </div>
     <script type="module" src="/web/app.js"></script>
   </body>

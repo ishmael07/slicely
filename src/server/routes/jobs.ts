@@ -42,6 +42,9 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     const opts = (body.opts ?? {}) as JobPlanOptions;
     try {
       const job = await api.planJob(parts as PlanJobPartInput[], opts);
+      // Record ownership: main/jobs/store.ts is process-wide, so this set is
+      // what keeps one visitor's jobs invisible to every other visitor.
+      session.jobIds.add(job.id);
       session.lastActiveAt = Date.now();
       res.json(job);
     } catch (err) {
@@ -51,6 +54,11 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
 
   router.post("/jobs/:id/run", async (req: Request, res: Response) => {
     const session = req.session!;
+    // Only the session that planned a job may run it.
+    if (!session.jobIds.has(req.params.id)) {
+      res.status(404).json({ error: "Not found." });
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -76,9 +84,12 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     };
 
     try {
-      const job = await api.runJob(req.params.id, onEvent);
+      // main/jobs/runner.ts already emits a job_done JobEvent through
+      // onEvent, which the chain above relocates and writes. Writing another
+      // one here sent two job_done frames per run, the second carrying
+      // un-relocated paths. Just await the chain and let that event stand.
+      await api.runJob(req.params.id, onEvent);
       await chain;
-      res.write(`data: ${JSON.stringify({ type: "job_done", job })}\n\n`);
     } catch (err) {
       await chain.catch(() => undefined);
       res.write(
@@ -94,11 +105,20 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     }
   });
 
-  router.get("/jobs", async (_req: Request, res: Response) => {
-    res.json(await api.listJobs());
+  router.get("/jobs", async (req: Request, res: Response) => {
+    const session = req.session!;
+    const all = await api.listJobs();
+    res.json(all.filter((j) => session.jobIds.has(j.id)));
   });
 
   router.get("/jobs/:id", async (req: Request, res: Response) => {
+    const session = req.session!;
+    // 404 rather than 403 for a job owned by someone else: a visitor should
+    // not be able to probe which job ids exist on the server.
+    if (!session.jobIds.has(req.params.id)) {
+      res.status(404).json({ error: "Not found." });
+      return;
+    }
     const job = await api.getJob(req.params.id);
     if (!job) {
       res.status(404).json({ error: "Not found." });

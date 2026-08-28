@@ -86,6 +86,10 @@ export interface SessionRecord {
   activeModelPaths: string[];
   /** Opaque token -> file, so gcode is only ever fetched/sent by id. */
   gcodeFiles: Map<string, GcodeEntry>;
+  /** Ids of jobs planned by THIS session. main/jobs/store.ts is a single
+   *  process-wide store, so without this every visitor could list and read
+   *  every other visitor's jobs. */
+  jobIds: Set<string>;
   /** Lazily created on first chat message (constructing it opens an Anthropic
    *  client and reads settings — no point paying that cost for a session that
    *  only searches/slices via the REST endpoints). */
@@ -254,6 +258,7 @@ export class SessionStore {
       lastActiveAt: now,
       activeModelPaths: [],
       gcodeFiles: new Map(),
+      jobIds: new Set(),
       busy: false,
     };
     this.sessions.set(id, record);
@@ -295,7 +300,10 @@ export function sessionMiddleware(store: SessionStore): RequestHandler {
     // downstream — routes, the agent loop, tool execution, settings reads —
     // then resolves to this visitor's own state with no per-route plumbing,
     // and AsyncLocalStorage carries it across every await.
-    runInSession(sessionContext(session.id), () => next());
+    // Pass the session's OWN directory: the store's root is configurable (a
+    // temp dir under test), so letting sessionContext recompute it would both
+    // diverge from session.dir and litter the default workdir.
+    runInSession(sessionContext(session.id, session.dir), () => next());
   };
 }
 
@@ -313,12 +321,31 @@ export async function adoptGcodeFile(
 ): Promise<{ path: string; id: string }> {
   await mkdir(session.slicesDir, { recursive: true });
   const dest = join(session.slicesDir, basename(sourcePath));
-  try {
-    if (resolve(sourcePath) !== resolve(dest)) {
-      await rename(sourcePath, dest);
+
+  // IDEMPOTENCE: a plate's G-code is adopted once on `plate_done` and the
+  // job-level event carries the same path again. Re-adopting used to call
+  // rename() on a file that had already moved, throw, and then register the
+  // OLD path under a fresh token — handing the browser a live gcodeId whose
+  // download 500s. If this file is already ours, reuse its existing token.
+  if (resolve(sourcePath) === resolve(dest)) {
+    for (const [existingId, entry] of session.gcodeFiles) {
+      if (resolve(entry.path) === resolve(dest)) {
+        return { path: dest, id: existingId };
+      }
     }
+    const id = randomBytes(8).toString("hex");
+    session.gcodeFiles.set(id, { path: dest, label: basename(dest) });
+    return { path: dest, id };
+  }
+
+  try {
+    await rename(sourcePath, dest);
   } catch {
-    // Already moved, or the source vanished — fall back to whatever exists.
+    // The source vanished (or is on another device). Only hand back a token
+    // if something is actually readable there — never register a dead path.
+    if (!existsSync(sourcePath)) {
+      throw new Error(`G-code no longer exists at ${sourcePath}`);
+    }
     const id = randomBytes(8).toString("hex");
     session.gcodeFiles.set(id, { path: sourcePath, label: basename(sourcePath) });
     return { path: sourcePath, id };

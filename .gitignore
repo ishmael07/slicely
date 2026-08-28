@@ -15,3 +15,11 @@ downloads/
 slices/
 configs/
 settings.json
+# Per-visitor web session workspaces (SLICELY_WORKDIR defaults to ~/Slicely,
+# which on a case-insensitive filesystem IS this repo). Everything under here is
+# runtime state. It was only invisible to git by accident — each file happened to
+# match a pattern above — so name it explicitly.
+sessions/
+printers.json
+printer-secrets.json
+jobs.json

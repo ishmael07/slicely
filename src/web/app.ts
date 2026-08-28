@@ -12,11 +12,12 @@
 // Server-Sent Events read from a POST `fetch()` body instead of Electron IPC
 // — the browser has no IPC, and a plain `EventSource` can't send a POST body,
 // so streamSse() below reads the SSE wire format by hand off the response
-// stream.
+// stream. The job-run flow (POST /api/jobs/:id/run) reuses this SAME helper —
+// see "Jobs" below — rather than growing a second SSE parser.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, UploadResult } from "../shared/types";
+import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, UploadResult, SettingsState, EffortLevel, PrintPreferences, FeatureMode } from "../shared/types";
 import type { PrinterConnection, PrinterStatus } from "../shared/printers";
-import type { SearchOutcome, UrlResolution } from "../shared/sourcing";
+import type { SearchOutcome, UrlResolution, SourceAvailability, PrintabilityScore } from "../shared/sourcing";
 import type { JobEvent, PrintJob, JobPlate } from "../shared/jobs";
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────
@@ -56,14 +57,17 @@ const dropzone = byId<HTMLElement>("dropzone");
 const bannerEl = byId<HTMLElement>("banner");
 const settingsBtn = byId<HTMLButtonElement>("settingsBtn");
 const settingsSheet = byId<HTMLElement>("settingsSheet");
+const jobsBtn = byId<HTMLButtonElement>("jobsBtn");
+const jobsSheet = byId<HTMLElement>("jobsSheet");
+const jobsListEl = byId<HTMLElement>("jobsList");
+const jobsRefreshBtn = byId<HTMLButtonElement>("jobsRefreshBtn");
 const statusDot = byId<HTMLElement>("statusDot");
 const statusText = byId<HTMLElement>("statusText");
 const printerPill = byId<HTMLButtonElement>("printerPill");
 const printerDot = byId<HTMLElement>("printerDot");
 const printerLabel = byId<HTMLElement>("printerLabel");
-const goalSelect = byId<HTMLSelectElement>("goalSelect");
-const materialSelect = byId<HTMLSelectElement>("materialSelect");
 const printerListEl = byId<HTMLElement>("printerList");
+const discoveredEl = byId<HTMLElement>("discovered");
 const addPrinterBtn = byId<HTMLButtonElement>("addPrinterBtn");
 const addPrinterForm = byId<HTMLElement>("addPrinterForm");
 const discoverBtn = byId<HTMLButtonElement>("discoverBtn");
@@ -74,6 +78,35 @@ const pHostRow = byId<HTMLElement>("pHostRow");
 const pSecretsFields = byId<HTMLElement>("pSecretsFields");
 const pSave = byId<HTMLButtonElement>("pSave");
 const multiUserNote = byId<HTMLElement>("multiUserNote");
+const sourcesListEl = byId<HTMLElement>("sourcesList");
+const sourcesRefreshBtn = byId<HTMLButtonElement>("sourcesRefreshBtn");
+const toastsEl = byId<HTMLElement>("toasts");
+
+// Model + effort composer dropdowns
+const modelTriggerBtn = byId<HTMLButtonElement>("modelTrigger");
+const modelTriggerLabel = byId<HTMLElement>("modelTriggerLabel");
+const modelMenuEl = byId<HTMLElement>("modelMenu");
+const effortTriggerBtn = byId<HTMLButtonElement>("effortTrigger");
+const effortTriggerLabel = byId<HTMLElement>("effortTriggerLabel");
+const effortMenuEl = byId<HTMLElement>("effortMenu");
+
+// Slice-defaults sheet
+const ssPrinter = byId<HTMLSelectElement>("ssPrinter");
+const ssCustom = byId<HTMLElement>("ssCustom");
+const ssBedX = byId<HTMLInputElement>("ssBedX");
+const ssBedY = byId<HTMLInputElement>("ssBedY");
+const ssBedZ = byId<HTMLInputElement>("ssBedZ");
+const ssNozzle = byId<HTMLInputElement>("ssNozzle");
+const ssSaveCustom = byId<HTMLButtonElement>("ssSaveCustom");
+const ssMaterial = byId<HTMLSelectElement>("ssMaterial");
+const ssGoal = byId<HTMLSelectElement>("ssGoal");
+const ssInfill = byId<HTMLInputElement>("ssInfill");
+const ssPattern = byId<HTMLSelectElement>("ssPattern");
+const ssSupports = byId<HTMLElement>("ssSupports");
+const ssStyleRow = byId<HTMLElement>("ssStyleRow");
+const ssSupportStyle = byId<HTMLSelectElement>("ssSupportStyle");
+const ssBrim = byId<HTMLElement>("ssBrim");
+const ssBrimWidth = byId<HTMLInputElement>("ssBrimWidth");
 
 // ── tiny fetch helpers ───────────────────────────────────────────────────────
 
@@ -95,9 +128,21 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return data;
 }
 
+async function patchJson<T>(url: string, body: unknown): Promise<T> {
+  const resp = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = (await resp.json().catch(() => ({}))) as T & { error?: string };
+  if (!resp.ok) throw new Error((data as { error?: string }).error ?? `${url} failed (${resp.status})`);
+  return data;
+}
+
 /** Read a `data: {...}\n\n` SSE stream off a POST response body — the
  *  browser's native EventSource can only issue GET requests, so a streamed
- *  chat/job reply is parsed by hand off `fetch()`'s ReadableStream. */
+ *  chat/job reply is parsed by hand off `fetch()`'s ReadableStream. Reused by
+ *  BOTH /api/chat and /api/jobs/:id/run — do not write a second parser. */
 async function streamSse(url: string, body: unknown, onEvent: (data: Record<string, unknown>) => void, signal?: AbortSignal): Promise<void> {
   const resp = await fetch(url, {
     method: "POST",
@@ -349,6 +394,31 @@ function addMetric(grid: HTMLElement, k: string, v: string, accent = false): voi
   grid.appendChild(m);
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMinutes(mins?: number): string {
+  if (mins === undefined || !Number.isFinite(mins)) return "—";
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// ── toasts (printer send/test feedback) ─────────────────────────────────────
+
+function toast(message: string, kind: "ok" | "err"): void {
+  const t = makeText("div", `toast ${kind}`, message);
+  toastsEl.appendChild(t);
+  setTimeout(() => t.classList.add("show"), 10);
+  setTimeout(() => {
+    t.classList.remove("show");
+    setTimeout(() => t.remove(), 300);
+  }, 4000);
+}
+
 // ── model result cards (v1 ModelResult and v2 SourcedModel share enough
 //    shape to render with one function) ──────────────────────────────────
 interface CardLike {
@@ -360,6 +430,7 @@ interface CardLike {
   webUrl: string;
   license?: string;
   downloadable: boolean;
+  printability?: PrintabilityScore;
 }
 
 function renderCards(models: CardLike[]): void {
@@ -391,6 +462,9 @@ function buildCard(m: CardLike): HTMLElement {
   sub.appendChild(makeText("span", "", m.source));
   sub.appendChild(makeText("span", "", m.creator ? `by ${m.creator}` : "open-source"));
   meta.appendChild(sub);
+  if (m.printability) {
+    meta.appendChild(makeText("div", "score", `Printability ${Math.round(m.printability.score)}`));
+  }
   if (m.license) {
     const lic = makeText("div", "lic", m.license);
     lic.title = m.license;
@@ -417,6 +491,19 @@ function buildCard(m: CardLike): HTMLElement {
 
 function placeholderThumb(): HTMLElement {
   return makeText("div", "thumb placeholder", "◆");
+}
+
+/** Note under a result set naming which sources actually answered — so a
+ *  thin result list reads as "MakerWorld timed out", not just "not much here". */
+function renderSourcesOutcome(sources: SearchOutcome["sources"] | undefined): void {
+  if (!sources || sources.length === 0) return;
+  const note = make("div", "sources-note");
+  sources.forEach((s, i) => {
+    if (i > 0) note.appendChild(document.createTextNode(" · "));
+    note.appendChild(makeText("span", s.ok ? "" : "fail", s.ok ? `${s.id} (${s.count})` : `${s.id} ✕${s.error ? ` ${s.error}` : ""}`));
+  });
+  messagesEl.appendChild(note);
+  scrollToBottom();
 }
 
 function renderDownloadNote(source: string, fileName: string): void {
@@ -449,6 +536,95 @@ function renderInfo(info: ModelInfo): void {
   scrollToBottom();
 }
 
+// ── printer send (shared by the single-slice panel AND every job plate) ────
+// Mirrors src/renderer/printers.ts's sendAction(): the button reads "Send &
+// start" ONLY when the target printer is actually armed for unattended
+// auto-start; otherwise it's worded as an upload-and-queue action. Rebuilt
+// live via onPrintersChanged() so an existing panel's wording stays correct
+// if the user changes printer/arms auto-start after the panel was drawn.
+
+let printersCache: PrinterConnection[] = [];
+let selectedPrinterId: string | undefined;
+try {
+  selectedPrinterId = localStorage.getItem("slicely:selectedPrinter") ?? undefined;
+} catch {
+  selectedPrinterId = undefined;
+}
+/** Printers the user has armed for unattended auto-start, mirrored locally
+ *  from this browser's own toggle actions (there is no GET for arm state —
+ *  see the report). Never assume armed by default. */
+const armedPrinters = new Set<string>();
+
+type Listener = () => void;
+const printerListeners = new Set<Listener>();
+function onPrintersChanged(fn: Listener): () => void {
+  printerListeners.add(fn);
+  return () => printerListeners.delete(fn);
+}
+function emitPrintersChanged(): void {
+  for (const fn of printerListeners) fn();
+}
+
+function activeSendTarget(): PrinterConnection | undefined {
+  return printersCache.find((p) => p.id === selectedPrinterId) ?? printersCache[0];
+}
+
+function buildSendButton(gcodeId: string, size?: "small"): HTMLButtonElement | null {
+  const p = activeSendTarget();
+  if (!p) return null;
+  const willStart = armedPrinters.has(p.id);
+  const cls = size ? `btn primary ${size}` : "btn primary";
+  const btn = makeText("button", cls, willStart ? `Send & start → ${p.label}` : `Send to ${p.label}`) as HTMLButtonElement;
+  btn.title = willStart
+    ? `Upload and immediately begin printing on ${p.label}. Make sure the bed is clear.`
+    : `Upload to ${p.label} and queue it — start it from the printer, or arm auto-start in Settings.`;
+  btn.onclick = () => void sendGcode(p.id, gcodeId, willStart, btn);
+  return btn;
+}
+
+async function sendGcode(printerId: string, gcodeId: string, start: boolean, btn: HTMLButtonElement): Promise<void> {
+  const original = btn.textContent ?? "";
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  try {
+    const result = await postJson<{ ok: boolean; started: boolean; message: string }>(`/api/printers/${encodeURIComponent(printerId)}/send`, {
+      gcodeId,
+      opts: { startImmediately: start },
+    });
+    btn.textContent = result.ok ? (result.started ? "✓ Printing" : "✓ Queued") : "✗ Failed";
+    toast(result.message, result.ok ? "ok" : "err");
+  } catch (err) {
+    btn.textContent = "✗ Failed";
+    toast((err as Error).message || "Couldn't send to the printer.", "err");
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = original;
+    }, 2500);
+  }
+}
+
+/** Mount a live-updating Send button inside `container`. Subscribes to
+ *  printer-state changes and tears itself down once removed from the DOM. */
+function attachSendSlot(container: HTMLElement, gcodeId: string, size?: "small"): void {
+  const slot = make("span", "send-slot");
+  const fill = (): void => {
+    slot.replaceChildren();
+    const btn = buildSendButton(gcodeId, size);
+    if (btn) slot.appendChild(btn);
+  };
+  fill();
+  const unsubscribe = onPrintersChanged(fill);
+  const mo = new MutationObserver((_records, obs) => {
+    if (!messagesEl.contains(slot)) {
+      unsubscribe();
+      obs.disconnect();
+    }
+  });
+  mo.observe(messagesEl, { childList: true, subtree: true });
+  container.appendChild(slot);
+}
+
 function renderMetrics(m: SliceMetrics, gcodeId?: string): void {
   endBotBubble();
   const panel = make("div", "panel");
@@ -469,58 +645,289 @@ function renderMetrics(m: SliceMetrics, gcodeId?: string): void {
     panel.appendChild(makeText("div", "fix-note", `🔧 ${m.fixes.join(" ")}`));
   }
 
-  const actions = make("div", "actions");
+  // Send-to-printer is primary (it's the action that actually finishes the
+  // job); Download G-code is the secondary, always-available fallback — the
+  // web client has no local PrusaSlicer to "open" the result in.
   if (gcodeId) {
-    const dl = document.createElement("a") as HTMLAnchorElement;
+    const actions = make("div", "actions");
+    attachSendSlot(actions, gcodeId);
+    const dl = document.createElement("a");
     dl.className = "btn small";
     dl.textContent = "Download G-code";
     dl.href = `/api/gcode/${encodeURIComponent(gcodeId)}`;
     actions.appendChild(dl);
-    const sendBtnEl = makeText("button", "btn primary small", "Send to printer") as HTMLButtonElement;
-    sendBtnEl.onclick = () => void sendGcodeToPrinter(gcodeId);
-    actions.appendChild(sendBtnEl);
+    panel.appendChild(actions);
   }
-  if (actions.childElementCount > 0) panel.appendChild(actions);
 
   messagesEl.appendChild(panel);
   scrollToBottom();
 }
 
-function renderJobPlates(job: PrintJob): void {
-  endBotBubble();
-  const panel = make("div", "panel");
-  panel.appendChild(panelHead("▤", `Job: ${job.name || job.id} (${job.status})`));
-  const list = make("div", "plate-list");
-  for (const plate of job.plates as JobPlate[]) {
-    list.appendChild(buildPlateRow(plate));
-  }
-  panel.appendChild(list);
-  if (job.notes && job.notes.length) {
-    panel.appendChild(makeText("div", "fix-note", job.notes.join(" ")));
-  }
-  messagesEl.appendChild(panel);
-  scrollToBottom();
+// ── Jobs (multi-part, multi-plate) ──────────────────────────────────────────
+// A job panel is created once (from a plan result, a chat "job" snapshot, or
+// a /api/jobs/:id lookup) and then mutated in place as JobEvents arrive — via
+// the SAME streamSse() helper used for chat — so the plate list, totals, and
+// warnings update live instead of spamming a new panel per event.
+
+/** Wire-level widening: routes/jobs.ts attaches a `gcodeId` to each plate (on
+ *  job_planned/job_done) or to the event itself (on plate_done) once it has
+ *  relocated that plate's G-code into this session's own registry. Chat-driven
+ *  "job"/"job_progress" AgentEvents do NOT get this treatment (see the
+ *  report) — their plates simply never carry a gcodeId, so no Send/Download
+ *  button renders for them. That is deliberate: without an id, the server has
+ *  no offline-safe way to name that file. */
+type WirePlate = JobPlate & { gcodeId?: string };
+type WireJob = Omit<PrintJob, "plates"> & { plates: WirePlate[] };
+type WireJobEvent =
+  | { type: "job_planned"; job: WireJob }
+  | { type: "plate_start"; jobId: string; plateIndex: number }
+  | { type: "plate_done"; jobId: string; plateIndex: number; metrics: SliceMetrics; gcodeId?: string }
+  | { type: "plate_failed"; jobId: string; plateIndex: number; error: string }
+  | { type: "job_done"; job: WireJob }
+  | { type: "job_failed"; jobId: string; error: string };
+
+interface JobPanel {
+  el: HTMLElement;
+  setJob(job: WireJob): void;
+  applyEvent(ev: WireJobEvent): void;
 }
 
-function buildPlateRow(plate: JobPlate & { gcodeId?: string }): HTMLElement {
+function placeholderJob(id: string): PrintJob {
+  const now = new Date().toISOString();
+  return { id, name: id, createdAt: now, updatedAt: now, status: "slicing", plates: [], params: {}, goal: "quality", material: "PLA", notes: [] };
+}
+
+/** First-write-wins: routes/jobs.ts's job_done handler redundantly re-adopts
+ *  a plate's G-code that plate_done already relocated, and the second
+ *  adoption can land on a dead path (the source was already moved by the
+ *  first one) — a real server-side quirk verified live. Keeping only the
+ *  FIRST gcodeId seen per plate avoids ever downgrading a good, downloadable
+ *  id to a later broken one for the same plate. */
+function mergeGcodeIds(store: Map<number, string>, job: WireJob): void {
+  for (const p of job.plates) {
+    if (p.gcodeId && !store.has(p.index)) store.set(p.index, p.gcodeId);
+  }
+}
+
+function updatePlate(job: PrintJob, index: number, fn: (p: JobPlate) => JobPlate): PrintJob {
+  return { ...job, plates: job.plates.map((p) => (p.index === index ? fn(p) : p)) };
+}
+
+function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElement {
   const row = make("div", "plate-row");
-  const dot = make("span", `status-dot ${plate.status}`);
-  row.appendChild(dot);
+  row.appendChild(make("span", `status-dot ${plate.status}`));
   const label = make("div", "label");
   label.appendChild(makeText("div", "name", `Plate ${plate.index} — ${plate.parts.length} part(s)`));
   const sub = plate.metrics?.estimatedPrintTime
-    ? `${plate.status} · ${plate.metrics.estimatedPrintTime}`
-    : plate.error ?? plate.status;
+    ? `${plate.status} · ${plate.metrics.estimatedPrintTime}${plate.metrics.filamentUsedG !== undefined ? ` · ${plate.metrics.filamentUsedG.toFixed(1)} g` : ""}`
+    : (plate.error ?? plate.status);
   label.appendChild(makeText("div", "sub", sub));
   row.appendChild(label);
-  if (plate.gcodeId) {
-    const dl = document.createElement("a") as HTMLAnchorElement;
+  if (gcodeId) {
+    const btns = make("div", "btns");
+    const dl = document.createElement("a");
     dl.className = "btn small";
     dl.textContent = "G-code";
-    dl.href = `/api/gcode/${encodeURIComponent(plate.gcodeId)}`;
-    row.appendChild(dl);
+    dl.href = `/api/gcode/${encodeURIComponent(gcodeId)}`;
+    btns.appendChild(dl);
+    attachSendSlot(btns, gcodeId, "small");
+    row.appendChild(btns);
   }
   return row;
+}
+
+function createJobPanel(initial: WireJob): JobPanel {
+  const gcodeIds = new Map<number, string>();
+  let job: PrintJob = initial;
+  mergeGcodeIds(gcodeIds, initial);
+
+  const panel = make("div", "panel");
+
+  function render(): void {
+    panel.replaceChildren();
+    panel.appendChild(panelHead("▤", `${job.name || job.id} — ${job.status}`));
+
+    if (job.totals) {
+      const grid = make("div", "metrics");
+      addMetric(grid, "Plates", String(job.totals.plateCount));
+      addMetric(grid, "Parts", String(job.totals.partCount));
+      if (job.totals.estimatedMinutes !== undefined) addMetric(grid, "Print time", formatMinutes(job.totals.estimatedMinutes), true);
+      if (job.totals.filamentG !== undefined) addMetric(grid, "Filament", `${job.totals.filamentG.toFixed(1)} g`, true);
+      if (job.totals.filamentCost !== undefined) addMetric(grid, "Est. cost", job.totals.filamentCost.toFixed(2));
+      if (job.totals.toolChanges !== undefined) addMetric(grid, "Tool changes", String(job.totals.toolChanges));
+      panel.appendChild(grid);
+    }
+
+    const list = make("div", "plate-list");
+    for (const plate of job.plates) list.appendChild(buildPlateRow(plate, gcodeIds.get(plate.index)));
+    panel.appendChild(list);
+
+    if (job.colourPlan && job.colourPlan.warnings.length > 0) {
+      panel.appendChild(makeText("div", "fix-note", `🎨 ${job.colourPlan.warnings.join(" ")}`));
+    }
+    if (job.oversized && job.oversized.length > 0) {
+      panel.appendChild(
+        makeText("div", "job-warn", `⚠ Too large for the bed — needs scaling down: ${job.oversized.map((p) => p.name).join(", ")}`),
+      );
+    }
+    if (job.notes.length > 0) {
+      panel.appendChild(makeText("div", "fix-note", job.notes.join(" ")));
+    }
+
+    if (job.status === "planned" || job.status === "failed") {
+      const actions = make("div", "actions");
+      const runBtn = makeText("button", "btn primary small", job.status === "failed" ? "Retry job" : "Run job") as HTMLButtonElement;
+      runBtn.onclick = () => {
+        runBtn.disabled = true;
+        runBtn.textContent = "Running…";
+        void runJobStream(job.id);
+      };
+      actions.appendChild(runBtn);
+      panel.appendChild(actions);
+    }
+  }
+
+  function setJob(j: WireJob): void {
+    mergeGcodeIds(gcodeIds, j);
+    job = j;
+    render();
+  }
+
+  function applyEvent(ev: WireJobEvent): void {
+    switch (ev.type) {
+      case "job_planned":
+        mergeGcodeIds(gcodeIds, ev.job);
+        job = ev.job;
+        break;
+      case "plate_start":
+        job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "slicing" }));
+        break;
+      case "plate_done":
+        if (ev.gcodeId) gcodeIds.set(ev.plateIndex, ev.gcodeId);
+        job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "ready", metrics: ev.metrics, gcodePath: ev.metrics.gcodePath }));
+        break;
+      case "plate_failed":
+        job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "failed", error: ev.error }));
+        break;
+      case "job_done":
+        mergeGcodeIds(gcodeIds, ev.job);
+        job = ev.job;
+        break;
+      case "job_failed":
+        job = { ...job, status: "failed" };
+        break;
+    }
+    render();
+  }
+
+  render();
+  return { el: panel, setJob, applyEvent };
+}
+
+const jobPanels = new Map<string, JobPanel>();
+
+/** Get (or lazily create) the live panel for a job id, appending it to the
+ *  transcript the first time it's seen. Passing `seed` refreshes an existing
+ *  panel with a full snapshot (e.g. after GET /api/jobs/:id). */
+function getJobPanel(id: string, seed?: WireJob): JobPanel {
+  let panel = jobPanels.get(id);
+  if (!panel) {
+    panel = createJobPanel(seed ?? placeholderJob(id));
+    jobPanels.set(id, panel);
+    endBotBubble();
+    clearEmptyState();
+    messagesEl.appendChild(panel.el);
+    scrollToBottom();
+  } else if (seed) {
+    panel.setJob(seed);
+  }
+  return panel;
+}
+
+async function runJobStream(jobId: string): Promise<void> {
+  const panel = getJobPanel(jobId);
+  try {
+    await streamSse(`/api/jobs/${encodeURIComponent(jobId)}/run`, {}, (raw) => {
+      panel.applyEvent(raw as unknown as WireJobEvent);
+    });
+  } catch (err) {
+    renderError((err as Error).message || "Job run failed.");
+  }
+}
+
+function resolveBed(): { x: number; y: number; z: number } {
+  const pref = settings?.preferences.printer;
+  if (pref?.key === "custom" && pref.bed) return pref.bed;
+  if (pref?.key) {
+    const known = settings?.printers.find((p) => p.key === pref.key);
+    if (known) return known.bed;
+  }
+  return { x: 250, y: 210, z: 210 };
+}
+
+async function planJobFromStaged(): Promise<void> {
+  if (stagedFiles.length === 0) return;
+  clearEmptyState();
+  const chip = make("div", "tool-chip enter");
+  chip.appendChild(make("span", "spin"));
+  chip.appendChild(makeText("span", "", "Planning job…"));
+  messagesEl.appendChild(chip);
+  scrollToBottom();
+
+  const parts = stagedFiles.map((f) => ({ path: f.localPath }));
+  const opts: Record<string, unknown> = { bed: resolveBed(), autoOrient: true };
+  if (settings?.preferences.goal) opts.goal = settings.preferences.goal;
+  if (settings?.preferences.material) opts.material = settings.preferences.material;
+
+  try {
+    const job = await postJson<PrintJob>("/api/jobs", { parts, opts });
+    chip.remove();
+    stagedFiles.length = 0;
+    renderAttachTray();
+    updateSendEnabled();
+    getJobPanel(job.id, job as WireJob);
+  } catch (err) {
+    chip.remove();
+    renderError((err as Error).message || "Couldn't plan that job.");
+  }
+}
+
+async function refreshJobsList(): Promise<void> {
+  try {
+    const jobs = await getJson<PrintJob[]>("/api/jobs");
+    renderJobsList(jobs);
+  } catch {
+    jobsListEl.replaceChildren(makeText("p", "sheet-hint", "Job history isn't available on this server yet."));
+  }
+}
+
+function renderJobsList(jobs: PrintJob[]): void {
+  jobsListEl.replaceChildren();
+  if (jobs.length === 0) {
+    jobsListEl.appendChild(makeText("p", "sheet-hint", 'No jobs yet — attach 2+ files, then use "Plan print job" in the tray.'));
+    return;
+  }
+  for (const j of jobs) {
+    const row = make("div", "job-row");
+    const info = make("div", "info");
+    info.appendChild(makeText("div", "name", j.name || j.id));
+    info.appendChild(makeText("div", "meta", `${j.status} · ${j.plates.length} plate(s)`));
+    row.appendChild(info);
+    const viewBtn = makeText("button", "btn ghost small", "View") as HTMLButtonElement;
+    viewBtn.onclick = () => void viewJob(j.id);
+    row.appendChild(viewBtn);
+    jobsListEl.appendChild(row);
+  }
+}
+
+async function viewJob(id: string): Promise<void> {
+  try {
+    const job = await getJson<PrintJob>(`/api/jobs/${encodeURIComponent(id)}`);
+    jobsSheet.classList.add("hidden");
+    getJobPanel(job.id, job as WireJob);
+  } catch (err) {
+    renderError((err as Error).message || "Couldn't load that job.");
+  }
 }
 
 function renderError(message: string): void {
@@ -535,8 +942,16 @@ function renderError(message: string): void {
 }
 
 function applyStatus(status: SlicerStatus): void {
-  statusDot.className = "dot " + (status.installed ? "ok" : "err");
-  statusText.textContent = status.installed ? "PrusaSlicer ready" : "PrusaSlicer not found";
+  if (!status.installed) {
+    statusDot.className = "dot err";
+    statusText.textContent = "PrusaSlicer not found";
+  } else if (status.running) {
+    statusDot.className = "dot busy";
+    statusText.textContent = `PrusaSlicer ${status.version ?? ""} · open`.trim();
+  } else {
+    statusDot.className = "dot ok";
+    statusText.textContent = `PrusaSlicer ${status.version ?? "ready"}`.trim();
+  }
 }
 
 // ── AgentEvent handling ──────────────────────────────────────────────────────
@@ -566,7 +981,10 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
       renderCards(event.models as unknown as CardLike[]);
       break;
     case "search":
-      if (event.outcome) renderCards(event.outcome.results as unknown as CardLike[]);
+      if (event.outcome) {
+        renderCards(event.outcome.results as unknown as CardLike[]);
+        renderSourcesOutcome(event.outcome.sources);
+      }
       break;
     case "resolved":
       if (event.resolution) renderResolution(event.resolution);
@@ -584,7 +1002,14 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
       applyStatus(event.status);
       break;
     case "job":
-      if (event.job) renderJobPlates(event.job);
+      if (event.job) getJobPanel(event.job.id, event.job as WireJob);
+      break;
+    case "job_progress":
+      if (event.event) {
+        const ev = event.event as unknown as WireJobEvent;
+        const id = ev.type === "job_planned" || ev.type === "job_done" ? ev.job.id : ev.jobId;
+        getJobPanel(id).applyEvent(ev);
+      }
       break;
     case "error":
       renderError(event.message);
@@ -595,7 +1020,7 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
       seenInfoPaths.clear();
       break;
     default:
-      break; // unrecognised v2 event types (sent/orientation/…) — safe to ignore
+      break; // unrecognised v2 event types — safe to ignore
   }
   scrollToBottom();
 }
@@ -609,7 +1034,8 @@ function renderResolution(resolution: UrlResolution): void {
     const actions = make("div", "actions");
     const importBtn = makeText("button", "btn primary small", "Import") as HTMLButtonElement;
     const modelUrl = resolution.model.webUrl;
-    importBtn.onclick = () => void importFromUrl(modelUrl, resolution.model!.title);
+    const modelTitle = resolution.model.title;
+    importBtn.onclick = () => void importFromUrl(modelUrl, modelTitle);
     actions.appendChild(importBtn);
     panel.appendChild(actions);
   }
@@ -627,18 +1053,7 @@ function setBusy(b: boolean): void {
 }
 
 function updateSendEnabled(): void {
-  sendBtn.disabled = busy || inputEl.value.trim().length === 0;
-}
-
-/** Build the outgoing instruction text, folding in the quick goal/material
- *  pickers from the settings sheet as a one-line context prefix so the agent
- *  doesn't have to ask when the user has already told it via the UI. */
-function withQuickContext(instruction: string): string {
-  const bits: string[] = [];
-  if (goalSelect.value) bits.push(`print goal: ${goalSelect.value}`);
-  if (materialSelect.value) bits.push(`material: ${materialSelect.value}`);
-  if (bits.length === 0) return instruction;
-  return `(For context — ${bits.join(", ")}.) ${instruction}`;
+  sendBtn.disabled = busy || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
 }
 
 async function runTurn(instruction: string): Promise<void> {
@@ -647,7 +1062,7 @@ async function runTurn(instruction: string): Promise<void> {
   endBotBubble();
   currentAbort = new AbortController();
   try {
-    await streamSse("/api/chat", { message: withQuickContext(instruction) }, handleAgentEvent, currentAbort.signal);
+    await streamSse("/api/chat", { message: instruction }, handleAgentEvent, currentAbort.signal);
   } catch (err) {
     if ((err as Error).name !== "AbortError") {
       renderError((err as Error).message || String(err));
@@ -669,18 +1084,55 @@ function cancelTurn(): void {
   void fetch("/api/chat/cancel", { method: "POST" }).catch(() => undefined);
 }
 
-// ── uploads (drag-and-drop + file picker) ───────────────────────────────────
+// ── uploads (drag-and-drop + file picker): stage-on-drop, act-on-send ──────
+// Staged files can go two ways: sent along with the next chat message (a
+// single active model, inspected/sliced conversationally), or planned as a
+// multi-part JOB via the button that appears in the tray once >=1 file is
+// staged (see "Jobs" above).
 
 const stagedFiles: UploadResult[] = [];
+
+function removeStaged(localPath: string): void {
+  const idx = stagedFiles.findIndex((f) => f.localPath === localPath);
+  if (idx >= 0) stagedFiles.splice(idx, 1);
+  renderAttachTray();
+  updateSendEnabled();
+}
 
 function renderAttachTray(): void {
   attachTray.replaceChildren();
   attachTray.classList.toggle("hidden", stagedFiles.length === 0);
+  if (stagedFiles.length === 0) return;
+
+  const chipRow = make("div", "attach-chip-row");
   for (const f of stagedFiles) {
     const chip = make("div", "attach-chip");
     chip.appendChild(makeText("span", "name", f.fileName));
-    attachTray.appendChild(chip);
+    const rm = makeText("button", "", "×") as HTMLButtonElement;
+    rm.title = `Remove ${f.fileName}`;
+    rm.onclick = () => removeStaged(f.localPath);
+    chip.appendChild(rm);
+    chipRow.appendChild(chip);
   }
+  attachTray.appendChild(chipRow);
+
+  const planBtn = makeText(
+    "button",
+    "btn small primary",
+    stagedFiles.length > 1 ? `Plan print job (${stagedFiles.length} parts)` : "Plan print job",
+  ) as HTMLButtonElement;
+  planBtn.onclick = () => void planJobFromStaged();
+  attachTray.appendChild(planBtn);
+}
+
+function stageResults(results: UploadResult[]): void {
+  if (results.length === 0) return;
+  for (const r of results) {
+    if (!stagedFiles.some((s) => s.localPath === r.localPath)) stagedFiles.push(r);
+  }
+  renderAttachTray();
+  updateSendEnabled();
+  inputEl.focus();
 }
 
 async function uploadFiles(files: FileList | File[]): Promise<void> {
@@ -693,27 +1145,69 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
     const resp = await fetch("/api/upload", { method: "POST", body: fd });
     const data = (await resp.json()) as { uploaded?: UploadResult[]; rejected?: string[]; error?: string };
     if (!resp.ok) throw new Error(data.error ?? "Upload failed");
-    const uploaded = data.uploaded ?? [];
-    const rejected = data.rejected ?? [];
-    stagedFiles.push(...uploaded);
-    renderAttachTray();
-    if (uploaded.length > 0) {
-      const names = uploaded.map((u) => u.fileName).join(", ");
-      const paths = uploaded.map((u) => u.localPath).join(", ");
-      await sendInstruction(
-        `Uploaded ${names}`,
-        `I uploaded ${uploaded.length} file(s). Their exact path(s) on the server are: ${paths}. Treat these as my active model, inspect them, and recommend slicing settings.`,
-      );
-    }
-    if (rejected.length > 0) {
-      renderError(`Not accepted: ${rejected.join(", ")}`);
-    }
+    stageResults(data.uploaded ?? []);
+    if (data.rejected && data.rejected.length > 0) renderError(`Not accepted: ${data.rejected.join(", ")}`);
   } catch (err) {
     renderError((err as Error).message || "Upload failed");
   }
 }
 
-// ── paste-a-link ─────────────────────────────────────────────────────────────
+function renderUploadChip(r: UploadResult): void {
+  const chip = make("div", "tool-chip done enter");
+  chip.appendChild(makeText("span", "ico", "📦"));
+  chip.appendChild(makeText("span", "", `Added ${r.fileName} (${formatBytes(r.sizeBytes)})`));
+  messagesEl.appendChild(chip);
+}
+
+/** Compose the message sent to the agent from the user's text + staged files
+ *  — mirrors src/renderer/renderer.ts's buildInstruction(). */
+function buildAttachmentInstruction(text: string, files: UploadResult[]): string {
+  const active = files.find((f) => f.sliceable) ?? files[0];
+  const names = files.map((f) => `"${f.fileName}"`).join(", ");
+  const context =
+    files.length === 1
+      ? `The user attached a 3D model file, ${names}, now the active model (server path: ${active.localPath}). `
+      : `The user attached ${files.length} files (${names}). The active model is "${active.fileName}" (server path: ${active.localPath}). `;
+
+  if (text) return `${context}\n\nThe user says: ${text}`;
+  return active.sliceable
+    ? `${context}Inspect it, report its dimensions, recommend optimal slicing settings, and offer to slice it.`
+    : `${context}This is a ${active.ext} CAD file that may need converting first. Inspect it if possible and explain next steps.`;
+}
+
+function submitComposer(): void {
+  if (busy) return;
+  const text = inputEl.value.trim();
+  const files = stagedFiles.slice();
+  if (!text && files.length === 0) return;
+  clearEmptyState();
+
+  if (files.length > 0) {
+    addUserMessage(text || (files.length === 1 ? `Attached ${files[0].fileName}` : `Attached ${files.length} files`));
+    for (const f of files) renderUploadChip(f);
+    stagedFiles.length = 0;
+    renderAttachTray();
+  } else {
+    addUserMessage(text);
+  }
+
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  updateSendEnabled();
+  void runTurn(files.length > 0 ? buildAttachmentInstruction(text, files) : text);
+}
+
+// ── paste-a-link OR search directly ─────────────────────────────────────────
+// One row does both jobs: a URL resolves via /api/resolve, anything else runs
+// a direct federated search via GET /api/search (no chat turn needed).
+
+function looksLikeUrl(s: string): boolean {
+  const t = s.trim();
+  if (t.includes(" ")) return false;
+  if (/^https?:\/\//i.test(t)) return true;
+  if (/^www\./i.test(t)) return true;
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/|$)/i.test(t);
+}
 
 async function resolveLink(url: string): Promise<void> {
   const trimmed = url.trim();
@@ -740,6 +1234,35 @@ async function resolveLink(url: string): Promise<void> {
   }
 }
 
+async function runDirectSearch(query: string): Promise<void> {
+  endBotBubble();
+  clearEmptyState();
+  const chip = make("div", "tool-chip enter");
+  chip.appendChild(make("span", "spin"));
+  chip.appendChild(makeText("span", "", `Searching for "${query}"…`));
+  messagesEl.appendChild(chip);
+  scrollToBottom();
+  try {
+    const outcome = await getJson<SearchOutcome>(`/api/search?q=${encodeURIComponent(query)}`);
+    chip.remove();
+    if (outcome.results.length === 0) renderError(`No results for "${query}".`);
+    else renderCards(outcome.results as unknown as CardLike[]);
+    renderSourcesOutcome(outcome.sources);
+  } catch (err) {
+    chip.remove();
+    renderError((err as Error).message || "Search failed.");
+  }
+}
+
+async function handleLinkGo(): Promise<void> {
+  const raw = linkInput.value.trim();
+  if (!raw) return;
+  linkInput.value = "";
+  linkRow.classList.add("hidden");
+  if (looksLikeUrl(raw)) await resolveLink(raw);
+  else await runDirectSearch(raw);
+}
+
 async function importFromUrl(url: string, label: string): Promise<void> {
   try {
     const result = await postJson<{ fileName: string; localPath: string }>("/api/import", { url });
@@ -752,58 +1275,272 @@ async function importFromUrl(url: string, label: string): Promise<void> {
   }
 }
 
-// ── printer send ─────────────────────────────────────────────────────────────
+// ── model + effort dropdowns (Cursor-style, mirrors the Electron composer) ──
 
-let selectedPrinterId: string | undefined;
-try {
-  selectedPrinterId = localStorage.getItem("slicely:selectedPrinter") ?? undefined;
-} catch {
-  selectedPrinterId = undefined;
+let settings: SettingsState | null = null;
+
+async function loadSettings(): Promise<void> {
+  try {
+    settings = await getJson<SettingsState>("/api/settings");
+    renderModelEffort();
+    renderPreferences();
+  } catch {
+    /* the dropdowns/sheet just stay at their defaults */
+  }
 }
 
-async function sendGcodeToPrinter(gcodeId: string): Promise<void> {
-  if (!selectedPrinterId) {
-    renderError("Pick a printer in Settings first.");
+function toggleMenu(which: "model" | "effort"): void {
+  const menu = which === "model" ? modelMenuEl : effortMenuEl;
+  const trigger = which === "model" ? modelTriggerBtn : effortTriggerBtn;
+  const willOpen = menu.classList.contains("hidden");
+  closeMenus();
+  if (willOpen) {
+    menu.classList.remove("hidden");
+    trigger.classList.add("open");
+  }
+}
+
+function closeMenus(): void {
+  modelMenuEl.classList.add("hidden");
+  effortMenuEl.classList.add("hidden");
+  modelTriggerBtn.classList.remove("open");
+  effortTriggerBtn.classList.remove("open");
+}
+
+function effortDisabled(lvl: EffortLevel, m: SettingsState["models"][number] | undefined): boolean {
+  if (!m) return false;
+  if (!m.supportsEffort) return true;
+  if (lvl === "xhigh" && !m.supportsXHigh) return true;
+  if (lvl === "max" && !m.supportsMax) return true;
+  return false;
+}
+
+function renderModelEffort(): void {
+  if (!settings) return;
+  const { current, models, efforts } = settings;
+  const chosen = models.find((m) => m.id === current.model);
+
+  modelTriggerLabel.textContent = chosen?.label ?? current.model;
+  const supportsEffort = chosen?.supportsEffort ?? false;
+  effortTriggerBtn.classList.toggle("hidden", !supportsEffort);
+  effortTriggerLabel.textContent = current.effort;
+
+  modelMenuEl.replaceChildren();
+  for (const m of models) {
+    const active = m.id === current.model;
+    const item = make("div", `menu-item${active ? " active" : ""}`);
+    const text = make("div", "mtext");
+    text.appendChild(makeText("div", "mname", m.label));
+    text.appendChild(makeText("div", "mblurb", m.blurb));
+    item.appendChild(text);
+    item.appendChild(makeText("span", "check", "✓"));
+    item.onclick = () => {
+      closeMenus();
+      void changeSettings({ model: m.id });
+    };
+    modelMenuEl.appendChild(item);
+  }
+
+  effortMenuEl.replaceChildren();
+  for (const lvl of efforts) {
+    const disabled = effortDisabled(lvl, chosen);
+    const active = lvl === current.effort && !disabled;
+    const item = make("div", `menu-item effort${active ? " active" : ""}${disabled ? " disabled" : ""}`);
+    const text = make("div", "mtext");
+    text.appendChild(makeText("div", "mname", lvl));
+    item.appendChild(text);
+    item.appendChild(makeText("span", "check", "✓"));
+    item.onclick = () => {
+      if (disabled) return;
+      closeMenus();
+      void changeSettings({ effort: lvl });
+    };
+    effortMenuEl.appendChild(item);
+  }
+}
+
+async function changeSettings(patch: Partial<{ model: string; effort: EffortLevel }>): Promise<void> {
+  try {
+    settings = await patchJson<SettingsState>("/api/settings", patch);
+    renderModelEffort();
+  } catch (err) {
+    renderError((err as Error).message || "Couldn't change that setting.");
+  }
+}
+
+// ── slice-defaults sheet (printer, material, goal, infill, supports, brim) ──
+
+function fillSelect(sel: HTMLSelectElement, options: { value: string; label: string }[], current: string): void {
+  sel.replaceChildren();
+  for (const o of options) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    if (o.value === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function renderSegment(host: HTMLElement, current: FeatureMode, onPick: (mode: FeatureMode) => void): void {
+  host.replaceChildren();
+  for (const mode of ["auto", "on", "off"] as FeatureMode[]) {
+    const b = makeText("button", "", mode) as HTMLButtonElement;
+    if (mode === current) b.classList.add("active");
+    b.onclick = () => onPick(mode);
+    host.appendChild(b);
+  }
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function renderPreferences(): void {
+  if (!settings) return;
+  const { preferences: p, printers, materials, goals } = settings;
+
+  fillSelect(
+    ssPrinter,
+    [{ value: "", label: "Not set (ask me)" }, ...printers.map((pr) => ({ value: pr.key, label: pr.label })), { value: "custom", label: "Custom…" }],
+    p.printer?.key ?? "",
+  );
+  const isCustom = p.printer?.key === "custom";
+  ssCustom.classList.toggle("hidden", !isCustom);
+  if (isCustom && p.printer?.bed) {
+    ssBedX.value = String(p.printer.bed.x);
+    ssBedY.value = String(p.printer.bed.y);
+    ssBedZ.value = String(p.printer.bed.z);
+    ssNozzle.value = String(p.printer.nozzleMm ?? 0.4);
+  }
+
+  fillSelect(ssMaterial, [{ value: "", label: "Default (PLA)" }, ...materials.map((m) => ({ value: m, label: m }))], p.material ?? "");
+  fillSelect(ssGoal, [{ value: "", label: "Ask me / quality" }, ...goals.map((g) => ({ value: g, label: cap(g) }))], p.goal ?? "");
+  ssInfill.value = p.fillDensityPct !== undefined ? String(p.fillDensityPct) : "";
+  fillSelect(
+    ssPattern,
+    [{ value: "", label: "Auto (by goal)" }, ...["gyroid", "grid", "rectilinear", "honeycomb", "cubic", "triangles"].map((v) => ({ value: v, label: cap(v) }))],
+    p.fillPattern ?? "",
+  );
+
+  renderSegment(ssSupports, p.supports ?? "auto", (mode) => void savePref({ supports: mode }));
+  ssStyleRow.classList.toggle("hidden", (p.supports ?? "auto") === "off");
+  fillSelect(
+    ssSupportStyle,
+    [
+      { value: "grid", label: "Grid (classic)" },
+      { value: "organic", label: "Organic (tree)" },
+      { value: "snug", label: "Snug" },
+    ],
+    p.supportStyle ?? "grid",
+  );
+  renderSegment(ssBrim, p.brim ?? "auto", (mode) => void savePref({ brim: mode }));
+  ssBrimWidth.value = p.brimWidthMm !== undefined ? String(p.brimWidthMm) : "";
+}
+
+async function savePref(patch: Partial<PrintPreferences>): Promise<void> {
+  try {
+    settings = await patchJson<SettingsState>("/api/preferences", patch);
+    renderPreferences();
+  } catch (err) {
+    renderError((err as Error).message || "Couldn't save that preference.");
+  }
+}
+
+ssPrinter.addEventListener("change", () => {
+  const key = ssPrinter.value;
+  if (key === "") {
+    void savePref({ printer: null as unknown as PrintPreferences["printer"] });
+  } else if (key === "custom") {
+    ssCustom.classList.remove("hidden");
+  } else {
+    const pr = settings?.printers.find((x) => x.key === key);
+    void savePref({ printer: { key, label: pr?.label } });
+  }
+});
+ssSaveCustom.addEventListener("click", () => {
+  const x = Number(ssBedX.value);
+  const y = Number(ssBedY.value);
+  const z = Number(ssBedZ.value);
+  const n = Number(ssNozzle.value);
+  if (![x, y, z].every((v) => Number.isFinite(v) && v > 0)) {
+    renderError("Enter a valid bed size (X, Y, Z in mm) for the custom printer.");
     return;
   }
-  try {
-    const result = await postJson<{ ok: boolean; message: string }>(`/api/printers/${encodeURIComponent(selectedPrinterId)}/send`, {
-      gcodeId,
-    });
-    renderError(result.message); // reuse the same subtle inline note style
-  } catch (err) {
-    renderError((err as Error).message || "Couldn't send to the printer.");
+  void savePref({
+    printer: { key: "custom", label: `Custom ${x}×${y}×${z}`, bed: { x, y, z }, nozzleMm: Number.isFinite(n) && n > 0 ? n : 0.4 },
+  });
+});
+ssMaterial.addEventListener("change", () => void savePref({ material: (ssMaterial.value || null) as unknown as PrintPreferences["material"] }));
+ssGoal.addEventListener("change", () => void savePref({ goal: (ssGoal.value || null) as unknown as PrintPreferences["goal"] }));
+ssInfill.addEventListener("change", () => {
+  const v = ssInfill.value.trim();
+  void savePref({ fillDensityPct: (v === "" ? null : Number(v)) as unknown as PrintPreferences["fillDensityPct"] });
+});
+ssPattern.addEventListener("change", () => void savePref({ fillPattern: (ssPattern.value || null) as unknown as PrintPreferences["fillPattern"] }));
+ssSupportStyle.addEventListener("change", () =>
+  void savePref({ supportStyle: ssSupportStyle.value as unknown as PrintPreferences["supportStyle"] }),
+);
+ssBrimWidth.addEventListener("change", () => {
+  const v = ssBrimWidth.value.trim();
+  void savePref({ brimWidthMm: (v === "" ? null : Number(v)) as unknown as PrintPreferences["brimWidthMm"] });
+});
+
+// ── printers panel (settings sheet): connect, arm auto-start, control ──────
+
+function stateLabel(s: PrinterStatus | undefined): string {
+  if (!s) return "not connected";
+  switch (s.state) {
+    case "printing":
+      return s.progressPct !== undefined ? `printing ${Math.round(s.progressPct)}%` : "printing";
+    case "preparing":
+      return "heating";
+    case "paused":
+      return "paused";
+    case "idle":
+      return "ready";
+    case "finished":
+      return "finished";
+    case "error":
+      return s.message ? `error — ${s.message}` : "error";
+    case "offline":
+      return "offline";
+    default:
+      return "unknown";
   }
 }
 
-// ── printers panel (settings sheet) ─────────────────────────────────────────
+function stateClass(s: PrinterStatus | undefined): string {
+  if (!s) return "off";
+  if (s.state === "printing" || s.state === "preparing") return "busy";
+  if (s.state === "idle" || s.state === "finished") return "ok";
+  if (s.state === "error") return "err";
+  return "off";
+}
 
 let multiUser = false;
 
 async function refreshPrinters(): Promise<void> {
   try {
-    const [printers, statuses] = await Promise.all([
-      getJson<PrinterConnection[]>("/api/printers"),
-      getJson<PrinterStatus[]>("/api/printers/status"),
-    ]);
+    const [printers, statuses] = await Promise.all([getJson<PrinterConnection[]>("/api/printers"), getJson<PrinterStatus[]>("/api/printers/status")]);
+    printersCache = printers;
     renderPrinterList(printers, statuses);
     updateHeaderPrinterPill(printers, statuses);
+    emitPrintersChanged();
   } catch {
     printerListEl.replaceChildren(makeText("p", "sheet-hint", "Printer connections aren't available on this server yet."));
   }
 }
 
 function updateHeaderPrinterPill(printers: PrinterConnection[], statuses: PrinterStatus[]): void {
-  const active = printers.find((p) => p.id === selectedPrinterId);
+  const active = printers.find((p) => p.id === selectedPrinterId) ?? printers[0];
   if (!active) {
     printerDot.className = "dot off";
     printerLabel.textContent = "No printer";
     return;
   }
   const status = statuses.find((s) => s.id === active.id);
-  const state = status?.state ?? "unknown";
-  printerDot.className = "dot " + (state === "printing" || state === "idle" ? "ok" : state === "error" ? "err" : "warn");
-  printerLabel.textContent = active.label;
+  printerDot.className = `dot ${stateClass(status)}`;
+  printerLabel.textContent = `${active.label} · ${stateLabel(status)}`;
 }
 
 function renderPrinterList(printers: PrinterConnection[], statuses: PrinterStatus[]): void {
@@ -815,20 +1552,51 @@ function renderPrinterList(printers: PrinterConnection[], statuses: PrinterStatu
   for (const p of printers) {
     const status = statuses.find((s) => s.id === p.id);
     const row = make("div", "printer-row");
-    const dot = make("span", "dot " + (status?.state === "error" ? "err" : status?.state === "printing" ? "ok" : "warn"));
-    row.appendChild(dot);
-    const info = make("div", "info");
-    info.appendChild(makeText("div", "name", p.label));
-    info.appendChild(makeText("div", "meta", `${p.transport} · ${status?.state ?? "unknown"}${p.id === selectedPrinterId ? " · active" : ""}`));
-    row.appendChild(info);
-    const btns = make("div", "btns");
-    const useBtn = makeText("button", "btn small", "Use") as HTMLButtonElement;
+
+    const head = make("div", "printer-head");
+    head.appendChild(make("span", `dot ${stateClass(status)}`));
+    head.appendChild(makeText("span", "name", p.label));
+    head.appendChild(makeText("span", "meta", `${p.transport} · ${stateLabel(status)}${p.id === selectedPrinterId ? " · active" : ""}`));
+    row.appendChild(head);
+
+    // Auto-start arming: off by default, deliberately worded as a hazard —
+    // see buildSendButton() for how this changes the Send button's wording.
+    const armRow = make("label", "printer-arm");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = armedPrinters.has(p.id);
+    cb.onchange = () => {
+      if (cb.checked) armedPrinters.add(p.id);
+      else armedPrinters.delete(p.id);
+      emitPrintersChanged();
+      void postJson(`/api/printers/${encodeURIComponent(p.id)}/autostart`, { armed: cb.checked }).catch(() => undefined);
+    };
+    armRow.appendChild(cb);
+    armRow.appendChild(document.createTextNode("Start prints automatically (only with a clear bed — you are responsible for checking)"));
+    row.appendChild(armRow);
+
+    const btns = make("div", "printer-actions");
+    const useBtn = makeText("button", "btn ghost small", "Use") as HTMLButtonElement;
     useBtn.onclick = () => void selectPrinter(p.id);
     btns.appendChild(useBtn);
-    const testBtn = makeText("button", "btn small", "Test") as HTMLButtonElement;
-    testBtn.onclick = () => void testPrinter(p.id);
+    const testBtn = makeText("button", "btn ghost small", "Test") as HTMLButtonElement;
+    testBtn.onclick = () => void testPrinterAction(p.id, testBtn);
     btns.appendChild(testBtn);
+    if (status && (status.state === "printing" || status.state === "paused")) {
+      const pauseLabel = status.state === "paused" ? "Resume" : "Pause";
+      const resumeAction = status.state === "paused" ? "resume" : "pause";
+      const pauseBtn = makeText("button", "btn ghost small", pauseLabel) as HTMLButtonElement;
+      pauseBtn.onclick = () => void controlPrinterAction(p.id, resumeAction);
+      btns.appendChild(pauseBtn);
+      const cancelBtn = makeText("button", "btn ghost small danger", "Cancel") as HTMLButtonElement;
+      cancelBtn.onclick = () => void controlPrinterAction(p.id, "cancel");
+      btns.appendChild(cancelBtn);
+    }
+    const rmBtn = makeText("button", "btn ghost small danger", "Remove") as HTMLButtonElement;
+    rmBtn.onclick = () => void removePrinterAction(p.id);
+    btns.appendChild(rmBtn);
     row.appendChild(btns);
+
     printerListEl.appendChild(row);
   }
 }
@@ -844,12 +1612,46 @@ async function selectPrinter(id: string): Promise<void> {
   await refreshPrinters();
 }
 
-async function testPrinter(id: string): Promise<void> {
+async function testPrinterAction(id: string, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  const original = btn.textContent ?? "Test";
+  btn.textContent = "Testing…";
   try {
-    const result = await postJson<{ ok: boolean; message: string }>(`/api/printers/${encodeURIComponent(id)}/test`, {});
-    renderError(result.message);
+    const r = await postJson<{ ok: boolean; message: string }>(`/api/printers/${encodeURIComponent(id)}/test`, {});
+    toast(r.message, r.ok ? "ok" : "err");
   } catch (err) {
-    renderError((err as Error).message || "Test failed.");
+    toast((err as Error).message || "Test failed.", "err");
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+    await refreshPrinters();
+  }
+}
+
+async function controlPrinterAction(id: string, action: "pause" | "resume" | "cancel"): Promise<void> {
+  try {
+    const r = await postJson<{ ok: boolean; message: string }>(`/api/printers/${encodeURIComponent(id)}/control`, { action });
+    toast(r.message, r.ok ? "ok" : "err");
+  } catch (err) {
+    toast((err as Error).message || "Control failed.", "err");
+  }
+  await refreshPrinters();
+}
+
+async function removePrinterAction(id: string): Promise<void> {
+  try {
+    await fetch(`/api/printers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (selectedPrinterId === id) {
+      selectedPrinterId = undefined;
+      try {
+        localStorage.removeItem("slicely:selectedPrinter");
+      } catch {
+        /* ignore */
+      }
+    }
+    armedPrinters.delete(id);
+  } catch (err) {
+    toast((err as Error).message || "Couldn't remove printer.", "err");
   }
   await refreshPrinters();
 }
@@ -878,6 +1680,40 @@ async function loadDrivers(): Promise<void> {
   }
 }
 
+function secretLabel(k: string): string {
+  switch (k) {
+    case "apiKey":
+      return "API key";
+    case "accessCode":
+      return "Access code";
+    case "token":
+      return "Account token";
+    case "username":
+      return "Username";
+    case "password":
+      return "Password";
+    default:
+      return k;
+  }
+}
+
+function secretHint(k: string): string {
+  switch (k) {
+    case "apiKey":
+      return "From the printer's web interface → Settings";
+    case "accessCode":
+      return "8 characters, shown on the printer's screen";
+    case "token":
+      return "From your vendor account";
+    case "username":
+      return "maker";
+    case "password":
+      return "Printer password";
+    default:
+      return "";
+  }
+}
+
 function renderSecretFields(): void {
   const driver = driverCatalog.find((d) => d.transport === pTransport.value);
   pSecretsFields.replaceChildren();
@@ -885,50 +1721,136 @@ function renderSecretFields(): void {
   pHostRow.classList.toggle("hidden", cloudTransports.has(pTransport.value) || pTransport.value === "file");
   for (const secret of driver?.requiredSecrets ?? []) {
     const row = make("div", "sheet-row");
-    row.appendChild(makeText("label", "sheet-label", secret));
+    row.appendChild(makeText("label", "sheet-label", secretLabel(secret)));
     const input = document.createElement("input");
-    input.type = "text";
+    input.type = secret === "password" || secret === "token" || secret === "apiKey" ? "password" : "text";
+    input.placeholder = secretHint(secret);
     input.dataset.secretField = secret;
     row.appendChild(input);
     pSecretsFields.appendChild(row);
   }
 }
 
-async function savePrinter(): Promise<void> {
+async function connectPrinter(): Promise<void> {
   const body: Record<string, unknown> = {
     transport: pTransport.value,
     label: pLabel.value.trim() || pTransport.value,
-    host: pHost.value.trim() || undefined,
   };
+  if (pHost.value.trim()) body.host = pHost.value.trim();
   for (const input of pSecretsFields.querySelectorAll<HTMLInputElement>("input[data-secret-field]")) {
     const field = input.dataset.secretField;
     if (field && input.value.trim()) body[field] = input.value.trim();
   }
+  pSave.disabled = true;
+  const original = pSave.textContent ?? "Connect printer";
+  pSave.textContent = "Connecting…";
   try {
-    await postJson("/api/printers", body);
+    const res = await postJson<{ printer: PrinterConnection; test: { ok: boolean; message: string } }>("/api/printers", body);
+    toast(res.test.message, res.test.ok ? "ok" : "err");
     addPrinterForm.classList.add("hidden");
     pLabel.value = "";
     pHost.value = "";
     await refreshPrinters();
   } catch (err) {
-    renderError((err as Error).message || "Couldn't add that printer.");
+    toast((err as Error).message || "Couldn't add that printer.", "err");
+  } finally {
+    pSave.disabled = false;
+    pSave.textContent = original;
   }
 }
 
-async function discoverPrinters(): Promise<void> {
+interface DiscoveredPrinterLite {
+  transport: string;
+  host: string;
+  port: number;
+  label: string;
+  needs?: string;
+}
+
+function renderDiscovered(found: DiscoveredPrinterLite[]): void {
+  discoveredEl.replaceChildren();
+  if (found.length === 0) return;
+  discoveredEl.appendChild(makeText("div", "sheet-hint", `Found ${found.length} on your network`));
+  for (const d of found) {
+    const row = make("div", "printer-row found");
+    row.appendChild(makeText("span", "name", d.label));
+    row.appendChild(makeText("span", "meta", `${d.transport} · ${d.host}:${d.port}${d.needs ? ` · ${d.needs}` : ""}`));
+    const add = makeText("button", "btn primary small", "Add") as HTMLButtonElement;
+    add.onclick = () => {
+      addPrinterForm.classList.remove("hidden");
+      pTransport.value = d.transport;
+      renderSecretFields();
+      pLabel.value = d.label;
+      pHost.value = d.host;
+      addPrinterForm.scrollIntoView({ behavior: "smooth" });
+    };
+    row.appendChild(add);
+    discoveredEl.appendChild(row);
+  }
+}
+
+async function discoverPrintersAction(): Promise<void> {
+  discoverBtn.disabled = true;
+  const original = discoverBtn.textContent ?? "Scan LAN";
+  discoverBtn.textContent = "Scanning…";
   try {
-    const found = await getJson<Array<{ label: string; host: string; transport: string }>>("/api/printers/discover");
-    if (found.length === 0) {
-      renderError("No printers found on the local network.");
-    } else {
-      renderError(`Found: ${found.map((f) => `${f.label} (${f.host})`).join(", ")}`);
-    }
+    const found = await getJson<DiscoveredPrinterLite[]>("/api/printers/discover");
+    renderDiscovered(found);
+    if (found.length === 0) toast("No printers found on this network.", "err");
   } catch (err) {
-    renderError((err as Error).message || "Discovery unavailable.");
+    toast((err as Error).message || "Discovery unavailable.", "err");
+  } finally {
+    discoverBtn.textContent = original;
+    discoverBtn.disabled = false;
   }
 }
 
-// ── settings sheet + status polling ─────────────────────────────────────────
+// ── model sources panel ─────────────────────────────────────────────────────
+
+async function loadSources(): Promise<void> {
+  try {
+    const sources = await getJson<SourceAvailability[]>("/api/sources");
+    renderSources(sources);
+  } catch {
+    sourcesListEl.replaceChildren(makeText("p", "sheet-hint", "Model sourcing isn't available on this server yet."));
+  }
+}
+
+function renderSources(sources: SourceAvailability[]): void {
+  sourcesListEl.replaceChildren();
+  if (sources.length === 0) {
+    sourcesListEl.appendChild(makeText("p", "sheet-hint", "No sources reported."));
+    return;
+  }
+  for (const s of sources) {
+    const row = make("div", "source-row");
+    const cls = s.searchable && s.downloadable ? "ok" : s.searchable ? "warn" : "off";
+    row.appendChild(make("span", `dot ${cls}`));
+    const info = make("div", "info");
+    const name = make("div", "name");
+    name.appendChild(makeText("span", "", s.label));
+    if (s.searchable) name.appendChild(makeText("span", "cap", "search"));
+    if (s.downloadable) name.appendChild(makeText("span", "cap", "download"));
+    info.appendChild(name);
+    if (s.blockedReason) {
+      const reason = make("div", "reason");
+      reason.appendChild(document.createTextNode(`${s.blockedReason} `));
+      if (s.setupUrl) {
+        const link = document.createElement("a");
+        link.href = s.setupUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Get one →";
+        reason.appendChild(link);
+      }
+      info.appendChild(reason);
+    }
+    row.appendChild(info);
+    sourcesListEl.appendChild(row);
+  }
+}
+
+// ── status polling + config banner ──────────────────────────────────────────
 
 async function loadStatus(): Promise<void> {
   try {
@@ -974,15 +1896,6 @@ inputEl.addEventListener("keydown", (e) => {
 sendBtn.addEventListener("click", submitComposer);
 stopBtn.addEventListener("click", cancelTurn);
 
-function submitComposer(): void {
-  const text = inputEl.value.trim();
-  if (!text || busy) return;
-  inputEl.value = "";
-  inputEl.style.height = "auto";
-  updateSendEnabled();
-  void sendInstruction(text, text);
-}
-
 attachBtn.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
   if (fileInput.files) void uploadFiles(fileInput.files);
@@ -993,26 +1906,62 @@ linkBtn.addEventListener("click", () => {
   linkRow.classList.toggle("hidden");
   if (!linkRow.classList.contains("hidden")) linkInput.focus();
 });
-linkGo.addEventListener("click", () => {
-  void resolveLink(linkInput.value);
-  linkInput.value = "";
-  linkRow.classList.add("hidden");
-});
+linkGo.addEventListener("click", () => void handleLinkGo());
 linkInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") linkGo.click();
+  if (e.key === "Enter") void handleLinkGo();
+});
+
+// Model + effort dropdowns: each trigger toggles its own menu; both close on
+// outside-click or Escape (mirrors the Electron composer exactly).
+modelTriggerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMenu("model");
+});
+effortTriggerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMenu("effort");
+});
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target as HTMLElement | null;
+  if (!t) {
+    closeMenus();
+    return;
+  }
+  if (modelMenuEl.contains(t) || modelTriggerBtn.contains(t)) return;
+  if (effortMenuEl.contains(t) || effortTriggerBtn.contains(t)) return;
+  closeMenus();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenus();
 });
 
 settingsBtn.addEventListener("click", () => {
-  settingsSheet.classList.toggle("hidden");
-  if (!settingsSheet.classList.contains("hidden")) void refreshPrinters();
+  jobsSheet.classList.add("hidden");
+  const willOpen = settingsSheet.classList.contains("hidden");
+  settingsSheet.classList.toggle("hidden", !willOpen);
+  if (willOpen) {
+    renderPreferences();
+    void refreshPrinters();
+    void loadSources();
+  }
 });
 // The printer pill in the header is a shortcut into the same settings sheet
 // (which is where printers are picked/managed) rather than a second menu.
 printerPill.addEventListener("click", () => settingsBtn.click());
+
+jobsBtn.addEventListener("click", () => {
+  settingsSheet.classList.add("hidden");
+  const willOpen = jobsSheet.classList.contains("hidden");
+  jobsSheet.classList.toggle("hidden", !willOpen);
+  if (willOpen) void refreshJobsList();
+});
+jobsRefreshBtn.addEventListener("click", () => void refreshJobsList());
+
 addPrinterBtn.addEventListener("click", () => addPrinterForm.classList.toggle("hidden"));
 pTransport.addEventListener("change", renderSecretFields);
-pSave.addEventListener("click", () => void savePrinter());
-discoverBtn.addEventListener("click", () => void discoverPrinters());
+pSave.addEventListener("click", () => void connectPrinter());
+discoverBtn.addEventListener("click", () => void discoverPrintersAction());
+sourcesRefreshBtn.addEventListener("click", () => void loadSources());
 
 // Drag-and-drop across the whole app.
 let dragDepth = 0;
@@ -1059,6 +2008,7 @@ updateSendEnabled();
 void loadStatus();
 void loadDrivers();
 void checkMultiUser();
+void loadSettings();
 setInterval(() => void loadStatus(), 15000);
 setInterval(() => {
   if (!settingsSheet.classList.contains("hidden")) void refreshPrinters();
