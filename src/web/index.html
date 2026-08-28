@@ -124,7 +124,12 @@
             <label class="sheet-label" for="pHost">Host / IP</label>
             <input id="pHost" type="text" placeholder="192.168.1.50" />
           </div>
+          <div class="sheet-row hidden" id="pFolderRow">
+            <label class="sheet-label" for="pFolder">Folder</label>
+            <input id="pFolder" type="text" placeholder="/Volumes/SD-CARD  (blank = default slices folder)" />
+          </div>
           <div id="pSecretsFields"></div>
+          <p class="sheet-hint" id="pTransportHint"></p>
           <button class="btn primary ss-save" id="pSave">Connect printer</button>
         </div>
         <p id="multiUserNote" class="sheet-hint hidden">

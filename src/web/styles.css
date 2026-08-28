@@ -1403,3 +1403,31 @@ details.thinking summary::-webkit-details-marker {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Empty-scan guidance: most printers simply have no network hardware, so this
+   explains the result instead of leaving the user at a dead end. */
+.scan-help {
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-xs);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.scan-help-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.scan-help ul {
+  margin: 0 0 6px;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.scan-help-note {
+  color: var(--text);
+}

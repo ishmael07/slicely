@@ -76,6 +76,9 @@ const pLabel = byId<HTMLInputElement>("pLabel");
 const pHost = byId<HTMLInputElement>("pHost");
 const pHostRow = byId<HTMLElement>("pHostRow");
 const pSecretsFields = byId<HTMLElement>("pSecretsFields");
+const pFolderRow = byId<HTMLElement>("pFolderRow");
+const pFolder = byId<HTMLInputElement>("pFolder");
+const pTransportHint = byId<HTMLElement>("pTransportHint");
 const pSave = byId<HTMLButtonElement>("pSave");
 const multiUserNote = byId<HTMLElement>("multiUserNote");
 const sourcesListEl = byId<HTMLElement>("sourcesList");
@@ -1714,11 +1717,71 @@ function secretHint(k: string): string {
   }
 }
 
+/** Plain-language note about what each transport needs and can do, so the
+ *  user is not left guessing why a printer won't connect. */
+function transportHint(transport: string): string {
+  switch (transport) {
+    case "file":
+      return "No network needed. Slicely writes the G-code to this folder — point it at your SD card and print from the card. This is the option for a stock Ender 3, Ender 5, or any printer without Wi-Fi.";
+    case "octoprint":
+      return "Needs OctoPrint running on your network (usually a Raspberry Pi attached to the printer). API key: OctoPrint → Settings → API.";
+    case "moonraker":
+      return "Needs Klipper + Moonraker (Fluidd/Mainsail). Enter the host's IP address.";
+    case "prusalink":
+      return "Built into Prusa MK4 / XL / MINI with networking enabled. Find the address and password on the printer's screen.";
+    case "prusa-connect":
+      return "Works over the internet, so it needs no LAN access. Token comes from your Prusa Connect account.";
+    case "bambu-lan":
+      return "Access code is on the printer's screen (Settings → Network). Note: status and control work, but file upload over LAN needs FTPS, which isn't implemented yet.";
+    case "bambu-cloud":
+      return "Works over the internet via your Bambu account.";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Explain an empty scan. A stock Ender 3 / Ender 5 / most sub-$300 printers
+ * have no Wi-Fi or Ethernet whatsoever, so a scan finding nothing is the
+ * expected result rather than a fault — and the SD-card route is the real
+ * answer for those machines, not a workaround.
+ */
+function showScanHelp(): void {
+  discoveredEl.replaceChildren();
+  const box = make("div", "scan-help");
+  box.appendChild(makeText("div", "scan-help-title", "No printers answered on this network."));
+  const list = document.createElement("ul");
+  for (const line of [
+    "Most printers have no network at all (a stock Ender 3, Ender 5, most budget machines). Nothing to find — use Type → \u201cFolder / SD card\u201d and print from the card.",
+    "OctoPrint / Klipper users: make sure the Pi is powered on and on this same Wi-Fi, then add it by IP with Type \u2192 OctoPrint or Moonraker.",
+    "Prusa MK4 / XL / MINI: enable networking on the printer, then add it by the address shown on its screen.",
+    "Bambu: use Bambu Cloud with your account token, or LAN with the access code from the printer\u2019s screen.",
+  ]) {
+    const li = document.createElement("li");
+    li.textContent = line;
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+  box.appendChild(
+    makeText(
+      "div",
+      "scan-help-note",
+      "Either way, Slicely still slices correctly for your machine \u2014 pick it under Printer above so estimates match.",
+    ),
+  );
+  discoveredEl.appendChild(box);
+}
+
 function renderSecretFields(): void {
   const driver = driverCatalog.find((d) => d.transport === pTransport.value);
   pSecretsFields.replaceChildren();
   const cloudTransports = new Set(["prusa-connect", "bambu-cloud"]);
-  pHostRow.classList.toggle("hidden", cloudTransports.has(pTransport.value) || pTransport.value === "file");
+  const isFile = pTransport.value === "file";
+  pHostRow.classList.toggle("hidden", cloudTransports.has(pTransport.value) || isFile);
+  // The folder is only meaningful for the file/SD transport.
+  pFolderRow.classList.toggle("hidden", !isFile);
+  pTransportHint.textContent = transportHint(pTransport.value);
+  pSave.textContent = isFile ? "Save folder printer" : "Connect printer";
   for (const secret of driver?.requiredSecrets ?? []) {
     const row = make("div", "sheet-row");
     row.appendChild(makeText("label", "sheet-label", secretLabel(secret)));
@@ -1737,6 +1800,9 @@ async function connectPrinter(): Promise<void> {
     label: pLabel.value.trim() || pTransport.value,
   };
   if (pHost.value.trim()) body.host = pHost.value.trim();
+  if (pTransport.value === "file" && pFolder.value.trim()) {
+    body.outputDir = pFolder.value.trim();
+  }
   for (const input of pSecretsFields.querySelectorAll<HTMLInputElement>("input[data-secret-field]")) {
     const field = input.dataset.secretField;
     if (field && input.value.trim()) body[field] = input.value.trim();
@@ -1750,6 +1816,7 @@ async function connectPrinter(): Promise<void> {
     addPrinterForm.classList.add("hidden");
     pLabel.value = "";
     pHost.value = "";
+    pFolder.value = "";
     await refreshPrinters();
   } catch (err) {
     toast((err as Error).message || "Couldn't add that printer.", "err");
@@ -1796,7 +1863,13 @@ async function discoverPrintersAction(): Promise<void> {
   try {
     const found = await getJson<DiscoveredPrinterLite[]>("/api/printers/discover");
     renderDiscovered(found);
-    if (found.length === 0) toast("No printers found on this network.", "err");
+    if (found.length === 0) {
+      // "Nothing found" is usually not a failure — most budget printers have no
+      // network hardware at all, so there is genuinely nothing to discover.
+      // Say what to do next instead of leaving the user stuck.
+      showScanHelp();
+      toast("No networked printers found — see the note below.", "err");
+    }
   } catch (err) {
     toast((err as Error).message || "Discovery unavailable.", "err");
   } finally {
