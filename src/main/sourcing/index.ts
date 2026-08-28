@@ -19,7 +19,7 @@ import type {
 import type { DownloadPart, DownloadResult } from "../../shared/types";
 import { getConfig } from "../config";
 import { allProviders, getProvider } from "./providers/registry";
-import { rankAndDedupe } from "./ranking";
+import { rankAndDedupe, essentialTokens } from "./ranking";
 import { resolveUrl as resolveUrlImpl } from "./resolve";
 import { downloadUrlToDir } from "./download";
 import { sanitizeFileName } from "./fsutil";
@@ -81,9 +81,46 @@ function raceTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
  * Returns undefined when there is nothing useful to narrow (2 tokens or less).
  */
 export function narrowQuery(query: string): string | undefined {
-  const tokens = query.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length <= 2) return undefined;
-  return tokens.slice(0, 2).join(" ");
+  const variants = queryVariants(query);
+  return variants.length > 1 ? variants[variants.length - 1] : undefined;
+}
+
+/**
+ * The phrasings to actually search for.
+ *
+ * Sources are keyword matchers, not readers. Three things go wrong with one
+ * literal query, and all three were observed on "buff pikachu with a tail":
+ *
+ *  - Filler words ("with", "a") are dead weight, and sources that AND their
+ *    terms return nothing at all once they are included.
+ *  - Every extra word shrinks the result pool, so the qualifier that made the
+ *    request specific is also what makes it fail.
+ *  - The distinctive subject on its own finds models the full phrase misses.
+ *    "pikachu" surfaces "Ultra Swole Pikachu" — exactly a buff pikachu —
+ *    which "buff pikachu" never returns, because no title contains "buff".
+ *
+ * So we search the identifying terms AND the single most distinctive one, then
+ * rank everything against what the user actually asked for. Broader pool,
+ * unchanged standard for what comes back.
+ */
+export function queryVariants(query: string): string[] {
+  const essential = essentialTokens(query);
+  if (essential.length === 0) {
+    const trimmed = query.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  const full = essential.join(" ");
+  const variants = [full];
+
+  // The longest identifying term is the best available guess at the subject:
+  // "pikachu" over "buff", "dragon" over "flexi". Cheap, and wrong only in
+  // ways the ranking then corrects.
+  if (essential.length >= 2) {
+    const subject = essential.reduce((a, b) => (b.length > a.length ? b : a));
+    if (subject !== full) variants.push(subject);
+  }
+  return variants;
 }
 
 export async function searchModels(query: string, opts: SearchOptions = {}): Promise<SearchOutcome> {
@@ -99,60 +136,65 @@ export async function searchModels(query: string, opts: SearchOptions = {}): Pro
   const sourcesReport: SearchOutcome["sources"] = [];
   const allResults: SourcedModel[] = [];
 
-  await Promise.all(
-    targets.map(async (provider) => {
-      const start = Date.now();
-      try {
-        const results = await raceTimeout(
-          provider.search(query, perSource),
-          PER_SOURCE_TIMEOUT_MS,
-          opts.signal,
-        );
-        allResults.push(...results);
-        sourcesReport.push({ id: provider.id, ok: true, count: results.length, ms: Date.now() - start });
-      } catch (err) {
-        sourcesReport.push({
-          id: provider.id,
-          ok: false,
-          count: 0,
-          ms: Date.now() - start,
-          error: describeError(err),
-        });
-      }
-    }),
-  );
+  // Search each phrasing against each source at once (see queryVariants for
+  // why one literal query is not enough). Same wall-clock cost as before —
+  // it is still one round of parallel requests, just a wider one.
+  // Caller-supplied phrasings widen the net for qualities a title may word
+  // differently; each is reduced to its identifying terms like the main query.
+  const variants = [
+    ...queryVariants(query),
+    ...(opts.alternates ?? []).flatMap((a) => queryVariants(a)),
+  ].filter((v, i, all) => v.length > 0 && all.indexOf(v) === i);
+  const seen = new Set<string>();
 
-  // Some sources AND every term together, so one extra word returns nothing:
-  // Printables gives 8 hits for "acura logo" and 0 for "acura logo emblem".
-  // Rather than trust the caller to phrase it well, retry the sources that
-  // came back empty using just the leading (subject) terms.
-  const narrowed = narrowQuery(query);
-  const emptyOnes = targets.filter((p) =>
-    sourcesReport.some((r) => r.id === p.id && r.ok && r.count === 0),
-  );
-  if (narrowed && emptyOnes.length > 0) {
-    await Promise.all(
-      emptyOnes.map(async (provider) => {
+  await Promise.all(
+    targets.flatMap((provider) =>
+      variants.map(async (variant, variantIndex) => {
+        const start = Date.now();
         try {
           const results = await raceTimeout(
-            provider.search(narrowed, perSource),
+            provider.search(variant, perSource),
             PER_SOURCE_TIMEOUT_MS,
             opts.signal,
           );
-          if (results.length === 0) return;
-          allResults.push(...results);
+          // The variants overlap by design; keep each model once.
+          const fresh = results.filter((r) => {
+            const key = `${r.source}:${r.id}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          allResults.push(...fresh);
+
           const row = sourcesReport.find((r) => r.id === provider.id);
           if (row) {
-            row.count = results.length;
-            row.narrowedTo = narrowed;
+            row.count += fresh.length;
+            row.ok = row.ok || results.length > 0;
+          } else {
+            sourcesReport.push({
+              id: provider.id,
+              ok: true,
+              count: fresh.length,
+              ms: Date.now() - start,
+              ...(variantIndex > 0 ? { narrowedTo: variant } : {}),
+            });
           }
-        } catch {
-          // The first attempt already succeeded-with-zero; a failed retry
-          // changes nothing and must not turn that into an error row.
+        } catch (err) {
+          // Only record a failure if no variant has already succeeded here.
+          const row = sourcesReport.find((r) => r.id === provider.id);
+          if (!row) {
+            sourcesReport.push({
+              id: provider.id,
+              ok: false,
+              count: 0,
+              ms: Date.now() - start,
+              error: describeError(err),
+            });
+          }
         }
       }),
-    );
-  }
+    ),
+  );
 
   const ranked = rankAndDedupe(query, allResults, { downloadableOnly: opts.downloadableOnly }).slice(
     0,

@@ -102,11 +102,67 @@ test("weighted relevance scores a generic-only match below a distinctive match",
   assert.ok(real > generic, `expected ${real} > ${generic}`);
 });
 
-test("narrowQuery trims a padded query to its subject terms", () => {
-  // Printables ANDs terms: "acura logo emblem" returns 0, "acura logo" returns 8.
-  assert.equal(narrowQuery("Acura logo emblem"), "Acura logo");
-  assert.equal(narrowQuery("Acura car emblem badge"), "Acura car");
-  // Nothing useful to narrow.
-  assert.equal(narrowQuery("acura logo"), undefined);
+test("narrowQuery names the broader fallback phrasing, or nothing to broaden", () => {
+  // It now reports the SUBJECT-only variant rather than a positional trim.
+  // "Acura logo emblem" reduces to just "acura" once filler is dropped, so
+  // there is no broader phrasing left to fall back to.
+  assert.equal(narrowQuery("Acura logo emblem"), undefined);
+  assert.equal(narrowQuery("Acura car emblem badge"), "acura");
+  assert.equal(narrowQuery("buff pikachu with a tail"), "pikachu");
   assert.equal(narrowQuery("benchy"), undefined);
+});
+
+
+// ── Query strategy ──────────────────────────────────────────────────────────
+// Model sites are keyword matchers. One literal query fails three ways, all
+// observed on "buff pikachu with a tail": filler words shrink AND-matching
+// sources to nothing, each extra word narrows the pool, and the subject alone
+// finds models the full phrase misses.
+
+import { queryVariants } from "./index";
+import { essentialCoverage } from "./ranking";
+
+test("filler words are dropped, and the subject is searched on its own too", () => {
+  assert.deepEqual(queryVariants("buff pikachu with a tail"), [
+    "buff pikachu tail",
+    "pikachu",
+  ]);
+});
+
+test("a query that is already one identifying term is searched once", () => {
+  assert.deepEqual(queryVariants("acura logo"), ["acura"]);
+  assert.deepEqual(queryVariants("benchy"), ["benchy"]);
+});
+
+test("an all-generic query still searches something", () => {
+  assert.deepEqual(queryVariants("3d printable model"), ["3d printable model"]);
+  assert.deepEqual(queryVariants("   "), []);
+});
+
+test("essentialCoverage counts how many identifying terms matched", () => {
+  const essential = ["buff", "pikachu", "tail"];
+  const of = (title: string): number =>
+    essentialCoverage(
+      { id: "1", source: "thingiverse", title, webUrl: "x", downloadable: true },
+      essential,
+    );
+  assert.equal(of("Low Poly Pikachu with strong tail"), 2 / 3);
+  assert.equal(of("Buff Pikachu with a tail"), 1);
+  assert.equal(of("Low-Poly Pikachu"), 1 / 3);
+  assert.equal(of("Traffic Cone"), 0);
+});
+
+test("matching more of the request outranks matching one term strongly", () => {
+  const pool = [
+    // Hugely popular, but only matches the subject.
+    model("Pikachu", { signals: { downloads: 900_000, likes: 40_000 } }),
+    // Less popular, but matches two of the three things asked for.
+    model("Pikachu with a big tail", { signals: { downloads: 40 } }),
+  ];
+  const out = rankAndDedupe("pikachu with a big tail", pool);
+  assert.equal(
+    out[0].title,
+    "Pikachu with a big tail",
+    "the extra words are why the user typed them; popularity must not erase them",
+  );
 });

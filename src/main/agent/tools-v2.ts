@@ -67,7 +67,9 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "Smithsonian, NASA, GitHub, MakerWorld, and meta-search engines) and return one ranked list. " +
       "Prefer this over search_models — it covers far more sources and ranks models Slicely can actually " +
       "download above ones that need a browser. Use it whenever the user wants to find something to print. " +
-      "The result reports which sources succeeded, so you can tell the user if one was unavailable.",
+      "The result reports which sources succeeded, so you can tell the user if one was unavailable. " +
+      "When the request describes a QUALITY rather than a name (buff, chunky, low-poly, articulated), also pass " +
+      "`alternates` with synonyms — sites match keywords, not meaning.",
     input_schema: {
       type: "object",
       properties: {
@@ -79,6 +81,16 @@ export const V2_TOOLS: Anthropic.Tool[] = [
             "(\"acura logo\" finds the logo; \"acura logo emblem\" finds nothing), while others match ANY word, so extra generic words " +
             "drag in unrelated models. If a search returns nothing useful, retry with FEWER words, not more — search the brand or subject " +
             "alone (e.g. 'acura') before giving up or suggesting alternatives.",
+        },
+        alternates: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Other wordings to search at the same time, for qualities a title might phrase differently. " +
+            'Model sites match keywords, not meaning: a "buff pikachu" is often titled "Ultra Swole Pikachu" or ' +
+            '"Muscular Pikachu", and searching only the user\'s exact words misses it. Supply 2-4 synonyms or ' +
+            'rephrasings of the DISTINCTIVE part of the request (["swole pikachu", "muscular pikachu"]), never ' +
+            "rewordings of a brand or proper name, which are already exact. Results are pooled and ranked together.",
         },
         sources: {
           type: "array",
@@ -384,7 +396,11 @@ export async function executeV2Tool(
       const query = String(input.query ?? "").trim();
       if (!query) return "Error: empty query.";
       const geom = activeGeometry();
+      const alternates = Array.isArray(input.alternates)
+        ? (input.alternates as unknown[]).map(String).filter((a) => a.trim().length > 0)
+        : undefined;
       const outcome = await sourcingSearch(query, {
+        alternates,
         sources: Array.isArray(input.sources)
           ? (input.sources as SourceId[])
           : undefined,

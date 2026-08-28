@@ -180,6 +180,10 @@ export interface UrlResolution {
 export interface SearchOptions {
   /** Restrict to these sources. Empty/undefined = every available source. */
   sources?: SourceId[];
+  /** Extra phrasings to search alongside the query, pooled and ranked with it.
+   *  Model sites match keywords, not meaning, so a quality like "buff" only
+   *  finds titles that literally say it. */
+  alternates?: string[];
   /** Max results returned overall (after fusion). Default 12. */
   limit?: number;
   /** Per-source fetch budget. Default 10. */
