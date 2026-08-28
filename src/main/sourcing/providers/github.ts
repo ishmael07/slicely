@@ -1,8 +1,20 @@
-// GitHub code search for mesh files (.stl/.3mf/.step/.stp) — the "sleeper
-// hit" source for functional/engineering parts that live in project repos
-// (3D-printable enclosures, jigs, robotics parts, Voron/RepRap mod
+// GitHub as a model source: engineering and open-hardware parts that live in
+// project repos (printable enclosures, jigs, robotics parts, Voron/RepRap mod
 // libraries) rather than on a marketplace. Downloads via
 // raw.githubusercontent.com.
+//
+// SEARCHES REPOSITORIES, NOT CODE. Code search was the obvious approach and is
+// the wrong one, verified live 2026-08-28:
+//   • `extension:stl` alone returns ~2756 hits, which makes code search LOOK
+//     like it works.
+//   • Add any keyword and it returns ZERO — every time. GitHub's code index
+//     matches file CONTENT, and a binary STL has no indexable text. Neither
+//     `in:path` nor `filename:` rescues it; both also return 0.
+//   • Code search is additionally capped at 10 requests/minute, which a
+//     federated search that fans out several phrasings would exhaust.
+// So this searches repositories (30/min) and then enumerates each candidate's
+// mesh files through the git trees API (5000/hour), which is both accurate and
+// far cheaper on quota.
 //
 // Verified live 2026-08-27 (used the repo owner's own `gh` CLI token purely
 // to exercise the API during development — no token is hardcoded anywhere
@@ -45,24 +57,11 @@ import type {
 import { fetchJson, fetchWithUA, safeText, clamp } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
-const SEARCH_URL = "https://api.github.com/search/code";
-/** Code search only ever needs ONE extension filter per call (see rate-limit
- *  note above) — .stl is by far the most common mesh format checked into
- *  source repos, so it's the one this provider searches by default. */
-const DEFAULT_EXT = "stl";
-
-interface GhCodeItem {
-  name: string;
-  path: string;
-  sha: string;
-  html_url: string;
-  repository: { full_name: string; owner?: { login?: string } };
-}
-
-interface GhCodeSearchResponse {
-  total_count: number;
-  items: GhCodeItem[];
-}
+/** Repos inspected per search. Each costs one git-trees call, so this
+ *  trades breadth against the core rate limit. */
+const MAX_REPOS = 6;
+/** Meshes taken from any one repo, so a big library cannot dominate. */
+const MAX_FILES_PER_REPO = 4;
 
 interface FileRef {
   owner: string;
@@ -83,15 +82,6 @@ function decodeRef(modelId: string): FileRef {
   }
 }
 
-/** Parse the commit-pinned ref out of a code-search hit's `html_url`
- *  (`.../blob/{ref}/{path...}`) rather than trusting `repository`'s default
- *  branch, which may have moved on since indexing. */
-function parseBlobUrl(item: GhCodeItem): FileRef {
-  const match = /\/blob\/([0-9a-f]{7,40})\//.exec(item.html_url);
-  const ref = match?.[1] ?? "HEAD";
-  const [owner, repo] = item.repository.full_name.split("/");
-  return { owner, repo, ref, path: item.path };
-}
 
 function githubToken(): string {
   return process.env.GITHUB_TOKEN?.trim() ?? "";
@@ -123,34 +113,83 @@ export const githubProvider: SourcePlugin = {
       downloadable: has,
       blockedReason: has
         ? undefined
-        : "GitHub's code-search API requires a token even for public repos — add GITHUB_TOKEN to your .env.",
+        : "GitHub's search API requires a token even for public repos. Add GITHUB_TOKEN to your .env.",
       setupUrl: has ? undefined : "https://github.com/settings/tokens",
     };
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {
     if (!githubToken()) return [];
-    const q = `${query.trim()} extension:${DEFAULT_EXT} in:path`;
-    const url = `${SEARCH_URL}?q=${encodeURIComponent(q)}&per_page=${clamp(limit, 1, 30)}`;
 
-    const res = await fetchWithUA(url, { headers: headers() });
+    // Find repos first. Adding "3d print" biases toward printable projects
+    // rather than software that merely shares a name ("dragon" is a great
+    // example of a word that is mostly libraries on GitHub).
+    const repoQuery = `${query.trim()} 3d print`;
+    const repoUrl =
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(repoQuery)}` +
+      `&per_page=${clamp(MAX_REPOS, 1, 10)}&sort=stars&order=desc`;
+
+    const res = await fetchWithUA(repoUrl, { headers: headers() });
     if (!res.ok) {
-      throw new Error(`GitHub code search failed (${res.status}): ${await safeText(res)}`);
+      throw new Error(`GitHub repository search failed (${res.status}): ${await safeText(res)}`);
     }
-    const data = (await res.json()) as GhCodeSearchResponse;
+    const data = (await res.json()) as {
+      items?: Array<{
+        full_name: string;
+        description?: string | null;
+        default_branch?: string;
+        stargazers_count?: number;
+        html_url: string;
+        owner?: { login?: string };
+      }>;
+    };
+    const repos = data.items ?? [];
+    if (repos.length === 0) return [];
 
-    return data.items.map((item) => {
-      const ref = parseBlobUrl(item);
-      return {
-        id: encodeRef(ref),
-        source: "github" as const,
-        title: `${item.name} — ${item.repository.full_name}`,
-        creator: item.repository.owner?.login,
-        webUrl: item.html_url,
-        downloadable: true,
-        summary: `Found in ${item.repository.full_name} at ${item.path}`,
-      };
-    });
+    // Enumerate each repo's meshes. One tree call covers a whole repo, and a
+    // repo with none simply contributes nothing rather than failing the search.
+    const perRepo = await Promise.all(
+      repos.map(async (repo) => {
+        const [owner, name] = repo.full_name.split("/");
+        if (!owner || !name) return [] as SourcedModel[];
+        try {
+          const files = await listGithubTree(
+            owner,
+            name,
+            repo.default_branch ?? "",
+            "",
+          );
+          return files.slice(0, MAX_FILES_PER_REPO).map((f) => ({
+            id: f.id,
+            source: "github" as const,
+            title: `${f.name} — ${repo.full_name}`,
+            creator: repo.owner?.login,
+            webUrl: repo.html_url,
+            downloadable: true,
+            summary: repo.description ?? `Mesh file in ${repo.full_name}`,
+            signals: { likes: repo.stargazers_count },
+          }));
+        } catch {
+          // A private, empty, or oversized repo must not blank the source.
+          return [] as SourcedModel[];
+        }
+      }),
+    );
+
+    // Interleave across repos so one large model library cannot fill the page.
+    const out: SourcedModel[] = [];
+    for (let i = 0; out.length < limit; i++) {
+      let added = false;
+      for (const list of perRepo) {
+        if (i < list.length) {
+          out.push(list[i]);
+          added = true;
+          if (out.length >= limit) break;
+        }
+      }
+      if (!added) break;
+    }
+    return out;
   },
 
   async listFiles(modelId: string): Promise<SourcedFile[]> {

@@ -105,7 +105,7 @@ Type what you want, or paste a link:
 | `SLICELY_MULTI_USER` | | off | Set for a **public** deployment: disables LAN discovery and LAN-only transports, because the server's network is not the visitor's. |
 | `SLICELY_WORKDIR` | | `~/Slicely` | Downloads, slices, and per-visitor session workspaces. |
 | `THINGIVERSE_APP_TOKEN` | | — | Thingiverse search + download. |
-| `GITHUB_TOKEN` | | — | GitHub code search (its API needs a token even for public repos). |
+| `GITHUB_TOKEN` | | — | GitHub repository search for engineering and open-hardware parts (its API needs a token even for public repos). |
 | `MYMINIFACTORY_API_KEY` | | — | MyMiniFactory search. |
 | `SMITHSONIAN_API_KEY` | | — | Smithsonian (falls back to a rate-limited shared demo key). |
 | `SLICELY_MODEL` | | `claude-opus-4-8` | Default model; the in-app picker overrides and persists. |
