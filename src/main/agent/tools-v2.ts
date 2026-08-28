@@ -71,7 +71,12 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       properties: {
         query: {
           type: "string",
-          description: "What to search for, e.g. 'articulated dragon', 'GoPro mount', 'planetary gearbox'.",
+          description:
+            "USE THE USER'S OWN WORDS, and as few as possible — two or three at most. Do NOT add descriptive words they did not say. " +
+            "Sources combine terms differently: some require EVERY word to match, so each word you add can drop the result count to zero " +
+            "(\"acura logo\" finds the logo; \"acura logo emblem\" finds nothing), while others match ANY word, so extra generic words " +
+            "drag in unrelated models. If a search returns nothing useful, retry with FEWER words, not more — search the brand or subject " +
+            "alone (e.g. 'acura') before giving up or suggesting alternatives.",
         },
         sources: {
           type: "array",

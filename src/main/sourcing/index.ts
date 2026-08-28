@@ -69,6 +69,23 @@ function raceTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
  * by its own timeout. Results are fused + ranked + deduplicated (see
  * ranking.ts) before being truncated to `opts.limit`.
  */
+/**
+ * Narrow a padded query down to its subject terms for a retry.
+ *
+ * Sources differ in how they combine terms: Printables ANDs them (so every
+ * extra word shrinks the result set to nothing), while Thingiverse ORs them
+ * (so extra generic words drag in unrelated models). Keeping the leading two
+ * tokens targets the subject — "Acura logo emblem" becomes "Acura logo" —
+ * because qualifiers are conventionally trailing.
+ *
+ * Returns undefined when there is nothing useful to narrow (2 tokens or less).
+ */
+export function narrowQuery(query: string): string | undefined {
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length <= 2) return undefined;
+  return tokens.slice(0, 2).join(" ");
+}
+
 export async function searchModels(query: string, opts: SearchOptions = {}): Promise<SearchOutcome> {
   const perSource = opts.perSource ?? DEFAULT_PER_SOURCE;
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -104,6 +121,38 @@ export async function searchModels(query: string, opts: SearchOptions = {}): Pro
       }
     }),
   );
+
+  // Some sources AND every term together, so one extra word returns nothing:
+  // Printables gives 8 hits for "acura logo" and 0 for "acura logo emblem".
+  // Rather than trust the caller to phrase it well, retry the sources that
+  // came back empty using just the leading (subject) terms.
+  const narrowed = narrowQuery(query);
+  const emptyOnes = targets.filter((p) =>
+    sourcesReport.some((r) => r.id === p.id && r.ok && r.count === 0),
+  );
+  if (narrowed && emptyOnes.length > 0) {
+    await Promise.all(
+      emptyOnes.map(async (provider) => {
+        try {
+          const results = await raceTimeout(
+            provider.search(narrowed, perSource),
+            PER_SOURCE_TIMEOUT_MS,
+            opts.signal,
+          );
+          if (results.length === 0) return;
+          allResults.push(...results);
+          const row = sourcesReport.find((r) => r.id === provider.id);
+          if (row) {
+            row.count = results.length;
+            row.narrowedTo = narrowed;
+          }
+        } catch {
+          // The first attempt already succeeded-with-zero; a failed retry
+          // changes nothing and must not turn that into an error row.
+        }
+      }),
+    );
+  }
 
   const ranked = rankAndDedupe(query, allResults, { downloadableOnly: opts.downloadableOnly }).slice(
     0,

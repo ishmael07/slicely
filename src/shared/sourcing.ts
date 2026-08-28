@@ -201,5 +201,9 @@ export interface SearchOutcome {
     count: number;
     ms: number;
     error?: string;
+    /** Set when this source returned nothing for the original query and was
+     *  retried with a narrower one (some sources AND every term together, so
+     *  one extra word yields zero). Carries the query that actually worked. */
+    narrowedTo?: string;
   }>;
 }
