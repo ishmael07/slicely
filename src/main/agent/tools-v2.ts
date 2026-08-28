@@ -34,6 +34,7 @@ import {
   getJob,
   listJobs,
   chooseOrientation,
+  splitModel,
 } from "../jobs";
 import { getPreferences, printerGeometry } from "../settings";
 import { sessionState } from "./state";
@@ -54,6 +55,7 @@ export const V2_TOOL_NAMES = new Set([
   "run_job",
   "job_status",
   "choose_orientation",
+  "split_model",
 ]);
 
 export const V2_TOOLS: Anthropic.Tool[] = [
@@ -267,6 +269,31 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "split_model",
+    description:
+      "Split ONE model file into its separate solid pieces. Many STLs that look like a single object actually " +
+      "contain several (a nameplate whose letters sit on a backing plate, a logo with separate rings, or a whole " +
+      "set of parts exported into one file). Splitting turns a hard problem into an easy one: each piece becomes " +
+      "an ordinary part that can be given its OWN colour, oriented, and arranged. " +
+      "Use it when the user wants different colours on different areas of one model, when a model looks like it " +
+      "holds several parts, or before planning a job from a file whose name suggests a set. " +
+      "If the model is one connected solid it says so and changes nothing — then use colourBands (colour by height) " +
+      "or hand it to PrusaSlicer for painting.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path to the model. Omit to use the active model." },
+        write: {
+          type: "boolean",
+          description:
+            "Write each piece as its own file so it can be printed as a separate part (default true). " +
+            "False just reports how many pieces there are.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "choose_orientation",
     description:
       "Work out the best print orientation for ONE part and explain why, comparing support area, bed contact, " +
@@ -307,6 +334,8 @@ export function v2ToolLabel(name: string, input: Record<string, unknown>): strin
       return "Slicing every plate…";
     case "job_status":
       return "Checking job progress…";
+    case "split_model":
+      return "Looking for separate pieces…";
     case "choose_orientation":
       return "Working out the best orientation…";
     default:
@@ -629,6 +658,34 @@ export async function executeV2Tool(
       return `Job "${job.name}" — ${job.status}. Plates: ${job.plates
         .map((p) => `${p.index}:${p.status}`)
         .join(", ")}. Total ${fmtMinutes(job.totals?.estimatedMinutes)}.`;
+    }
+
+    case "split_model": {
+      const path = input.path ? String(input.path) : sessionState.lastModelPath;
+      if (!path) return "No model available — import or upload one first.";
+      const result = await splitModel(path, input.write !== false);
+      if (result.pieces <= 1) {
+        return (
+          `"${result.name}" is one connected solid — there is nothing to split. ` +
+          `To give it more than one colour, either use plan_job with colourBands (a filament swap at a height, ` +
+          `works on any printer), or open it in PrusaSlicer to paint specific areas.`
+        );
+      }
+      sessionState.lastModelParts = result.paths;
+      if (result.paths.length > 0) sessionState.lastModelPath = result.paths[0];
+      const lines = result.sizes
+        .slice(0, 12)
+        .map((s, i) => `  ${i + 1}. ${s.x.toFixed(1)} x ${s.y.toFixed(1)} x ${s.z.toFixed(1)} mm`);
+      return (
+        `"${result.name}" contains ${result.pieces} separate pieces:\n${lines.join("\n")}` +
+        (result.sizes.length > 12 ? `\n  …and ${result.sizes.length - 12} more` : "") +
+        (result.dropped > 0
+          ? `\n(${result.dropped} tiny fragment(s) ignored as modelling artifacts.)`
+          : "") +
+        (result.written
+          ? `\nEach is now a separate part, so they can be given different colours via plan_job.`
+          : "")
+      );
     }
 
     case "choose_orientation": {

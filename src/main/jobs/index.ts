@@ -76,3 +76,57 @@ export async function chooseOrientation(
 export async function planColours(parts: JobPart[], slots: FilamentSlot[]): Promise<ColourPlan> {
   return planColoursSync(parts, slots);
 }
+
+/** Result of splitting a model into its separate solid pieces. */
+export interface SplitResult {
+  name: string;
+  /** How many significant pieces the mesh contains (1 = nothing to split). */
+  pieces: number;
+  /** Files written, one per piece, when `write` was true. */
+  paths: string[];
+  sizes: Array<{ x: number; y: number; z: number }>;
+  /** Fragments too small to be real parts, ignored. */
+  dropped: number;
+  written: boolean;
+}
+
+/**
+ * Split one model into its disconnected solids, optionally writing each as its
+ * own STL beside the original so it can be printed as a separate part.
+ *
+ * This is what lets a single file get several colours: the pieces flow through
+ * the ordinary multi-part path, where each already gets its own filament.
+ */
+export async function splitModel(
+  meshPath: string,
+  write = true,
+): Promise<SplitResult> {
+  const { parseMesh } = await import("./mesh");
+  const { splitShells, significantShells, writeShellStl } = await import("./shells");
+  const { basename, dirname, join, extname } = await import("node:path");
+
+  const mesh = await parseMesh(meshPath);
+  const all = splitShells(mesh.triangles);
+  const shells = significantShells(all);
+  const name = basename(meshPath);
+
+  const result: SplitResult = {
+    name,
+    pieces: shells.length,
+    paths: [],
+    sizes: shells.map((s) => s.size),
+    dropped: all.length - shells.length,
+    written: false,
+  };
+  if (shells.length <= 1 || !write) return result;
+
+  const stem = basename(meshPath, extname(meshPath));
+  const dir = dirname(meshPath);
+  shells.forEach((shell, i) => {
+    const dest = join(dir, `${stem}-part${String(i + 1).padStart(2, "0")}.stl`);
+    writeShellStl(dest, shell);
+    result.paths.push(dest);
+  });
+  result.written = true;
+  return result;
+}
