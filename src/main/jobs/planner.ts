@@ -59,6 +59,40 @@ export interface PlanJobDeps {
   getModelInfo?: (path: string) => Promise<ModelInfo>;
 }
 
+/** Below this, a part's largest dimension is almost certainly a unit-conversion
+ *  mistake in the source file rather than an intentional miniature. 5 mm is
+ *  comfortably under any real printed part while still catching cm/inch
+ *  imports, which land 10-25x too small. */
+export const MIN_PLAUSIBLE_PART_MM = 5;
+
+/**
+ * Warn about parts small enough that the file's units are probably wrong.
+ *
+ * Without this a 1.7 mm speck is placed on the plate with no comment, and the
+ * user only finds out after printing it. Exported so the rule can be tested
+ * without invoking PrusaSlicer.
+ *
+ * Returns undefined when every part is a plausible size.
+ */
+export function tinyPartsNote(parts: JobPart[]): string | undefined {
+  const tiny = parts.filter(
+    (p) => Math.max(p.sizeX, p.sizeY, p.sizeZ) < MIN_PLAUSIBLE_PART_MM,
+  );
+  if (tiny.length === 0) return undefined;
+  const names = tiny
+    .map(
+      (p) =>
+        `"${p.name}" (${p.sizeX.toFixed(1)} x ${p.sizeY.toFixed(1)} x ${p.sizeZ.toFixed(1)} mm)`,
+    )
+    .join(", ");
+  return (
+    `${tiny.length === 1 ? "One part is" : `${tiny.length} parts are`} smaller than ` +
+    `${MIN_PLAUSIBLE_PART_MM} mm: ${names}. That usually means the file's units are ` +
+    `wrong (authored in cm or inches). Scale it up before printing, or it will come ` +
+    `out as a speck.`
+  );
+}
+
 export async function planJob(
   parts: PlanJobInput[],
   opts: PlanJobOptions,
@@ -254,6 +288,13 @@ export async function planJob(
     ...packable[Number(idx)],
     copies,
   }));
+  // A part only a couple of millimetres across is nearly always a UNIT error in
+  // the source file (an STL authored in cm or inches, imported as mm), not a
+  // deliberate choice. Slicely would otherwise place a 1.7 mm speck on the
+  // plate without comment and the user would only find out after printing.
+  const tinyNote = tinyPartsNote(jobParts);
+  if (tinyNote) notes.push(tinyNote);
+
   const oversized = [...oversizedFromPack, ...tooTall];
   if (oversizedFromPack.length > 0) {
     notes.push(

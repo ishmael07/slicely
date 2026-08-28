@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planColours } from "./colour";
+import { tinyPartsNote } from "./planner";
 import type { JobPart } from "../../shared/jobs";
 import type { FilamentSlot } from "../../shared/printers";
 
@@ -70,4 +71,24 @@ test("a single loaded slot reports preview-only colour", () => {
   const plan = planColours([part("/m/a.stl", "#00b3a4")], [slot(0, "#c81e1e")]);
   assert.equal(plan.singleExtruder, true);
   assert.ok(plan.warnings.some((w) => /preview-only/i.test(w)));
+});
+
+test("an implausibly small part is flagged as a likely units error", () => {
+  // A 2mm part is what a centimetre-authored file looks like imported as mm.
+  const note = tinyPartsNote([
+    { path: "/m/speck.stl", name: "speck.stl", copies: 1, sizeX: 2, sizeY: 2, sizeZ: 1.4 },
+  ]);
+  assert.ok(note, "a 2mm part must be flagged");
+  assert.match(note!, /units/, "must say the units are the likely cause");
+  assert.match(note!, /speck\.stl/, "must name the offending file");
+});
+
+test("normal-sized parts produce no units warning", () => {
+  assert.equal(
+    tinyPartsNote([
+      { path: "/m/a.stl", name: "a.stl", copies: 1, sizeX: 40, sizeY: 30, sizeZ: 12 },
+      { path: "/m/b.stl", name: "b.stl", copies: 1, sizeX: 6, sizeY: 6, sizeZ: 6 },
+    ]),
+    undefined,
+  );
 });
