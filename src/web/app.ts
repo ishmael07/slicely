@@ -770,7 +770,7 @@ function createJobPanel(initial: WireJob): JobPanel {
     }
     if (job.oversized && job.oversized.length > 0) {
       panel.appendChild(
-        makeText("div", "job-warn", `⚠ Too large for the bed — needs scaling down: ${job.oversized.map((p) => p.name).join(", ")}`),
+        makeText("div", "job-warn", `⚠ Too large for the bed. Scale down: ${job.oversized.map((p) => p.name).join(", ")}`),
       );
     }
     if (job.notes.length > 0) {
@@ -907,7 +907,7 @@ async function refreshJobsList(): Promise<void> {
 function renderJobsList(jobs: PrintJob[]): void {
   jobsListEl.replaceChildren();
   if (jobs.length === 0) {
-    jobsListEl.appendChild(makeText("p", "sheet-hint", 'No jobs yet — attach 2+ files, then use "Plan print job" in the tray.'));
+    jobsListEl.appendChild(makeText("p", "sheet-hint", 'No jobs yet. Attach 2 or more files, then use "Plan print job" in the tray.'));
     return;
   }
   for (const j of jobs) {
@@ -1575,7 +1575,7 @@ function renderPrinterList(printers: PrinterConnection[], statuses: PrinterStatu
       void postJson(`/api/printers/${encodeURIComponent(p.id)}/autostart`, { armed: cb.checked }).catch(() => undefined);
     };
     armRow.appendChild(cb);
-    armRow.appendChild(document.createTextNode("Start prints automatically (only with a clear bed — you are responsible for checking)"));
+    armRow.appendChild(document.createTextNode("Start prints automatically. Only enable this if you check the bed is clear first."));
     row.appendChild(armRow);
 
     const btns = make("div", "printer-actions");
@@ -1722,17 +1722,17 @@ function secretHint(k: string): string {
 function transportHint(transport: string): string {
   switch (transport) {
     case "file":
-      return "No network needed. Slicely writes the G-code to this folder — point it at your SD card and print from the card. This is the option for a stock Ender 3, Ender 5, or any printer without Wi-Fi.";
+      return "No network needed. Slicely writes the G-code to this folder. Point it at your SD card, then print from the card. Use this for any printer without Wi-Fi, like a stock Ender 3.";
     case "octoprint":
-      return "Needs OctoPrint running on your network (usually a Raspberry Pi attached to the printer). API key: OctoPrint → Settings → API.";
+      return "Needs OctoPrint on your network, usually a Raspberry Pi attached to the printer. Find the API key under OctoPrint → Settings → API.";
     case "moonraker":
-      return "Needs Klipper + Moonraker (Fluidd/Mainsail). Enter the host's IP address.";
+      return "Needs Klipper with Moonraker (Fluidd or Mainsail). Enter the host's IP address.";
     case "prusalink":
       return "Built into Prusa MK4 / XL / MINI with networking enabled. Find the address and password on the printer's screen.";
     case "prusa-connect":
       return "Works over the internet, so it needs no LAN access. Token comes from your Prusa Connect account.";
     case "bambu-lan":
-      return "Access code is on the printer's screen (Settings → Network). Note: status and control work, but file upload over LAN needs FTPS, which isn't implemented yet.";
+      return "Access code is on the printer's screen under Settings → Network. Status and control work. Sending files over LAN needs FTPS, which isn't supported yet.";
     case "bambu-cloud":
       return "Works over the internet via your Bambu account.";
     default:
@@ -1752,10 +1752,10 @@ function showScanHelp(): void {
   box.appendChild(makeText("div", "scan-help-title", "No printers answered on this network."));
   const list = document.createElement("ul");
   for (const line of [
-    "Most printers have no network at all (a stock Ender 3, Ender 5, most budget machines). Nothing to find — use Type → \u201cFolder / SD card\u201d and print from the card.",
-    "OctoPrint / Klipper users: make sure the Pi is powered on and on this same Wi-Fi, then add it by IP with Type \u2192 OctoPrint or Moonraker.",
-    "Prusa MK4 / XL / MINI: enable networking on the printer, then add it by the address shown on its screen.",
-    "Bambu: use Bambu Cloud with your account token, or LAN with the access code from the printer\u2019s screen.",
+    "Most printers have no network hardware, so there is nothing to find. Pick Type \u2192 \u201cFolder / SD card\u201d and print from the card.",
+    "OctoPrint or Klipper: check the Pi is powered on and on this Wi-Fi, then add it by IP.",
+    "Prusa MK4, XL, or MINI: turn on networking, then add the address from the printer's screen.",
+    "Bambu: use Bambu Cloud with your account token, or LAN with the code on the printer's screen.",
   ]) {
     const li = document.createElement("li");
     li.textContent = line;
@@ -1766,7 +1766,7 @@ function showScanHelp(): void {
     makeText(
       "div",
       "scan-help-note",
-      "Either way, Slicely still slices correctly for your machine \u2014 pick it under Printer above so estimates match.",
+      "Slicely still slices correctly either way. Pick your printer above so the estimates match.",
     ),
   );
   discoveredEl.appendChild(box);
@@ -1783,8 +1783,8 @@ function renderSecretFields(): void {
   pTransportHint.textContent = transportHint(pTransport.value);
   pSave.textContent = isFile ? "Save folder printer" : "Connect printer";
   for (const secret of driver?.requiredSecrets ?? []) {
-    const row = make("div", "sheet-row");
-    row.appendChild(makeText("label", "sheet-label", secretLabel(secret)));
+    const row = make("div", "field");
+    row.appendChild(makeText("label", "", secretLabel(secret)));
     const input = document.createElement("input");
     input.type = secret === "password" || secret === "token" || secret === "apiKey" ? "password" : "text";
     input.placeholder = secretHint(secret);
@@ -1868,7 +1868,7 @@ async function discoverPrintersAction(): Promise<void> {
       // network hardware at all, so there is genuinely nothing to discover.
       // Say what to do next instead of leaving the user stuck.
       showScanHelp();
-      toast("No networked printers found — see the note below.", "err");
+      toast("No networked printers found. See the note below.", "err");
     }
   } catch (err) {
     toast((err as Error).message || "Discovery unavailable.", "err");
@@ -1932,7 +1932,7 @@ async function loadStatus(): Promise<void> {
     bannerEl.classList.add("hidden");
   } catch {
     statusText.textContent = "unknown";
-    bannerEl.textContent = "Can't reach the Slicely server right now — check your connection.";
+    bannerEl.textContent = "Can't reach the Slicely server. Check your connection.";
     bannerEl.classList.remove("hidden");
   }
 }
@@ -2022,6 +2022,29 @@ settingsBtn.addEventListener("click", () => {
 // (which is where printers are picked/managed) rather than a second menu.
 printerPill.addEventListener("click", () => settingsBtn.click());
 
+// Close buttons on each sheet — a sheet that covers the chat needs an obvious
+// way out, not just a second press on the icon that opened it.
+byId<HTMLButtonElement>("settingsClose").addEventListener("click", () =>
+  settingsSheet.classList.add("hidden"),
+);
+byId<HTMLButtonElement>("jobsClose").addEventListener("click", () =>
+  jobsSheet.classList.add("hidden"),
+);
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  settingsSheet.classList.add("hidden");
+  jobsSheet.classList.add("hidden");
+});
+
+// "Fine tuning" disclosure. Collapsed by default so the sheet opens as three
+// decisions rather than eleven; Slicely derives all of these per model anyway.
+const advToggle = byId<HTMLButtonElement>("advToggle");
+const advFields = byId<HTMLElement>("advFields");
+advToggle.addEventListener("click", () => {
+  const open = advFields.classList.toggle("hidden");
+  advToggle.setAttribute("aria-expanded", open ? "false" : "true");
+});
+
 jobsBtn.addEventListener("click", () => {
   settingsSheet.classList.add("hidden");
   const willOpen = jobsSheet.classList.contains("hidden");
@@ -2063,7 +2086,7 @@ function showEmptyState(): void {
   const p = make("p");
   p.appendChild(document.createTextNode("Find a "));
   p.appendChild(makeText("b", "", "free 3D model"));
-  p.appendChild(document.createTextNode(", slice it, and print — right from your phone."));
+  p.appendChild(document.createTextNode(", slice it, and print. Right from your phone."));
   empty.appendChild(p);
   const examples = make("div", "examples");
   const prompts = ["Find me a phone stand I can print today", "Slice this for strength, PETG, my Ender 3", "Show me a cable clip for a desk"];

@@ -39,6 +39,18 @@
 * {
   box-sizing: border-box;
 }
+/* Headings and paragraphs otherwise keep the browser's default margins, which
+   fought the flex `gap` spacing everywhere and left ~44px between a section
+   title and its own description. */
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote {
+  margin: 0;
+}
 
 html,
 body {
@@ -200,20 +212,29 @@ a {
 }
 
 /* ── Settings sheet ────────────────────────────────────────────────────── */
+/* ── Sheets (Settings, Print jobs) ──────────────────────────────────────────
+   One designed surface rather than a stack of label+control rows. Three ideas
+   carry it: grouped sections with a title and one line of purpose; a single
+   field rhythm (label left, control right, fixed control width) so the eye
+   scans one column; and everything optional collapsed behind a disclosure, so
+   the sheet opens as three decisions instead of eleven. */
+
 .sheet {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 18px;
   margin: 8px 10px 0;
-  padding: 12px 13px;
-  border-radius: var(--radius-sm);
-  background: var(--panel);
+  padding: 16px;
+  border-radius: var(--radius);
+  background: linear-gradient(175deg, var(--bg-1), var(--bg-0));
+  backdrop-filter: blur(22px) saturate(160%);
   border: 0.5px solid var(--border-bright);
   box-shadow: var(--shadow);
-  animation: slide-down 0.25s var(--ease);
-  max-height: 60vh;
+  animation: slide-down 0.22s var(--ease);
+  max-height: 68vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 @keyframes slide-down {
   from {
@@ -221,42 +242,256 @@ a {
     transform: translateY(-8px);
   }
 }
-.sheet-row {
+
+.sheet-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
-.sheet-label {
-  font-size: 12px;
-  font-weight: 600;
+.sheet-title {
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.sheet-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sheet-close {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  line-height: 1;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
   color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+.sheet-close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* ── A settings group ───────────────────────────────────────────────────── */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.group-head h3 {
+  font-size: 12px;
+  font-weight: 680;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.group-head p {
+  /* Ordered last so a section's action button stays on the title line rather
+     than being pushed to a third row by the full-width description. */
+  order: 1;
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+.group-head .btn {
+  margin-left: auto;
+}
+
+/* Disclosure for the optional settings. */
+.group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  color: var(--text);
+  font-family: var(--font);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
+}
+.group-toggle:hover {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
+}
+.group-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.group-toggle-title {
+  font-size: 13px;
+  font-weight: 620;
+}
+.group-toggle-sub {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.group-toggle .chev {
+  font-size: 17px;
+  color: var(--text-faint);
+  transition: transform 0.2s var(--ease);
+}
+.group-toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+
+/* ── Field rhythm ───────────────────────────────────────────────────────── */
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+}
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: var(--radius-xs);
+}
+.field > label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
   flex: 0 0 auto;
 }
+
+/* One control width across every field, so the column reads straight down. */
+.field .select-wrap,
+.field .input-suffix,
+.field .seg,
+.field > input {
+  flex: 0 0 clamp(140px, 52%, 230px);
+}
+
 .sheet select,
 .sheet input[type="number"],
 .sheet input[type="text"] {
-  flex: 1 1 auto;
-  max-width: 60%;
-  font-size: 12px;
+  width: 100%;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--text);
   background: var(--panel-2);
   border: 0.5px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 6px 9px;
+  padding: 8px 10px;
   outline: none;
+  transition: border-color 0.14s, box-shadow 0.14s;
 }
 .sheet select:focus,
 .sheet input:focus {
-  border-color: var(--accent-glow);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.sheet input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Native select chrome doesn't match anything else here, so draw our own. */
+.select-wrap {
+  position: relative;
+  display: block;
+}
+.select-wrap select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  cursor: pointer;
+}
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+/* A unit that belongs to the input rather than floating in the label. */
+.input-suffix {
+  position: relative;
+  display: block;
+}
+.input-suffix input {
+  padding-right: 34px;
+}
+.input-suffix span {
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+/* Custom bed dimensions, revealed by the "Custom" printer option. */
+.subfields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 2px 8px 8px;
+  padding: 12px;
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+}
+.dim-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.dim-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.group-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
 }
 .sheet-divider {
   height: 0.5px;
   background: var(--border);
-  margin: 2px 0;
 }
 .sheet-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   line-height: 1.5;
 }
@@ -292,7 +527,7 @@ a {
   white-space: nowrap;
 }
 .printer-row .meta {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   flex: 1 1 auto;
   overflow: hidden;
@@ -638,12 +873,12 @@ details.thinking summary::-webkit-details-marker {
 .card .sub {
   display: flex;
   justify-content: space-between;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   text-transform: capitalize;
 }
 .card .lic {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -725,7 +960,7 @@ details.thinking summary::-webkit-details-marker {
 }
 .metric .k {
   display: block;
-  font-size: 9.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-faint);
@@ -811,7 +1046,7 @@ details.thinking summary::-webkit-details-marker {
 }
 .plate-row .label .sub {
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 /* ── Composer ──────────────────────────────────────────────────────────── */
@@ -1024,23 +1259,18 @@ details.thinking summary::-webkit-details-marker {
 }
 
 /* ── Settings sheet: section headings + tri-state segmented control ─────── */
-.sheet-section-title {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-faint);
-  margin: 2px 0 -2px;
-}
-.ss-seg {
+
+.seg {
   display: inline-flex;
+  justify-content: stretch;
   background: var(--panel-2);
   border: 0.5px solid var(--border);
   border-radius: 999px;
   padding: 2px;
   gap: 2px;
 }
-.ss-seg button {
+.seg button {
+  flex: 1 1 0;
   font-family: var(--font);
   font-size: 11px;
   font-weight: 600;
@@ -1053,36 +1283,16 @@ details.thinking summary::-webkit-details-marker {
   text-transform: capitalize;
   transition: background 0.14s var(--ease), color 0.14s var(--ease);
 }
-.ss-seg button:hover {
+.seg button:hover {
   color: var(--text);
 }
-.ss-seg button.active {
+.seg button.active {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: #1a1006;
 }
-.ss-custom {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border-radius: var(--radius-xs);
-  background: rgba(0, 0, 0, 0.18);
-  border: 0.5px solid var(--border);
-}
-.ss-custom-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-}
-.ss-custom-grid label {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--text-faint);
-}
+
+
+
 #ssCustom input {
   font-family: var(--font);
   font-size: 12px;
@@ -1095,10 +1305,7 @@ details.thinking summary::-webkit-details-marker {
   width: 100%;
   max-width: none;
 }
-.ss-save {
-  align-self: flex-end;
-  font-size: 11px;
-}
+
 
 /* ── Printer connect form + auto-start (hazard-styled) ───────────────────── */
 .printer-form {
@@ -1127,7 +1334,7 @@ details.thinking summary::-webkit-details-marker {
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.35;
   color: var(--warn);
   cursor: pointer;
@@ -1178,7 +1385,7 @@ details.thinking summary::-webkit-details-marker {
   flex-wrap: wrap;
 }
 .source-row .cap {
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
   text-transform: uppercase;
@@ -1216,7 +1423,7 @@ details.thinking summary::-webkit-details-marker {
 /* Printability score badge on a model card */
 .card .score {
   align-self: flex-start;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 999px;
@@ -1264,7 +1471,7 @@ details.thinking summary::-webkit-details-marker {
   white-space: nowrap;
 }
 .job-row .meta {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
 }
 
@@ -1383,7 +1590,7 @@ details.thinking summary::-webkit-details-marker {
   text-transform: capitalize;
 }
 .menu-item .mblurb {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-dim);
   line-height: 1.3;
   overflow: hidden;

@@ -52,111 +52,146 @@
       <!-- Settings sheet: model/effort live in the composer, this sheet holds
            slice defaults + printer connections + model sources. -->
       <div id="settingsSheet" class="sheet hidden">
-        <div class="sheet-section-title">Slice defaults</div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssPrinter">Printer</label>
-          <select id="ssPrinter"></select>
+        <div class="sheet-head">
+          <h2 class="sheet-title">Settings</h2>
+          <button class="sheet-close" id="settingsClose" aria-label="Close settings">&times;</button>
         </div>
-        <div id="ssCustom" class="ss-custom hidden">
-          <div class="ss-custom-grid">
-            <label>Bed X<input id="ssBedX" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
-            <label>Bed Y<input id="ssBedY" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
-            <label>Bed Z<input id="ssBedZ" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
-            <label>Nozzle<input id="ssNozzle" type="number" min="0.1" max="2" step="0.05" placeholder="mm" /></label>
-          </div>
-          <button id="ssSaveCustom" class="btn primary ss-save">Save custom printer</button>
-        </div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssMaterial">Material</label>
-          <select id="ssMaterial"></select>
-        </div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssGoal">Default goal</label>
-          <select id="ssGoal"></select>
-        </div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssInfill">Infill %</label>
-          <input id="ssInfill" type="number" min="0" max="100" step="1" placeholder="auto" />
-        </div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssPattern">Infill pattern</label>
-          <select id="ssPattern"></select>
-        </div>
-        <div class="sheet-row">
-          <span class="sheet-label">Supports</span>
-          <div class="ss-seg" id="ssSupports" role="group" aria-label="Supports"></div>
-        </div>
-        <div class="sheet-row" id="ssStyleRow">
-          <label class="sheet-label" for="ssSupportStyle">Support style</label>
-          <select id="ssSupportStyle"></select>
-        </div>
-        <div class="sheet-row">
-          <span class="sheet-label">Brim</span>
-          <div class="ss-seg" id="ssBrim" role="group" aria-label="Brim"></div>
-        </div>
-        <div class="sheet-row">
-          <label class="sheet-label" for="ssBrimWidth">Brim width</label>
-          <input id="ssBrimWidth" type="number" min="0" max="30" step="0.5" placeholder="auto (mm)" />
-        </div>
-        <p class="sheet-hint">Saved for every slice on this device — Slicely won't ask again. Set "auto" to let it decide from each model.</p>
 
-        <div class="sheet-divider"></div>
-        <div class="sheet-section-title">Connected printers</div>
-        <div class="sheet-row">
-          <span class="sheet-label">&nbsp;</span>
-          <div style="display: flex; gap: 6px">
-            <button class="btn ghost small" id="discoverBtn">Scan LAN</button>
-            <button class="btn ghost small" id="addPrinterBtn">Add</button>
+        <!-- A printer PROFILE drives slicing (bed size, nozzle). It is separate
+             from a CONNECTION, which is only about sending the finished file.
+             Saying so here prevents the common confusion that you must connect
+             a printer before Slicely can slice for it. -->
+        <section class="group">
+          <div class="group-head">
+            <h3>Your printer</h3>
+            <p>Sets bed size and nozzle so estimates are right. No connection needed.</p>
           </div>
-        </div>
-        <div id="printerList"></div>
-        <div id="discovered" class="discovered"></div>
-        <div id="addPrinterForm" class="printer-form hidden">
-          <div class="sheet-row">
-            <label class="sheet-label" for="pTransport">Type</label>
-            <select id="pTransport"></select>
+          <div class="fields">
+            <div class="field">
+              <label for="ssPrinter">Printer</label>
+              <div class="select-wrap"><select id="ssPrinter"></select></div>
+            </div>
+            <div id="ssCustom" class="subfields hidden">
+              <div class="dim-grid">
+                <label>Bed X<input id="ssBedX" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+                <label>Bed Y<input id="ssBedY" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+                <label>Bed Z<input id="ssBedZ" type="number" min="20" max="600" step="1" placeholder="mm" /></label>
+                <label>Nozzle<input id="ssNozzle" type="number" min="0.1" max="2" step="0.05" placeholder="mm" /></label>
+              </div>
+              <button id="ssSaveCustom" class="btn primary">Save custom printer</button>
+            </div>
+            <div class="field">
+              <label for="ssMaterial">Filament</label>
+              <div class="select-wrap"><select id="ssMaterial"></select></div>
+            </div>
+            <div class="field">
+              <label for="ssGoal">Print for</label>
+              <div class="select-wrap"><select id="ssGoal"></select></div>
+            </div>
           </div>
-          <div class="sheet-row">
-            <label class="sheet-label" for="pLabel">Name</label>
-            <input id="pLabel" type="text" placeholder="Workshop MK4" />
-          </div>
-          <div class="sheet-row" id="pHostRow">
-            <label class="sheet-label" for="pHost">Host / IP</label>
-            <input id="pHost" type="text" placeholder="192.168.1.50" />
-          </div>
-          <div class="sheet-row hidden" id="pFolderRow">
-            <label class="sheet-label" for="pFolder">Folder</label>
-            <input id="pFolder" type="text" placeholder="/Volumes/SD-CARD  (blank = default slices folder)" />
-          </div>
-          <div id="pSecretsFields"></div>
-          <p class="sheet-hint" id="pTransportHint"></p>
-          <button class="btn primary ss-save" id="pSave">Connect printer</button>
-        </div>
-        <p id="multiUserNote" class="sheet-hint hidden">
-          This is a shared hosted server, so LAN discovery and LAN-only printers (OctoPrint, Moonraker, PrusaLink, Bambu-LAN) are
-          disabled — add a cloud connection (Prusa Connect / Bambu Cloud) instead.
-        </p>
+        </section>
 
-        <div class="sheet-divider"></div>
-        <div class="sheet-row">
-          <div class="sheet-section-title" style="margin: 0">Model sources</div>
-          <button class="btn ghost small" id="sourcesRefreshBtn">Refresh</button>
-        </div>
-        <div id="sourcesList"></div>
-        <p class="sheet-hint">Shows which of Slicely's model sources are usable right now — and what unlocks the rest.</p>
+        <!-- Everything below is optional. Collapsed by default so the sheet
+             opens as three decisions, not eleven. -->
+        <section class="group">
+          <button class="group-toggle" id="advToggle" aria-expanded="false" aria-controls="advFields">
+            <span class="group-toggle-text">
+              <span class="group-toggle-title">Fine tuning</span>
+              <span class="group-toggle-sub">Slicely picks these per model</span>
+            </span>
+            <span class="chev" aria-hidden="true">›</span>
+          </button>
+          <div class="fields hidden" id="advFields">
+            <div class="field">
+              <label for="ssInfill">Infill</label>
+              <div class="input-suffix">
+                <input id="ssInfill" type="number" min="0" max="100" step="1" placeholder="Auto" />
+                <span>%</span>
+              </div>
+            </div>
+            <div class="field">
+              <label for="ssPattern">Pattern</label>
+              <div class="select-wrap"><select id="ssPattern"></select></div>
+            </div>
+            <div class="field">
+              <label>Supports</label>
+              <div class="seg" id="ssSupports" role="group" aria-label="Supports"></div>
+            </div>
+            <div class="field" id="ssStyleRow">
+              <label for="ssSupportStyle">Support style</label>
+              <div class="select-wrap"><select id="ssSupportStyle"></select></div>
+            </div>
+            <div class="field">
+              <label>Brim</label>
+              <div class="seg" id="ssBrim" role="group" aria-label="Brim"></div>
+            </div>
+            <div class="field">
+              <label for="ssBrimWidth">Brim width</label>
+              <div class="input-suffix">
+                <input id="ssBrimWidth" type="number" min="0" max="30" step="0.5" placeholder="Auto" />
+                <span>mm</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="group">
+          <div class="group-head">
+            <h3>Send to printer</h3>
+            <p>Optional. Lets Slicely send finished files straight to a machine.</p>
+          </div>
+          <div id="printerList" class="printer-list"></div>
+          <div class="group-actions">
+            <button class="btn ghost" id="discoverBtn">Scan network</button>
+            <button class="btn ghost" id="addPrinterBtn">Add manually</button>
+          </div>
+          <div id="discovered" class="discovered"></div>
+          <div id="addPrinterForm" class="printer-form hidden">
+            <div class="field">
+              <label for="pTransport">Type</label>
+              <div class="select-wrap"><select id="pTransport"></select></div>
+            </div>
+            <div class="field">
+              <label for="pLabel">Name</label>
+              <input id="pLabel" type="text" placeholder="Workshop MK4" />
+            </div>
+            <div class="field" id="pHostRow">
+              <label for="pHost">Address</label>
+              <input id="pHost" type="text" placeholder="192.168.1.50" />
+            </div>
+            <div class="field hidden" id="pFolderRow">
+              <label for="pFolder">Folder</label>
+              <input id="pFolder" type="text" placeholder="/Volumes/SD-CARD" />
+            </div>
+            <div id="pSecretsFields"></div>
+            <p class="note" id="pTransportHint"></p>
+            <button class="btn primary" id="pSave">Connect printer</button>
+          </div>
+          <p id="multiUserNote" class="note hidden">
+            This is a shared server, so it can't reach printers on your home network. Add a cloud printer
+            (Prusa Connect or Bambu Cloud) instead.
+          </p>
+        </section>
+
+        <section class="group">
+          <div class="group-head">
+            <h3>Model sources</h3>
+            <p>Where Slicely looks for models.</p>
+            <button class="btn ghost small" id="sourcesRefreshBtn">Refresh</button>
+          </div>
+          <div id="sourcesList" class="sources-list"></div>
+        </section>
       </div>
 
-      <!-- Jobs sheet: plan-from-staged-files lives in the attach tray; this is
-           the recent-jobs browser (plan/run/view via /api/jobs). -->
       <div id="jobsSheet" class="sheet hidden">
-        <div class="sheet-row">
-          <div class="sheet-section-title" style="margin: 0">Recent jobs</div>
-          <button class="btn ghost small" id="jobsRefreshBtn">Refresh</button>
+        <div class="sheet-head">
+          <h2 class="sheet-title">Print jobs</h2>
+          <div class="sheet-head-actions">
+            <button class="btn ghost small" id="jobsRefreshBtn">Refresh</button>
+            <button class="sheet-close" id="jobsClose" aria-label="Close jobs">&times;</button>
+          </div>
         </div>
-        <div id="jobsList"></div>
-        <p class="sheet-hint">
-          Multi-part jobs plan several files onto one or more plates. Attach 2+ files, then use "Plan print job" in the tray.
-        </p>
+        <div id="jobsList" class="jobs-list"></div>
       </div>
 
       <div id="banner" class="banner hidden"></div>
