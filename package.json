@@ -1,7 +1,7 @@
 {
   "name": "slicely",
   "version": "0.1.0",
-  "description": "Slicely — an AI agent that finds free 3D-printable models online and drives PrusaSlicer for you. macOS chat-bar app.",
+  "description": "Slicely \u2014 an AI agent that finds free 3D-printable models online and drives PrusaSlicer for you. macOS chat-bar app.",
   "main": "dist/main/main.js",
   "author": "ishmael07",
   "license": "MIT",
@@ -12,7 +12,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron dist/main/main.js",
     "dev": "npm run build && electron dist/main/main.js",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "dist:mac": "npm run build && electron-builder --mac",
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "test:only": "node --test \"dist/**/*.test.js\"",
+    "serve": "npm run build && node dist/server/index.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.105.0",
