@@ -20,5 +20,5 @@
     "noUnusedParameters": true,
     "types": []
   },
-  "include": ["src/renderer/**/*.ts", "src/shared/**/*.ts"]
+  "include": ["src/renderer/**/*.ts", "src/web/**/*.ts", "src/shared/**/*.ts"]
 }

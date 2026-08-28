@@ -1,6 +1,46 @@
 // Types shared across the Electron main process, preload bridge, and renderer.
 // Keep this file dependency-free — it is imported on both sides of the IPC line.
 
+import type {
+  SourceId,
+  SourcedModel,
+  SearchOutcome,
+  SourceAvailability,
+  UrlResolution,
+} from "./sourcing";
+import type {
+  PrinterConnection,
+  PrinterSecrets,
+  PrinterStatus,
+  PrinterTestResult,
+  PrinterTransport,
+  DiscoveredPrinter,
+  SendJobResult,
+} from "./printers";
+import type {
+  PrintJob,
+  JobEvent,
+  JobPlanOptions,
+  OrientationResult,
+} from "./jobs";
+
+export type {
+  SourceId,
+  SourcedModel,
+  SearchOutcome,
+  SourceAvailability,
+  UrlResolution,
+  PrinterConnection,
+  PrinterStatus,
+  PrinterTestResult,
+  PrinterTransport,
+  DiscoveredPrinter,
+  SendJobResult,
+  PrintJob,
+  JobEvent,
+  OrientationResult,
+};
+
 /** A 3D model search hit, normalized across marketplaces. */
 export interface ModelResult {
   /** Stable id within its source (string form). */
@@ -22,7 +62,9 @@ export interface ModelResult {
   downloadable: boolean;
 }
 
-export type ModelSource = "thingiverse" | "printables" | "makerworld";
+/** @deprecated Use `SourceId` from "./sourcing". Kept as an alias so v1 code
+ *  (providers/, renderer cards) keeps compiling while sourcing v2 lands. */
+export type ModelSource = SourceId;
 
 /** A downloadable file belonging to a model (Thingiverse only, for the MVP). */
 export interface ModelFile {
@@ -164,6 +206,21 @@ export type AgentEvent =
   | { type: "info"; info: ModelInfo }
   | { type: "metrics"; metrics: SliceMetrics }
   | { type: "status"; status: SlicerStatus }
+  // ── v2: sourcing, printers, jobs ──────────────────────────────────────────
+  /** Federated search finished — includes per-source success/failure. */
+  | { type: "search"; outcome: SearchOutcome }
+  /** A pasted URL was resolved to something downloadable (or not). */
+  | { type: "resolved"; resolution: UrlResolution }
+  /** The printer list or one printer's live status changed. */
+  | { type: "printers"; printers: PrinterConnection[]; statuses: PrinterStatus[] }
+  /** Outcome of sending G-code to a printer. */
+  | { type: "sent"; printerId: string; result: SendJobResult }
+  /** A multi-plate job was planned or updated. */
+  | { type: "job"; job: PrintJob }
+  /** Streamed progress while a job slices plate by plate. */
+  | { type: "job_progress"; event: JobEvent }
+  /** Orientation pass result for a single part. */
+  | { type: "orientation"; partPath: string; result: OrientationResult }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -185,6 +242,36 @@ export const IPC = {
   updatePreferences: "slicely:updatePreferences",
   uploadFiles: "slicely:uploadFiles",
   pickFile: "slicely:pickFile",
+
+  // ── v2: printers ──────────────────────────────────────────────────────────
+  listPrinters: "slicely:listPrinters",
+  addPrinter: "slicely:addPrinter",
+  updatePrinter: "slicely:updatePrinter",
+  removePrinter: "slicely:removePrinter",
+  testPrinter: "slicely:testPrinter",
+  printerStatuses: "slicely:printerStatuses",
+  sendToPrinter: "slicely:sendToPrinter",
+  controlPrinter: "slicely:controlPrinter",
+  discoverPrinters: "slicely:discoverPrinters",
+  setActivePrinter: "slicely:setActivePrinter",
+  setAutoStart: "slicely:setAutoStart",
+  driverCatalog: "slicely:driverCatalog",
+  /** Push channel: printer status changed (polled in main, streamed to UI). */
+  printerEvent: "slicely:printerEvent",
+
+  // ── v2: sourcing ──────────────────────────────────────────────────────────
+  searchModels: "slicely:searchModels",
+  resolveUrl: "slicely:resolveUrl",
+  sourceAvailability: "slicely:sourceAvailability",
+
+  // ── v2: jobs ──────────────────────────────────────────────────────────────
+  planJob: "slicely:planJob",
+  runJob: "slicely:runJob",
+  listJobs: "slicely:listJobs",
+  getJob: "slicely:getJob",
+  cancelJob: "slicely:cancelJob",
+  /** Push channel: streamed JobEvents while a job slices. */
+  jobEvent: "slicely:jobEvent",
 } as const;
 
 /** Reports which credentials are present, so the UI can warn the user. */
@@ -348,4 +435,82 @@ export interface SlicelyApi {
   /** Accept dropped files by absolute path; returns accepted uploads. */
   uploadFiles(paths: string[]): Promise<UploadResult[]>;
   resizeWindow(height: number): void;
+
+  // ── v2: printers ───────────────────────────────────────────────────────────
+  /** Every configured printer. Secrets are stripped in the main process and
+   *  never cross this bridge. */
+  listPrinters(): Promise<PrinterConnection[]>;
+  /** Add a printer; the main process probes it and returns the test result. */
+  addPrinter(
+    input: Omit<PrinterConnection, "id"> & PrinterSecrets,
+  ): Promise<{ printer: PrinterConnection; test: PrinterTestResult }>;
+  updatePrinter(
+    id: string,
+    patch: Partial<PrinterConnection & PrinterSecrets>,
+  ): Promise<PrinterConnection>;
+  removePrinter(id: string): Promise<void>;
+  testPrinter(id: string): Promise<PrinterTestResult>;
+  /** Live status for every configured printer. */
+  printerStatuses(): Promise<PrinterStatus[]>;
+  /**
+   * Upload G-code to a printer. `start` is a REQUEST, not a guarantee: the main
+   * process only honours it when the user has separately armed auto-start for
+   * that printer (see setAutoStart). Otherwise the file is uploaded and queued
+   * and `result.started` comes back false.
+   */
+  sendToPrinter(
+    id: string,
+    gcodePath: string,
+    start?: boolean,
+  ): Promise<SendJobResult>;
+  controlPrinter(
+    id: string,
+    action: "pause" | "resume" | "cancel",
+  ): Promise<SendJobResult>;
+  /** Scan the LAN for printers (mDNS + port probe). */
+  discoverPrinters(timeoutMs?: number): Promise<DiscoveredPrinter[]>;
+  setActivePrinter(id: string | undefined): Promise<void>;
+  /** Arm/disarm unattended auto-start for one printer. Off by default: a print
+   *  started on an uncleared bed is a real fire risk. */
+  setAutoStart(id: string, armed: boolean): Promise<void>;
+  /** Transports Slicely can speak, for the "add printer" form. */
+  driverCatalog(): Promise<
+    Array<{
+      transport: PrinterTransport;
+      label: string;
+      defaultPort: number;
+      requiredSecrets: string[];
+    }>
+  >;
+  /** Subscribe to pushed printer-status updates. Returns an unsubscribe fn. */
+  onPrinterEvent(
+    handler: (payload: {
+      printers: PrinterConnection[];
+      statuses: PrinterStatus[];
+    }) => void,
+  ): () => void;
+
+  // ── v2: sourcing ───────────────────────────────────────────────────────────
+  /** Federated search across every available source. */
+  searchModels(query: string): Promise<SearchOutcome>;
+  /** Resolve a pasted URL (model page, raw file, repo, zip) to something
+   *  downloadable. */
+  resolveUrl(url: string): Promise<UrlResolution>;
+  /** Which sources are usable right now, and what is blocking the rest. */
+  sourceAvailability(): Promise<SourceAvailability[]>;
+
+  // ── v2: jobs ───────────────────────────────────────────────────────────────
+  /** Plan a multi-part job: orient, colour, pack across plates. */
+  planJob(
+    parts: Array<{ path: string; copies?: number; colourHex?: string }>,
+    opts: JobPlanOptions,
+  ): Promise<PrintJob>;
+  /** Slice every plate of a planned job, in order. Progress streams via
+   *  onJobEvent. */
+  runJob(jobId: string): Promise<PrintJob>;
+  listJobs(): Promise<PrintJob[]>;
+  getJob(id: string): Promise<PrintJob | undefined>;
+  cancelJob(id: string): Promise<void>;
+  /** Subscribe to streamed job progress. Returns an unsubscribe fn. */
+  onJobEvent(handler: (event: JobEvent) => void): () => void;
 }
