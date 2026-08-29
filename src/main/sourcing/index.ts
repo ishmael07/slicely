@@ -26,7 +26,16 @@ import { sanitizeFileName } from "./fsutil";
 
 const DEFAULT_LIMIT = 12;
 const DEFAULT_PER_SOURCE = 10;
-const PER_SOURCE_TIMEOUT_MS = 10_000;
+/**
+ * How long any one source gets before it is abandoned.
+ *
+ * Measured: every source that actually returns results finishes inside 1.7s,
+ * so a 10s budget only ever bought waiting. It also set the worst case for the
+ * WHOLE search, since results are gathered together — one slow source made an
+ * otherwise-1s search take 7s. At 4s a healthy source is never cut off and the
+ * tail is bounded.
+ */
+const PER_SOURCE_TIMEOUT_MS = 4_000;
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;

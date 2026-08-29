@@ -2360,7 +2360,14 @@ void loadStatus();
 void loadDrivers();
 void checkMultiUser();
 void loadSettings();
+// The header pill must know about a connected printer on load. Previously
+// printers were only fetched while the settings sheet was OPEN, so the header
+// read "No printer" until you happened to open settings — even with one
+// connected and working.
+void refreshPrinters();
 setInterval(() => void loadStatus(), 15000);
 setInterval(() => {
-  if (!settingsSheet.classList.contains("hidden")) void refreshPrinters();
-}, 6000);
+  // Poll faster while the printer list is on screen, but keep the header
+  // honest either way.
+  void refreshPrinters();
+}, settingsSheet.classList.contains("hidden") ? 15000 : 6000);
