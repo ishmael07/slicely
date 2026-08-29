@@ -27,7 +27,7 @@ import type {
 } from "../../shared/jobs";
 import type { PrintGoal } from "../../shared/types";
 import type { Triangle } from "./mesh";
-import { computeMeshData, type FlatFace } from "./mesh";
+import { computeMeshData, type FlatFace, type MeshData } from "./mesh";
 import {
   type Mat3,
   type Vec3,
@@ -98,12 +98,32 @@ export function chooseOrientation(
     return { best: empty, candidates: [empty], keptAsImported: true };
   }
 
-  const mesh = computeMeshData(tris);
+  // planner.ts already parsed the file, and parseMesh computes this same
+  // structure — recomputing it here doubled the per-part cost for nothing.
+  const mesh = (opts.mesh as MeshData | undefined) ?? computeMeshData(tris);
   const specs = generateCandidateSpecs(mesh.largeFlatFaces, maxCandidates);
+
+  // Score against a sample of the mesh when it is very large.
+  //
+  // Every candidate pose is evaluated against every triangle, so cost is
+  // poses x triangles: a 400k-triangle model spent seconds here, and a job full
+  // of them felt like a hang. The scores are a heuristic used only to RANK
+  // poses against each other, and every pose is measured on the same sample, so
+  // the ranking is preserved. Areas are scaled back up by the sampling ratio,
+  // keeping the reported mm² figures honest.
+  const scoringTris = sampleForScoring(mesh.triangles);
+  const areaScale = mesh.triangles.length / scoringTris.length;
 
   const thresholdRad = (supportThresholdDeg * Math.PI) / 180;
   const evaluated: CandidateMetrics[] = specs.map((spec) => {
-    const raw = evaluateCandidate(mesh.triangles, spec.matrix, thresholdRad, layerHeightMm);
+    const sampled = evaluateCandidate(scoringTris, spec.matrix, thresholdRad, layerHeightMm);
+    // Bounding box and layer count come from extents, which sampling barely
+    // moves; the two AREA sums are what need rescaling.
+    const raw = {
+      ...sampled,
+      overhangAreaMm2: sampled.overhangAreaMm2 * areaScale,
+      bedContactMm2: sampled.bedContactMm2 * areaScale,
+    };
     const euler = eulerXYZFromMatrix(spec.matrix);
     return {
       ...spec,
@@ -213,6 +233,29 @@ export function chooseOrientation(
 /** The 6 axis-aligned "which face is down" poses, plus up to
  *  (maxCandidates - 6) poses that lay a large flat face on the bed —
  *  deduplicated against poses already covered. */
+/** Above this, scoring samples rather than reading every triangle. 60k is far
+ *  more than enough to characterise a shape's overhangs and footprint, and
+ *  keeps the pass well under a second even on a very detailed model. */
+const SCORING_TRIANGLE_LIMIT = 60_000;
+
+/**
+ * Evenly-spaced sample of a mesh, for pose scoring only.
+ *
+ * Even spacing (rather than a random draw) matters: it keeps the sample
+ * spread across the whole model instead of clumping, which is what makes the
+ * sampled areas track the real ones. The full mesh is still used for the
+ * bounding box and flat-face detection, so the chosen pose is exact.
+ */
+function sampleForScoring(triangles: Triangle[]): Triangle[] {
+  if (triangles.length <= SCORING_TRIANGLE_LIMIT) return triangles;
+  const stride = triangles.length / SCORING_TRIANGLE_LIMIT;
+  const out: Triangle[] = new Array(SCORING_TRIANGLE_LIMIT);
+  for (let i = 0; i < SCORING_TRIANGLE_LIMIT; i++) {
+    out[i] = triangles[Math.floor(i * stride)];
+  }
+  return out;
+}
+
 function generateCandidateSpecs(flatFaces: FlatFace[], maxCandidates: number): CandidateSpec[] {
   const AXIS_EULERS: Array<[number, number, number]> = [
     [0, 0, 0],

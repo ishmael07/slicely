@@ -55,6 +55,10 @@ export interface OrientationOptions {
   loadAxis?: { x: number; y: number; z: number };
   /** Cap on poses evaluated. Default 24 (axis-aligned + face-normal candidates). */
   maxCandidates?: number;
+  /** Mesh data the caller has already computed. Supplying it avoids repeating
+   *  a full pass over the triangles, which dominates orientation on a large
+   *  model. Typed loosely here so this contract stays dependency-free. */
+  mesh?: unknown;
 }
 
 // ── Colour ───────────────────────────────────────────────────────────────────

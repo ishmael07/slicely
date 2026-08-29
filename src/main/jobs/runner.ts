@@ -150,11 +150,20 @@ async function sliceOnePlate(
   if (primaryIdx >= 0) flat.splice(primaryIdx, 1);
   const extraInputs = flat;
 
-  // A plate whose parts sit on different extruders cannot be sliced from plain
-  // STLs: PrusaSlicer's CLI assigns every input to extruder 1, so the colour
-  // plan would be silently dropped and the print would come out one colour.
-  // Build a 3MF that carries the per-object assignment instead.
-  if (distinctExtruders(plate.parts).length > 1) {
+  // ANY plate with more than one physical instance goes through a 3MF project.
+  //
+  // Passing several STLs to the CLI cannot work, in either mode:
+  //   • Without --merge, PrusaSlicer loads each file as its own Model and
+  //     re-exports them all to the SAME --output, so only the LAST part
+  //     survives. Verified: slicing A+B produced byte-identical G-code to
+  //     slicing B alone — part A vanished with no error at all.
+  //   • With --merge it fuses everything into one object, which fails outright
+  //     (exit -1) on real plates and destroys the per-part identity that
+  //     colour assignment needs.
+  // A 3MF holds many objects in ONE file, so the whole plate slices together,
+  // every part survives, and each keeps its own extruder.
+  const instances = plate.parts.reduce((n, p) => n + p.copies, 0);
+  if (instances > 1) {
     return sliceMultiMaterialPlate(plate, job, doSlice);
   }
 

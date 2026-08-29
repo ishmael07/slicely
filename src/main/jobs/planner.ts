@@ -166,6 +166,9 @@ export async function planJob(
       try {
         const mesh = await parseMesh(input.path);
         const result = chooseOrientation(mesh.triangles, {
+          // Reuse what parseMesh already computed rather than repeating a
+          // full pass over the triangles.
+          mesh,
           goal,
           layerHeightMm: params.layerHeightMm,
           supportThresholdDeg: params.supportThresholdDeg,

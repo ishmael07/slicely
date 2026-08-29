@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseDurationToMinutes, requestCancel, runJob, type SliceFn } from "./runner";
 import type { JobEvent, JobPart, JobPlate, PrintJob } from "../../shared/jobs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildCubeTriangles, trianglesToBinaryStl } from "./testFixtures";
 
 function jobPart(path: string, copies = 1): JobPart {
   return { path, name: path, copies, sizeX: 10, sizeY: 10, sizeZ: 10 };
@@ -116,17 +120,50 @@ test("re-running a job with a previously-failed plate retries only the non-ready
   assert.equal(second.status, "ready");
 });
 
-test("multi-part plate expands per-part copy counts into extraInputs correctly (no dropped copies)", async () => {
-  const j = job([plate(1, [jobPart("/a.stl", 1), jobPart("/b.stl", 2)])]);
-  let capturedExtra: string[] | undefined;
-  const sliceFn: SliceFn = async (stlPath, params) => {
-    assert.equal(stlPath, "/a.stl");
-    capturedExtra = params?.extraInputs;
-    return { gcodePath: "out.gcode" };
-  };
-  await runJob(j, undefined, { sliceFn });
-  assert.deepEqual(capturedExtra, ["/b.stl", "/b.stl"]);
+test("a multi-part plate is sliced from ONE 3MF project, never from a list of STLs", async () => {
+  // Passing several STLs to PrusaSlicer's CLI loses parts: without --merge it
+  // re-exports every input to the same --output, so only the LAST survives
+  // (verified — slicing A+B produced byte-identical G-code to B alone), and
+  // with --merge it fails outright. A 3MF holds many objects in one file.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-"));
+  const a = join(dir, "a.stl");
+  const b = join(dir, "b.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+  writeFileSync(b, trianglesToBinaryStl(buildCubeTriangles(8)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 1), jobPart(b, 2)])]);
+    let slicedPath: string | undefined;
+    let extra: string[] | undefined;
+    const sliceFn: SliceFn = async (stlPath, params) => {
+      slicedPath = stlPath;
+      extra = params?.extraInputs;
+      return { gcodePath: "out.gcode" };
+    };
+    await runJob(j, undefined, { sliceFn });
+
+    assert.match(slicedPath ?? "", /\.3mf$/, "the plate must be sliced as a project file");
+    assert.ok(existsSync(slicedPath!), "the 3MF must actually be written");
+    assert.equal(extra, undefined, "extraInputs is the path that drops parts");
+
+    // Every instance must be in the project: 1 of A plus 2 of B. The 3MF is a
+    // deflated ZIP, so read the model document out of it properly.
+    const unzipper = await import("unzipper");
+    const archive = await unzipper.Open.file(slicedPath!);
+    const entry = archive.files.find((f) => f.path === "3D/3dmodel.model");
+    assert.ok(entry, "the project must contain a 3MF model document");
+    const model = (await entry!.buffer()).toString("utf8");
+    const objects = (model.match(/<object id=/g) ?? []).length;
+    assert.equal(
+      objects,
+      3,
+      "one object per physical instance — a dropped copy is a part that never prints",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
+
 
 test("parseDurationToMinutes handles day/hour/minute/second components", () => {
   assert.equal(parseDurationToMinutes("1d 2h 3m 4s"), 24 * 60 + 2 * 60 + 3 + Math.round(4 / 60));

@@ -218,7 +218,19 @@ function clusterFlatFaces(triangles: Triangle[]): FlatFace[] {
     areaMm2: number;
     weightedCentroid: Vec3;
   }
-  const clusters: Cluster[] = [];
+
+  // Bucket by a quantised (normal, plane-offset) key rather than scanning the
+  // existing clusters for every triangle.
+  //
+  // The scan was quadratic: an organic model gives almost every triangle its
+  // own normal, so the cluster list grows with the mesh and each new triangle
+  // walks all of it. Measured at 7 SECONDS for 23,722 triangles, and a 471k
+  // model never finished at all — which is what made large jobs hang.
+  //
+  // Bucketing makes the common case a single map lookup. Two triangles on one
+  // plane can still land in adjacent buckets, so the pass below rejoins them.
+  const NORMAL_STEP = 0.02; // finer than NORMAL_COS_EPS allows to matter
+  const buckets = new Map<string, Cluster>();
 
   for (const t of triangles) {
     const n = t.normal;
@@ -228,16 +240,14 @@ function clusterFlatFaces(triangles: Triangle[]): FlatFace[] {
     const centroid = scale(add(add(t.a, t.b), t.c), 1 / 3);
     const d = dot(n, t.a);
 
-    let target: Cluster | undefined;
-    for (const c of clusters) {
-      if (dot(c.normal, n) >= NORMAL_COS_EPS && Math.abs(c.planeD - d) <= PLANE_EPS_MM) {
-        target = c;
-        break;
-      }
-    }
+    const key =
+      `${Math.round(n.x / NORMAL_STEP)},${Math.round(n.y / NORMAL_STEP)},` +
+      `${Math.round(n.z / NORMAL_STEP)},${Math.round(d / PLANE_EPS_MM)}`;
+
+    let target = buckets.get(key);
     if (!target) {
       target = { normal: n, planeD: d, areaMm2: 0, weightedCentroid: { x: 0, y: 0, z: 0 } };
-      clusters.push(target);
+      buckets.set(key, target);
     }
     target.areaMm2 += area;
     target.weightedCentroid.x += centroid.x * area;
@@ -245,15 +255,40 @@ function clusterFlatFaces(triangles: Triangle[]): FlatFace[] {
     target.weightedCentroid.z += centroid.z * area;
   }
 
-  return clusters
+  const ranked = [...buckets.values()]
     .filter((c) => c.areaMm2 > 1e-6)
+    .sort((a, b) => b.areaMm2 - a.areaMm2);
+
+  // Rejoin faces that quantisation split across neighbouring buckets. Only the
+  // biggest faces matter — they are what orientation scoring picks a pose from
+  // — so this is capped, keeping it trivial no matter how large the mesh is.
+  const MERGE_CANDIDATES = 200;
+  const head = ranked.slice(0, MERGE_CANDIDATES);
+  const tail = ranked.slice(MERGE_CANDIDATES);
+  const merged: Cluster[] = [];
+  for (const c of head) {
+    const into = merged.find(
+      (m) =>
+        dot(m.normal, c.normal) >= NORMAL_COS_EPS &&
+        Math.abs(m.planeD - c.planeD) <= PLANE_EPS_MM,
+    );
+    if (into) {
+      into.areaMm2 += c.areaMm2;
+      into.weightedCentroid.x += c.weightedCentroid.x;
+      into.weightedCentroid.y += c.weightedCentroid.y;
+      into.weightedCentroid.z += c.weightedCentroid.z;
+    } else {
+      merged.push(c);
+    }
+  }
+
+  return [...merged, ...tail]
     .map((c) => ({
       normal: c.normal,
       areaMm2: c.areaMm2,
       centroid: scale(c.weightedCentroid, 1 / c.areaMm2),
     }))
-    .sort((a, b) => b.areaMm2 - a.areaMm2)
-    .slice(0, 16);
+    .sort((a, b) => b.areaMm2 - a.areaMm2);
 }
 
 // ── STL parsing ──────────────────────────────────────────────────────────
