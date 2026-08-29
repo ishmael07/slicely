@@ -216,6 +216,20 @@ export interface JobPlanOptions {
   slots?: FilamentSlot[];
   /** Colours stacked up the print, bottom first — see PrintJob.colourBands. */
   colourBands?: string[];
+  /** Called as planning proceeds, so a caller can show what is happening
+   *  instead of a spinner that never changes. */
+  onProgress?: (p: PlanProgress) => void;
+}
+
+/** Where planning has got to. Emitted per part, because inspecting and
+ *  orienting a detailed mesh is the slow step and the user should see it move. */
+export interface PlanProgress {
+  stage: "inspecting" | "orienting" | "colouring" | "packing";
+  /** 1-based, and 0 when the stage is not per-part. */
+  index: number;
+  total: number;
+  /** File being worked on, when the stage is per-part. */
+  partName?: string;
 }
 
 /** Progress event emitted while a job slices, so the UI can stream it. */

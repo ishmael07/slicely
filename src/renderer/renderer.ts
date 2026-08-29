@@ -695,6 +695,9 @@ function handleAgentEvent(event: AgentEvent): void {
     case "tool_start":
       startToolChip(event.tool, event.label);
       break;
+    case "tool_progress":
+      updateToolChip(event.tool, event.label);
+      break;
     case "tool_end":
       endToolChip(event.tool, event.ok, event.summary);
       break;
@@ -824,6 +827,15 @@ function startToolChip(tool: string, label: string): void {
   messagesEl.appendChild(chip);
   // If the same tool fires twice, keep only the latest reference.
   activeChips.set(tool, chip);
+}
+
+/** Update a running chip's text in place, so a long tool visibly moves rather
+ *  than showing a spinner that never changes. */
+function updateToolChip(tool: string, label: string): void {
+  const chip = activeChips.get(tool);
+  if (!chip) return;
+  const text = chip.querySelector("span:last-child");
+  if (text) text.textContent = label;
 }
 
 function endToolChip(tool: string, ok: boolean, summary?: string): void {

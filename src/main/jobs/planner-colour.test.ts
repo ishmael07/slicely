@@ -137,3 +137,51 @@ test("a single-colour job is never split, whatever the setting", () => {
   assert.equal(shouldGroupByColour({ distinctColours: 1, usableSlots: 1, explicit: true }), false);
   assert.equal(shouldGroupByColour({ distinctColours: 1, usableSlots: 4, explicit: undefined }), false);
 });
+
+// ── Planning progress ───────────────────────────────────────────────────────
+// Planning a detailed multi-part job takes many seconds. Without progress the
+// UI shows a spinner that never changes, which is indistinguishable from a
+// hang — which is exactly how it was reported.
+
+test("planning reports each stage, and each part as it is worked on", async () => {
+  const { planJob } = await import("./index");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { buildCubeTriangles, trianglesToBinaryStl } = await import("./testFixtures");
+  const dir = mkdtempSync(join(tmpdir(), "slicely-progress-"));
+  const paths = ["a.stl", "b.stl"].map((n) => {
+    const p = join(dir, n);
+    writeFileSync(p, trianglesToBinaryStl(buildCubeTriangles(10)));
+    return p;
+  });
+
+  const seen: string[] = [];
+  try {
+    await planJob(
+      paths.map((p) => ({ path: p, copies: 1 })),
+      {
+        bed: { x: 220, y: 220, z: 250 },
+        maxHeightMm: 250,
+        goal: "quality",
+        autoOrient: true,
+        onProgress: (p) =>
+          seen.push(`${p.stage}${p.partName ? `:${p.partName}` : ""}${p.index ? `:${p.index}/${p.total}` : ""}`),
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  assert.ok(seen.some((s) => s.startsWith("inspecting")), "must report inspecting");
+  // One per part, numbered, so the user can see it advance.
+  assert.ok(seen.includes("orienting:a.stl:1/2"), `missing part 1: ${seen.join(", ")}`);
+  assert.ok(seen.includes("orienting:b.stl:2/2"), `missing part 2: ${seen.join(", ")}`);
+  assert.ok(seen.some((s) => s.startsWith("colouring")));
+  assert.ok(seen.some((s) => s.startsWith("packing")));
+  // Stages arrive in the order the work happens.
+  const orderOf = (prefix: string): number => seen.findIndex((s) => s.startsWith(prefix));
+  assert.ok(orderOf("inspecting") < orderOf("orienting"));
+  assert.ok(orderOf("orienting") < orderOf("colouring"));
+  assert.ok(orderOf("colouring") < orderOf("packing"));
+});

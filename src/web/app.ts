@@ -365,6 +365,14 @@ function startToolChip(tool: string, label: string): void {
   scrollToBottom();
 }
 
+/** Update a running chip's text in place, so a long tool visibly moves. */
+function updateToolChip(tool: string, label: string): void {
+  const chip = activeChips.get(tool);
+  if (!chip) return;
+  const text = chip.querySelector("span:last-child");
+  if (text) text.textContent = label;
+}
+
 function endToolChip(tool: string, ok: boolean, summary?: string): void {
   const chip = activeChips.get(tool);
   if (!chip) return;
@@ -973,6 +981,9 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
       break;
     case "thinking":
       appendThinking(event.text);
+      break;
+    case "tool_progress":
+      updateToolChip(event.tool, event.label);
       break;
     case "tool_start":
       startToolChip(event.tool, event.label);

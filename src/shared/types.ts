@@ -201,6 +201,10 @@ export type AgentEvent =
   | { type: "thinking"; text: string }
   | { type: "tool_start"; tool: string; label: string }
   | { type: "tool_end"; tool: string; ok: boolean; summary?: string }
+  /** Live update to a running tool's label. Long operations (planning a job,
+   *  slicing plate after plate) otherwise show a spinner that never changes,
+   *  which is indistinguishable from being stuck. */
+  | { type: "tool_progress"; tool: string; label: string }
   | { type: "models"; models: ModelResult[] }
   | { type: "download"; model: ModelResult; result: DownloadResult }
   | { type: "info"; info: ModelInfo }

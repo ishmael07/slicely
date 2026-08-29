@@ -132,6 +132,8 @@ export async function planJob(
   const notes: string[] = [];
 
   // ── 1. Inspect every part ────────────────────────────────────────────────
+  const report = opts.onProgress ?? (() => undefined);
+  report({ stage: "inspecting", index: 0, total: parts.length });
   const infos = await Promise.all(parts.map((p) => inspect(p.path)));
 
   // ── 3a. Derive params EARLY (orientation's layer-count scoring wants a
@@ -157,6 +159,14 @@ export async function planJob(
     const input = parts[i];
     const info = infos[i];
     const name = basename(input.path);
+    // Per part, because this is the slow step: parsing a detailed mesh and
+    // scoring every candidate pose against it takes seconds each.
+    report({
+      stage: autoOrient ? "orienting" : "inspecting",
+      index: i + 1,
+      total: parts.length,
+      partName: name,
+    });
     let sizeX = info.sizeX;
     let sizeY = info.sizeY;
     let sizeZ = info.sizeZ;
@@ -208,6 +218,7 @@ export async function planJob(
   }));
 
   // ── 4. Colour plan ───────────────────────────────────────────────────────
+  report({ stage: "colouring", index: 0, total: parts.length });
   const colourPlan = planColours(jobParts, opts.slots ?? []);
   // Apply POSITIONALLY: planColours returns exactly one assignment per input
   // part, in order. Keying by file path collided whenever the same STL was
@@ -251,6 +262,7 @@ export async function planJob(
   const bed: BedArea = { w: opts.bed.x, d: opts.bed.y };
   const spacing = opts.spacingMm ?? DEFAULT_SPACING;
 
+  report({ stage: "packing", index: 0, total: parts.length });
   const packedPlates: Plate[] = [];
   const packOversized: PlatePart[] = [];
   // Identity for packing: a part's position in `packable`. See toPlateParts.
