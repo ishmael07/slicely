@@ -203,16 +203,41 @@ async function refreshStatus(): Promise<void> {
   }
 }
 
+/** Where to get PrusaSlicer. Slicely cannot slice without it, so a missing
+ *  install is the one blocker worth interrupting the user for. */
+const PRUSASLICER_DOWNLOAD = "https://www.prusa3d.com/page/prusaslicer_424/";
+
+function showSlicerMissing(): void {
+  bannerEl.replaceChildren();
+  bannerEl.classList.remove("hidden");
+  bannerEl.classList.add("banner-action");
+  const text = el("span");
+  text.textContent =
+    "PrusaSlicer isn't installed, so Slicely can't slice yet. Searching and importing still work.";
+  const btn = el("button", "btn primary") as HTMLButtonElement;
+  btn.textContent = "Download PrusaSlicer";
+  // Opens in the user's real browser rather than inside the app window.
+  btn.onclick = () => void api.openExternal(PRUSASLICER_DOWNLOAD);
+  bannerEl.append(text, btn);
+}
+
 function applyStatus(s: SlicerStatus): void {
   if (!s.installed) {
     statusDot.className = "dot err";
     statusText.textContent = "PrusaSlicer not found";
+    // A status pill is easy to miss, and nothing downstream works without it.
+    showSlicerMissing();
   } else if (s.running) {
     statusDot.className = "dot ok";
     statusText.textContent = `PrusaSlicer ${s.version ?? ""} · open`.trim();
   } else {
     statusDot.className = "dot warn";
     statusText.textContent = `PrusaSlicer ${s.version ?? "ready"}`.trim();
+  }
+  if (s.installed && bannerEl.classList.contains("banner-action")) {
+    bannerEl.classList.add("hidden");
+    bannerEl.classList.remove("banner-action");
+    bannerEl.replaceChildren();
   }
 }
 

@@ -113,6 +113,34 @@ export function createSliceRouter(): Router {
     }
   });
 
+  /**
+   * Geometry for the 3D preview. Decimated server-side, and the path is proven
+   * to belong to the caller's own session before anything is read — this
+   * returns file contents, so it is exactly the kind of endpoint a path
+   * traversal would target.
+   */
+  router.get("/preview", async (req: Request, res: Response) => {
+    const session = req.session!;
+    const path = typeof req.query.path === "string" ? req.query.path : "";
+    if (!path) {
+      res.status(400).json({ error: "path is required" });
+      return;
+    }
+    if (!isInsideDir(session.dir, path)) {
+      res.status(403).json({ error: "That file is outside this session's workspace." });
+      return;
+    }
+    try {
+      const { previewMesh } = await import("../../main/jobs");
+      const mesh = await previewMesh(path);
+      // Immutable for the life of the session's copy of the file.
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.json(mesh);
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message ?? "Could not read that model." });
+    }
+  });
+
   router.get("/gcode/:id", (req: Request, res: Response) => {
     const session = req.session!;
     const entry = session.gcodeFiles.get(req.params.id);

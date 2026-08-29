@@ -16,6 +16,7 @@
 // see "Jobs" below — rather than growing a second SSE parser.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, UploadResult, SettingsState, EffortLevel, PrintPreferences, FeatureMode } from "../shared/types";
+import type { PreviewMeshData } from "./viewer.js";
 import type { PrinterConnection, PrinterStatus } from "../shared/printers";
 import type { SearchOutcome, UrlResolution, SourceAvailability, PrintabilityScore } from "../shared/sourcing";
 import type { JobEvent, PrintJob, JobPlate } from "../shared/jobs";
@@ -543,8 +544,57 @@ function renderInfo(info: ModelInfo): void {
   if (info.facets !== undefined) addMetric(grid, "Triangles", info.facets.toLocaleString());
   if (info.manifold !== undefined) addMetric(grid, "Watertight", info.manifold ? "yes" : "no");
   panel.appendChild(grid);
+  if (info.filePath) attachViewer(panel, info.filePath);
   messagesEl.appendChild(panel);
   scrollToBottom();
+}
+
+/**
+ * Add a turning 3D view of the model to a panel.
+ *
+ * Loaded lazily and failing silently: a preview is a nicety, and a model the
+ * viewer cannot read must never take the metrics panel down with it.
+ */
+function attachViewer(panel: HTMLElement, filePath: string): void {
+  const holder = make("div", "viewer");
+  const canvas = document.createElement("canvas");
+  holder.appendChild(canvas);
+  const note = make("div", "viewer-note");
+  note.textContent = "Loading preview…";
+  holder.appendChild(note);
+  panel.appendChild(holder);
+
+  void (async () => {
+    try {
+      const mesh = await getJson<PreviewMeshData>(
+        `/api/preview?path=${encodeURIComponent(filePath)}`,
+      );
+      if (mesh.triangles === 0) {
+        holder.remove();
+        return;
+      }
+      const { ModelViewer } = await import("./viewer.js");
+      const viewer = new ModelViewer(canvas);
+      viewer.setMesh(mesh);
+      note.textContent =
+        mesh.triangles < mesh.sourceTriangles
+          ? `Simplified to ${mesh.triangles.toLocaleString()} triangles for preview · drag to turn`
+          : "Drag to turn";
+
+      // Stop animating once it scrolls out of view. A long transcript would
+      // otherwise leave every previous viewer redrawing forever.
+      if ("IntersectionObserver" in window) {
+        new IntersectionObserver((entries) => {
+          for (const e of entries) {
+            if (e.isIntersecting) viewer.start();
+            else viewer.stop();
+          }
+        }).observe(holder);
+      }
+    } catch {
+      holder.remove();
+    }
+  })();
 }
 
 // ── printer send (shared by the single-slice panel AND every job plate) ────
@@ -934,7 +984,7 @@ function renderJobsList(jobs: PrintJob[]): void {
 async function viewJob(id: string): Promise<void> {
   try {
     const job = await getJson<PrintJob>(`/api/jobs/${encodeURIComponent(id)}`);
-    jobsSheet.classList.add("hidden");
+    showSheet(null);
     getJobPanel(job.id, job as WireJob);
   } catch (err) {
     renderError((err as Error).message || "Couldn't load that job.");
@@ -952,16 +1002,43 @@ function renderError(message: string): void {
   scrollToBottom();
 }
 
+/** Where to get PrusaSlicer. Slicely cannot slice without it, so a missing
+ *  install is the one blocker worth interrupting the user for. */
+const PRUSASLICER_DOWNLOAD = "https://www.prusa3d.com/page/prusaslicer_424/";
+
+function showSlicerMissing(): void {
+  bannerEl.replaceChildren();
+  bannerEl.classList.remove("hidden");
+  bannerEl.classList.add("banner-action");
+  const text = make("span", "");
+  text.textContent =
+    "PrusaSlicer isn't installed, so Slicely can't slice yet. Searching and importing still work.";
+  const link = document.createElement("a");
+  link.href = PRUSASLICER_DOWNLOAD;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.className = "btn primary small";
+  link.textContent = "Download PrusaSlicer";
+  bannerEl.append(text, link);
+}
+
 function applyStatus(status: SlicerStatus): void {
   if (!status.installed) {
     statusDot.className = "dot err";
     statusText.textContent = "PrusaSlicer not found";
+    // A status pill is easy to miss, and nothing downstream works without it.
+    showSlicerMissing();
   } else if (status.running) {
     statusDot.className = "dot busy";
     statusText.textContent = `PrusaSlicer ${status.version ?? ""} · open`.trim();
   } else {
     statusDot.className = "dot ok";
     statusText.textContent = `PrusaSlicer ${status.version ?? "ready"}`.trim();
+  }
+  if (status.installed && bannerEl.classList.contains("banner-action")) {
+    bannerEl.classList.add("hidden");
+    bannerEl.classList.remove("banner-action");
+    bannerEl.replaceChildren();
   }
 }
 
@@ -2019,10 +2096,20 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeMenus();
 });
 
+const scrim = byId<HTMLElement>("scrim");
+
+/** Show exactly one sheet (or none), keeping the scrim in step. */
+function showSheet(which: "settings" | "jobs" | null): void {
+  settingsSheet.classList.toggle("hidden", which !== "settings");
+  jobsSheet.classList.toggle("hidden", which !== "jobs");
+  scrim.classList.toggle("hidden", which === null);
+}
+
+scrim.addEventListener("click", () => showSheet(null));
+
 settingsBtn.addEventListener("click", () => {
-  jobsSheet.classList.add("hidden");
   const willOpen = settingsSheet.classList.contains("hidden");
-  settingsSheet.classList.toggle("hidden", !willOpen);
+  showSheet(willOpen ? "settings" : null);
   if (willOpen) {
     renderPreferences();
     void refreshPrinters();
@@ -2035,16 +2122,11 @@ printerPill.addEventListener("click", () => settingsBtn.click());
 
 // Close buttons on each sheet — a sheet that covers the chat needs an obvious
 // way out, not just a second press on the icon that opened it.
-byId<HTMLButtonElement>("settingsClose").addEventListener("click", () =>
-  settingsSheet.classList.add("hidden"),
-);
-byId<HTMLButtonElement>("jobsClose").addEventListener("click", () =>
-  jobsSheet.classList.add("hidden"),
-);
+byId<HTMLButtonElement>("settingsClose").addEventListener("click", () => showSheet(null));
+byId<HTMLButtonElement>("jobsClose").addEventListener("click", () => showSheet(null));
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  settingsSheet.classList.add("hidden");
-  jobsSheet.classList.add("hidden");
+  showSheet(null);
 });
 
 // "Fine tuning" disclosure. Collapsed by default so the sheet opens as three
@@ -2057,9 +2139,8 @@ advToggle.addEventListener("click", () => {
 });
 
 jobsBtn.addEventListener("click", () => {
-  settingsSheet.classList.add("hidden");
   const willOpen = jobsSheet.classList.contains("hidden");
-  jobsSheet.classList.toggle("hidden", !willOpen);
+  showSheet(willOpen ? "jobs" : null);
   if (willOpen) void refreshJobsList();
 });
 jobsRefreshBtn.addEventListener("click", () => void refreshJobsList());

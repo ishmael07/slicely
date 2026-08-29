@@ -130,3 +130,19 @@ export async function splitModel(
   result.written = true;
   return result;
 }
+
+/**
+ * A small, drawable version of a model for the viewer.
+ *
+ * Decimated and normalised server-side because real meshes are far too heavy
+ * to send: a 386k-triangle model is ~14MB of raw floats.
+ */
+export async function previewMesh(
+  meshPath: string,
+  target?: number,
+): Promise<import("./preview").PreviewMesh> {
+  const { parseMesh } = await import("./mesh");
+  const { buildPreviewMesh } = await import("./preview");
+  const mesh = await parseMesh(meshPath);
+  return buildPreviewMesh(mesh.triangles, target);
+}

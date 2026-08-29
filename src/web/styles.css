@@ -56,6 +56,11 @@ html,
 body {
   height: 100%;
   margin: 0;
+  /* The PAGE never scrolls — only the transcript inside it does. Without this
+     an open sheet grows the document and the whole window scrolls, which
+     detaches the header and composer from their edges. */
+  overflow: hidden;
+  overscroll-behavior: none;
   font-family: var(--font);
   color: var(--text);
   background: var(--bg-0);
@@ -220,11 +225,17 @@ a {
    the sheet opens as three decisions instead of eleven. */
 
 .sheet {
-  flex: 0 0 auto;
+  /* Overlaid on the transcript rather than inserted above it. As a flex child
+     it pushed the chat down and resized everything each time it opened; as an
+     overlay the layout underneath stays exactly where it was. */
+  position: absolute;
+  z-index: 60;
+  top: 8px;
+  left: 10px;
+  right: 10px;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  margin: 8px 10px 0;
   padding: 16px;
   border-radius: var(--radius);
   background: linear-gradient(175deg, var(--bg-1), var(--bg-0));
@@ -1647,4 +1658,76 @@ details.thinking summary::-webkit-details-marker {
 }
 .scan-help-note {
   color: var(--text);
+}
+
+/* Dim + click-catcher behind an open sheet. Keeps the sheet feeling like a
+   layer over the app rather than part of the document flow. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(1.5px);
+  animation: scrim-in 0.18s var(--ease) both;
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+}
+.scrim.hidden {
+  display: none;
+}
+
+/* Banner carrying an action (e.g. "PrusaSlicer isn't installed" + download).
+   Laid out as a row so the call to action sits with the explanation rather
+   than wrapping under it. */
+.banner.banner-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.banner.banner-action a {
+  text-decoration: none;
+  flex: 0 0 auto;
+}
+
+/* ── 3D model preview ───────────────────────────────────────────────────────
+   A turning view of what is about to be printed. Deliberately plain: one
+   object, one light, no grid or gizmos, so it reads as the model rather than
+   as a demo of a 3D engine. */
+.viewer {
+  position: relative;
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  background:
+    radial-gradient(120% 80% at 50% 15%, rgba(255, 122, 69, 0.09), transparent 70%),
+    var(--panel-2);
+  border: 0.5px solid var(--border);
+  overflow: hidden;
+}
+.viewer canvas {
+  display: block;
+  width: 100%;
+  height: 220px;
+  cursor: grab;
+  touch-action: none;
+}
+.viewer canvas:active {
+  cursor: grabbing;
+}
+.viewer-note {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The auto-rotation is stopped in script; this keeps the frame calm too. */
+  .viewer canvas {
+    height: 180px;
+  }
 }
