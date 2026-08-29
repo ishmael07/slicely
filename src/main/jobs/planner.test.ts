@@ -125,7 +125,13 @@ test("end-to-end with autoOrient: a real (synthetic) STL that needs reorienting 
     // Reoriented flat: height should collapse down toward the plate's 2mm
     // thickness, nowhere near the ~60mm bounding-box guess.
     assert.ok(jobPart.sizeZ < 10, `expected a flat reorientation, got sizeZ=${jobPart.sizeZ}`);
-    assert.ok(job.notes.some((n) => /reoriented/i.test(n)));
+    // The note must say what the pose ACHIEVES — the footprint it puts on the
+    // bed and the height it prints at — rather than the raw rotation angles,
+    // which are not something a reader can judge.
+    const note = job.notes.find((n) => n.includes(path.split("/").pop() ?? ""));
+    assert.ok(note, `expected a note for the part: ${JSON.stringify(job.notes)}`);
+    assert.match(note!, /on the bed|footprint/i, `note should describe the pose: ${note}`);
+    assert.match(note!, /mm tall/i, `note should give the print height: ${note}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

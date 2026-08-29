@@ -167,9 +167,14 @@ export async function planJob(
       total: parts.length,
       partName: name,
     });
-    let sizeX = info.sizeX;
-    let sizeY = info.sizeY;
-    let sizeZ = info.sizeZ;
+    // A scale factor changes the part's real size, so every decision made from
+    // here — bed fit, packing, plate count — has to use the scaled dimensions.
+    // Ignoring it meant a user could scale a part down and still be told it was
+    // too large, with the original footprint reported back at them.
+    const scale = params.scale && params.scale > 0 ? params.scale : 1;
+    let sizeX = info.sizeX * scale;
+    let sizeY = info.sizeY * scale;
+    let sizeZ = info.sizeZ * scale;
     let orientation: JobPart["orientation"];
 
     if (autoOrient) {
@@ -185,14 +190,17 @@ export async function planJob(
         });
         orientation = result.best;
         if (result.keptAsImported) {
-          notes.push(`"${name}": as-imported orientation was already best — kept unrotated.`);
+          const why = result.best.rationale.slice(0, 2).join(" ");
+          notes.push(`"${name}": already in its best orientation. ${why}`.trim());
         } else {
-          sizeX = result.best.sizeX;
-          sizeY = result.best.sizeY;
-          sizeZ = result.best.sizeZ;
-          notes.push(
-            `"${name}": reoriented (X ${result.best.rotXDeg}°, Y ${result.best.rotYDeg}°) — ${result.best.rationale[0] ?? "better pose found"}`,
-          );
+          sizeX = result.best.sizeX * scale;
+          sizeY = result.best.sizeY * scale;
+          sizeZ = result.best.sizeZ * scale;
+          // Two useful sentences: what the pose achieves, and what it means
+          // for supports. The angles themselves are not actionable and were
+          // previously printed twice.
+          const why = result.best.rationale.slice(0, 2).join(" ");
+          notes.push(`"${name}": ${why || "reoriented for a better print."}`);
         }
       } catch (err) {
         notes.push(

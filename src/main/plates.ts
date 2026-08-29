@@ -146,7 +146,7 @@ function packWithOrder(sorted: PlatePart[], bed: BedArea, spacing: number): Plat
   for (const part of sorted) {
     let placed = false;
     for (let i = 0; i < plates.length && !placed; i++) {
-      placed = placeInFree(freeLists[i], plates[i], part, spacing, bed);
+      placed = placeInFree(freeLists[i], plates[i], part, spacing);
     }
     if (!placed) {
       const plate: Plate = { parts: [] };
@@ -166,7 +166,7 @@ function packWithOrder(sorted: PlatePart[], bed: BedArea, spacing: number): Plat
       freeLists.push(free);
       // A part that fits the bed at all must fit an empty plate; if it somehow
       // does not, drop it rather than loop forever.
-      if (!placeInFree(free, plate, part, spacing, bed)) {
+      if (!placeInFree(free, plate, part, spacing)) {
         plates.pop();
         freeLists.pop();
       }
@@ -198,20 +198,16 @@ function placeInFree(
   plate: Plate,
   part: PlatePart,
   spacing: number,
-  bed: BedArea,
 ): boolean {
   let best = -1;
   let bestWaste = Infinity;
   for (let i = 0; i < free.length; i++) {
     const r = free[i];
+    // A part fits if the part fits. Spacing is a gap BETWEEN parts, so it is
+    // taken out of the remainder when the rectangle is split — not demanded up
+    // front. Requiring part + spacing to fit rejected a 198.6mm part from a
+    // 200mm space for a gap no neighbour was ever going to use.
     if (part.w > r.w || part.d > r.d) continue;
-    // The gap only has to be reserved where a neighbour could actually go —
-    // against the bed's own edge there is nothing to keep clear, and demanding
-    // it there would waste a strip of every plate.
-    const atRightEdge = r.x + part.w >= bed.w - BED_MARGIN_MM - 1e-6;
-    const atTopEdge = r.y + part.d >= bed.d - BED_MARGIN_MM - 1e-6;
-    if (!atRightEdge && part.w + spacing > r.w) continue;
-    if (!atTopEdge && part.d + spacing > r.d) continue;
 
     const waste = r.w * r.d - part.w * part.d;
     if (waste < bestWaste) {

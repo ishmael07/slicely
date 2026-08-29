@@ -384,7 +384,9 @@ function endToolChip(tool: string, ok: boolean, summary?: string): void {
     chip.classList.add("err");
     icon.textContent = "✕";
     const label = chip.querySelector("span:last-child");
-    if (label) label.textContent = summary ? `Failed: ${summary}` : "Failed";
+    if (label) {
+      label.textContent = summary ? friendlyError(summary).what : "That didn't work.";
+    }
   } else {
     icon.textContent = "✓";
   }
@@ -831,15 +833,68 @@ function updatePlate(job: PrintJob, index: number, fn: (p: JobPlate) => JobPlate
   return { ...job, plates: job.plates.map((p) => (p.index === index ? fn(p) : p)) };
 }
 
+/**
+ * Turn a raw failure into something the reader can act on.
+ *
+ * Slicer and pipeline errors are written for a log: "Slicing failed: exit -1"
+ * tells a user nothing, and the long over-packed message reads as a wall when
+ * squeezed into a row. Each case below gives the cause in one line and the fix
+ * in the next, and anything unrecognised is passed through rather than hidden.
+ */
+function friendlyError(raw: string): { what: string; fix?: string } {
+  const e = raw.toLowerCase();
+  if (e.includes("nothing landed on the bed") || e.includes("over-packed")) {
+    return {
+      what: "Nothing fit on this plate.",
+      fix: "Scale the parts down, print fewer copies, or choose a printer with a bigger bed.",
+    };
+  }
+  if (e.includes("too large") || e.includes("outside the print volume")) {
+    return {
+      what: "This part is bigger than the printer's bed.",
+      fix: "Scale it down or split the model into pieces.",
+    };
+  }
+  if (e.includes("exit -1") || e.includes("slicing failed")) {
+    return {
+      what: "PrusaSlicer couldn't slice this plate.",
+      fix: "Often a mesh problem — try opening it in PrusaSlicer to check for errors.",
+    };
+  }
+  if (e.includes("model file not found") || e.includes("enoent")) {
+    return { what: "The model file is missing.", fix: "Re-import or upload it and try again." };
+  }
+  if (e.includes("not installed") || e.includes("prusaslicer")) {
+    return {
+      what: "PrusaSlicer isn't available.",
+      fix: "Install it, then reload — search and import still work without it.",
+    };
+  }
+  if (e.includes("cancelled")) return { what: "Cancelled." };
+  return { what: raw };
+}
+
+/** A readable failure block: what happened, then what to do about it. */
+function errorBlock(raw: string): HTMLElement {
+  const { what, fix } = friendlyError(raw);
+  const box = make("div", "err-block");
+  box.appendChild(makeText("div", "err-what", what));
+  if (fix) box.appendChild(makeText("div", "err-fix", fix));
+  return box;
+}
+
 function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElement {
   const row = make("div", "plate-row");
   row.appendChild(make("span", `status-dot ${plate.status}`));
   const label = make("div", "label");
   label.appendChild(makeText("div", "name", `Plate ${plate.index} — ${plate.parts.length} part(s)`));
+  // A failed plate gets its own block below, not a raw error crammed into the
+  // one-line summary where it wraps into an unreadable slab.
   const sub = plate.metrics?.estimatedPrintTime
     ? `${plate.status} · ${plate.metrics.estimatedPrintTime}${plate.metrics.filamentUsedG !== undefined ? ` · ${plate.metrics.filamentUsedG.toFixed(1)} g` : ""}`
-    : (plate.error ?? plate.status);
+    : plate.status;
   label.appendChild(makeText("div", "sub", sub));
+  if (plate.status === "failed" && plate.error) label.appendChild(errorBlock(plate.error));
   row.appendChild(label);
   if (gcodeId) {
     const btns = make("div", "btns");
@@ -889,7 +944,23 @@ function createJobPanel(initial: WireJob): JobPanel {
       );
     }
     if (job.notes.length > 0) {
-      panel.appendChild(makeText("div", "fix-note", job.notes.join(" ")));
+      // One line per note. Joined with spaces these ran together into a wall
+      // of text where nothing could be picked out — and per-part orientation
+      // notes are exactly the kind of thing a reader scans rather than reads.
+      const details = document.createElement("details");
+      details.className = "job-notes";
+      const summary = document.createElement("summary");
+      summary.textContent =
+        job.notes.length === 1 ? "1 note" : `${job.notes.length} notes about this plan`;
+      details.appendChild(summary);
+      const ul = document.createElement("ul");
+      for (const note of job.notes) {
+        const li = document.createElement("li");
+        li.textContent = note;
+        ul.appendChild(li);
+      }
+      details.appendChild(ul);
+      panel.appendChild(details);
     }
 
     if (job.status === "planned" || job.status === "failed") {

@@ -426,14 +426,18 @@ function buildRationale(c: CandidateMetrics, goal: PrintGoal, ctx: RationaleCtx)
     );
   }
 
+  // Lead with WHAT THE POSE ACHIEVES, not the angles used to get there. This
+  // line is what the job summary shows, and "Rotated X 90°, Y 0° from the
+  // imported pose" tells the reader nothing they can judge — the footprint it
+  // puts on the bed and the height it prints at are the decision.
+  const footprint = `${fmt(c.sizeX)} x ${fmt(c.sizeY)} mm`;
+  const height = `${fmt(c.sizeZ)} mm tall`;
   if (c.rotXDeg === 0 && c.rotYDeg === 0 && c.rotZDeg === 0) {
-    out.push("As imported — no rotation applied.");
+    out.push(`Kept as modelled — ${footprint} footprint, ${height}.`);
   } else if (c.source === "flat-face" && c.faceAreaMm2) {
-    out.push(
-      `Lays a ${fmt(estimateFaceSide(c.faceAreaMm2))} mm² flat face on the bed (rotated X ${c.rotXDeg}°, Y ${c.rotYDeg}°).`,
-    );
+    out.push(`Laid a flat face down — ${footprint} footprint, ${height}.`);
   } else {
-    out.push(`Rotated X ${c.rotXDeg}°, Y ${c.rotYDeg}° from the imported pose.`);
+    out.push(`Turned to sit ${footprint} on the bed, ${height}.`);
   }
 
   if (c.overhangAreaMm2 < 1) {
@@ -465,10 +469,6 @@ function buildRationale(c: CandidateMetrics, goal: PrintGoal, ctx: RationaleCtx)
   }
 
   return out;
-}
-
-function estimateFaceSide(areaMm2: number): number {
-  return Math.round(Math.sqrt(areaMm2));
 }
 
 function clamp(n: number, lo: number, hi: number): number {

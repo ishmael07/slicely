@@ -185,3 +185,43 @@ test("planning reports each stage, and each part as it is worked on", async () =
   assert.ok(orderOf("orienting") < orderOf("colouring"));
   assert.ok(orderOf("colouring") < orderOf("packing"));
 });
+
+test("a scale factor changes the dimensions every later decision uses", async () => {
+  const { planJob } = await import("./index");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { buildBoxTriangles, trianglesToBinaryStl } = await import("./testFixtures");
+
+  const dir = mkdtempSync(join(tmpdir(), "slicely-scale-"));
+  const p = join(dir, "bar.stl");
+  // Wider than the usable bed at full size, comfortably inside it at half.
+  writeFileSync(p, trianglesToBinaryStl(buildBoxTriangles(260, 80, 20)));
+
+  try {
+    const full = await planJob([{ path: p, copies: 1 }], {
+      bed: { x: 250, y: 210, z: 210 },
+      maxHeightMm: 210,
+      goal: "draft",
+      autoOrient: false,
+    });
+    assert.equal(full.plates.length, 0, "260mm does not fit a 250mm bed");
+    assert.equal(full.oversized?.length, 1);
+
+    const half = await planJob([{ path: p, copies: 1 }], {
+      bed: { x: 250, y: 210, z: 210 },
+      maxHeightMm: 210,
+      goal: "draft",
+      autoOrient: false,
+      params: { scale: 0.5 },
+    });
+    assert.equal(half.plates.length, 1, "scaling to 50% must actually make it fit");
+    const part = half.plates[0].parts[0];
+    assert.ok(
+      Math.abs(part.sizeX - 130) < 1,
+      `scaled dimensions must be used downstream, got ${part.sizeX}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

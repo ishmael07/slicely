@@ -111,6 +111,21 @@ export async function runJob(
     // JobEvent has no dedicated "cancelled" variant; job_failed is the
     // closest terminal signal a listener can rely on to stop waiting.
     emit({ type: "job_failed", jobId: job.id, error: "Cancelled by user." });
+  } else if (job.plates.length === 0) {
+    // Nothing was ever placed — every part was too big for the bed. Reporting
+    // "ready" here was actively misleading: it claimed success for a job that
+    // produced no G-code at all.
+    job.status = "failed";
+    const names = (job.oversized ?? []).map((p) => p.name).join(", ");
+    emit({
+      type: "job_failed",
+      jobId: job.id,
+      error: names
+        ? `Nothing could be placed: ${names} ${
+            (job.oversized ?? []).length === 1 ? "is" : "are"
+          } too large for this printer's bed. Scale down, split the model, or pick a bigger printer.`
+        : "Nothing could be placed on a plate.",
+    });
   } else if (anyFailed) {
     const failedCount = job.plates.filter((p) => p.status === "failed").length;
     job.status = "failed";
@@ -257,21 +272,34 @@ function applyColourBands(plate: JobPlate, job: PrintJob, metrics: SliceMetrics)
  * they stay correct, and recomputing risks flipping any that were already
  * inward-facing in the source file.
  */
-function orientedTriangles(triangles: Triangle[], part: JobPart): Triangle[] {
+function orientedTriangles(
+  triangles: Triangle[],
+  part: JobPart,
+  scale?: number,
+): Triangle[] {
   const o = part.orientation;
   const m =
     o && (o.rotXDeg !== 0 || o.rotYDeg !== 0 || o.rotZDeg !== 0)
       ? eulerToMatrix(o.rotXDeg, o.rotYDeg, o.rotZDeg)
       : undefined;
 
-  const placed = m
-    ? triangles.map((t) => ({
-        a: matVec(m, t.a),
-        b: matVec(m, t.b),
-        c: matVec(m, t.c),
-        normal: matVec(m, t.normal),
-      }))
-    : triangles;
+  // Scale is applied to the GEOMETRY as well as to the sizes the planner packs
+  // with. Scaling only the numbers would lay out a plate for a part the slicer
+  // never receives.
+  const k = scale && scale > 0 ? scale : 1;
+  const put = (v: { x: number; y: number; z: number }) =>
+    m ? matVec(m, { x: v.x * k, y: v.y * k, z: v.z * k }) : { x: v.x * k, y: v.y * k, z: v.z * k };
+
+  const placed =
+    m || k !== 1
+      ? triangles.map((t) => ({
+          a: put(t.a),
+          b: put(t.b),
+          c: put(t.c),
+          // Scaling uniformly leaves directions unchanged; only rotation matters.
+          normal: m ? matVec(m, t.normal) : t.normal,
+        }))
+      : triangles;
 
   // Move the result to a known origin: centred in XY, sitting ON the bed.
   //
@@ -351,7 +379,7 @@ async function sliceMultiMaterialPlate(
     // ORIGINAL geometry while the packer laid the plate out using the ROTATED
     // footprint, so parts sit on a bed they don't actually fit — the
     // orientation pass was reported to the user and then thrown away.
-    const triangles = orientedTriangles(mesh.triangles, part);
+    const triangles = orientedTriangles(mesh.triangles, part, job.params.scale);
     for (let copy = 0; copy < part.copies; copy++) {
       const at = part.placements?.[copy];
       // The geometry is centred on the origin, so a lower-left footprint

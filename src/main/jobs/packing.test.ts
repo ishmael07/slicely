@@ -82,3 +82,30 @@ test("packing never loses a part", () => {
   const placed = plates.reduce((n, p) => n + p.parts.length, 0);
   assert.equal(placed + oversized.length, mixed.length);
 });
+
+test("a part fits a space its own size — spacing is not demanded up front", () => {
+  // Spacing is a gap BETWEEN parts, taken from the remainder when a rectangle
+  // is split. Requiring part+spacing to fit rejected a 198.6mm part from a
+  // 200mm space for a gap no neighbour was going to use, and reported a
+  // scaled-down part as unplaceable.
+  const usable: PlatePart[] = [{ path: "/tight.stl", w: 198.6, d: 77.2 }];
+  const { plates, oversized } = packPlates(usable, { w: 220, d: 220 }, 6);
+  assert.equal(oversized.length, 0);
+  assert.equal(plates.length, 1, "198.6mm fits the 200mm usable width");
+});
+
+test("two parts on one plate still keep a gap between them", () => {
+  const pair: PlatePart[] = [
+    { path: "/a.stl", w: 90, d: 90 },
+    { path: "/b.stl", w: 90, d: 90 },
+  ];
+  const { plates } = packPlates(pair, { w: 250, d: 210 }, 6);
+  assert.equal(plates.length, 1);
+  const [a, b] = plates[0].parts;
+  const gapX = Math.max(a.x! - (b.x! + b.w), b.x! - (a.x! + a.w));
+  const gapY = Math.max(a.y! - (b.y! + b.d), b.y! - (a.y! + a.d));
+  assert.ok(
+    Math.max(gapX, gapY) >= 5,
+    `parts should be separated by roughly the spacing, got ${Math.max(gapX, gapY)}`,
+  );
+});
