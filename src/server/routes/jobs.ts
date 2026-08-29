@@ -71,6 +71,12 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     // in the order the job façade emitted them — chain each relocate+write
     // onto the previous one rather than firing them off independently, which
     // could otherwise reorder frames if one rename happens to finish first.
+    // Same long-silence problem as /api/chat: a plate can take minutes, and a
+    // silent stream gets treated as dead by browsers and proxies.
+    const keepAlive = setInterval(() => {
+      if (!res.writableEnded) res.write(": keep-alive\n\n");
+    }, 10_000);
+
     let chain: Promise<void> = Promise.resolve();
     const onEvent = (event: JobEvent) => {
       chain = chain
@@ -100,6 +106,7 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
         })}\n\n`,
       );
     } finally {
+      clearInterval(keepAlive);
       session.lastActiveAt = Date.now();
       res.end();
     }

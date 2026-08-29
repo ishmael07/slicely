@@ -231,7 +231,9 @@ export async function planJob(
     p.extruder = a.extruder;
     p.colourHex = a.colourHex;
   });
-  notes.push(...colourPlan.warnings);
+  // Colour warnings live on colourPlan and are surfaced from there — by the UI
+  // with a paint icon, and by the plan_job tool as "Colour notes". Copying them
+  // into `notes` as well showed every one of them twice.
 
   // ── 6a. Height-oversized parts never reach the packer ───────────────────
   const maxHeightMm = opts.maxHeightMm;

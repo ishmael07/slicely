@@ -18,6 +18,10 @@ import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
 import { loadChats, saveChats, newChat, appendTurn } from "../chats";
 
+/** How often to poke a silent stream. Comfortably under the ~30s idle timeout
+ *  common in browsers and reverse proxies. */
+const KEEP_ALIVE_MS = 10_000;
+
 function writeSse(res: Response, wire: Record<string, unknown>): void {
   res.write(`data: ${JSON.stringify(wire)}\n\n`);
 }
@@ -85,6 +89,18 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
     session.busy = true;
     const { emit, flush } = makeEmit(session, res);
 
+    // Keep the stream alive through long silences.
+    //
+    // Slicing a plate can take 20 seconds or several minutes, during which the
+    // turn emits nothing. A browser (and any proxy in front of it) can treat a
+    // silent stream as dead and stop reading, which is exactly what happened:
+    // the server finished the turn and saved the reply, while the page sat on
+    // "Slicing plate 1…" forever. A comment line is ignored by the SSE parser
+    // and costs nothing.
+    const keepAlive = setInterval(() => {
+      if (!res.writableEnded) res.write(": keep-alive\n\n");
+    }, KEEP_ALIVE_MS);
+
     // Cancel the turn when the BROWSER goes away — listen on `res`, never on
     // `req`. An IncomingMessage emits "close" as soon as its body has been
     // fully read (Node >= 16), which body-parser does before this handler even
@@ -133,6 +149,7 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
       emit({ type: "error", message: (err as Error).message ?? String(err) });
       emit({ type: "done" });
     } finally {
+      clearInterval(keepAlive);
       turnFinished = true;
       await flush();
       session.busy = false;
