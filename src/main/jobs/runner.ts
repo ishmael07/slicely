@@ -15,14 +15,16 @@
 // already have the exact per-plate copy counts, we expand them ourselves
 // into a flat, correctly-repeated input list.
 
-import type { JobEvent, JobPlate, PrintJob } from "../../shared/jobs";
+import type { JobEvent, JobPart, JobPlate, PrintJob } from "../../shared/jobs";
 import type { SliceMetrics, SliceParams, PrintMaterial } from "../../shared/types";
 import { slice } from "../prusaslicer";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseMesh } from "./mesh";
+import { parseMesh, type Triangle } from "./mesh";
+import { eulerToMatrix, matVec } from "./vec3";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
 import { synthesizeMultiMaterialConfig, distinctExtruders } from "./multimaterial";
+import { synthesizeConfigForGeometry } from "../profiles";
 import { insertColourChanges, bandsToChanges } from "./colourchange";
 
 /** Job ids with a cancellation request in flight. Checked between plates
@@ -181,7 +183,21 @@ async function sliceOnePlate(
     merge: job.params.merge,
   };
 
-  return doSlice(primary.path, params, undefined, outNameFor(plate));
+  // Slice against the JOB's printer, not PrusaSlicer's built-in default.
+  //
+  // This passed `undefined` for the config, so a single-part plate was sliced
+  // against the stock 250x210 bed no matter which printer the user picked. A
+  // 255mm part on a chosen 325x320 H2D bed was rejected with "nothing landed
+  // on the bed" — the part fit the real printer perfectly.
+  const configIni = job.bed
+    ? synthesizeConfigForGeometry(
+        "Slicely job printer",
+        job.bed,
+        job.params.nozzleDiameterMm ?? 0.4,
+        job.material ?? "PLA",
+      ).path
+    : undefined;
+  return doSlice(primary.path, params, configIni, outNameFor(plate));
 }
 
 /**
@@ -230,6 +246,67 @@ function applyColourBands(plate: JobPlate, job: PrintJob, metrics: SliceMetrics)
   }
 }
 
+/**
+ * Apply a part's chosen orientation to its geometry.
+ *
+ * The planner picks a pose, reports it, and packs the plate using the rotated
+ * footprint — so the geometry handed to the slicer has to match, or the layout
+ * describes a plate that was never built.
+ *
+ * Normals are rotated too rather than recomputed: the rotation is rigid, so
+ * they stay correct, and recomputing risks flipping any that were already
+ * inward-facing in the source file.
+ */
+function orientedTriangles(triangles: Triangle[], part: JobPart): Triangle[] {
+  const o = part.orientation;
+  const m =
+    o && (o.rotXDeg !== 0 || o.rotYDeg !== 0 || o.rotZDeg !== 0)
+      ? eulerToMatrix(o.rotXDeg, o.rotYDeg, o.rotZDeg)
+      : undefined;
+
+  const placed = m
+    ? triangles.map((t) => ({
+        a: matVec(m, t.a),
+        b: matVec(m, t.b),
+        c: matVec(m, t.c),
+        normal: matVec(m, t.normal),
+      }))
+    : triangles;
+
+  // Move the result to a known origin: centred in XY, sitting ON the bed.
+  //
+  // A model's own coordinates are arbitrary — this part's bounding box starts
+  // at x=-54, y=-24 — and rotating moves them somewhere else again. The plate
+  // layout positions each object by its centre, so without this the offsets
+  // are applied to geometry that is already somewhere else entirely and every
+  // part lands off the bed ("nothing landed on the bed").
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+  for (const t of placed) {
+    for (const v of [t.a, t.b, t.c]) {
+      if (v.x < minX) minX = v.x;
+      if (v.y < minY) minY = v.y;
+      if (v.z < minZ) minZ = v.z;
+      if (v.x > maxX) maxX = v.x;
+      if (v.y > maxY) maxY = v.y;
+    }
+  }
+  const dx = -(minX + maxX) / 2;
+  const dy = -(minY + maxY) / 2;
+  const dz = -minZ;
+  const shift = (v: { x: number; y: number; z: number }) => ({
+    x: v.x + dx,
+    y: v.y + dy,
+    z: v.z + dz,
+  });
+  return placed.map((t) => ({
+    a: shift(t.a),
+    b: shift(t.b),
+    c: shift(t.c),
+    normal: t.normal,
+  }));
+}
+
 function outNameFor(plate: JobPlate): string {
   return `plate-${plate.index}`;
 }
@@ -263,29 +340,32 @@ async function sliceMultiMaterialPlate(
     if (!colours[i]) colours[i] = "#FFFFFF";
   }
 
-  // Lay instances out in rows, wrapping when the bed runs out of width.
-  const GAP = 8;
-  const MARGIN = 15;
+  // Place each instance where the PACKER put it. That layout is the one proven
+  // to fit; re-deriving positions here with a second algorithm is how a plate
+  // ends up describing an arrangement that was never checked.
   const threeMfParts: ThreeMfPart[] = [];
-  let x = MARGIN;
-  let y = MARGIN;
-  let rowDepth = 0;
+  let fallbackX = 10;
   for (const part of plate.parts) {
     const mesh = await parseMesh(part.path);
+    // Apply the pose the planner chose. Without this the 3MF carries the
+    // ORIGINAL geometry while the packer laid the plate out using the ROTATED
+    // footprint, so parts sit on a bed they don't actually fit — the
+    // orientation pass was reported to the user and then thrown away.
+    const triangles = orientedTriangles(mesh.triangles, part);
     for (let copy = 0; copy < part.copies; copy++) {
-      if (x + part.sizeX > bed.x - MARGIN && rowDepth > 0) {
-        x = MARGIN;
-        y += rowDepth + GAP;
-        rowDepth = 0;
-      }
+      const at = part.placements?.[copy];
+      // The geometry is centred on the origin, so a lower-left footprint
+      // corner becomes a centre by adding half the part's size.
+      const centre = at
+        ? { x: at.x + part.sizeX / 2, y: at.y + part.sizeY / 2 }
+        : { x: fallbackX + part.sizeX / 2, y: bed.y / 2 };
+      if (!at) fallbackX += part.sizeX + 8;
       threeMfParts.push({
         path: part.path,
-        triangles: mesh.triangles,
+        triangles,
         extruder: part.extruder ?? 1,
-        offset: { x: x + part.sizeX / 2, y: y + part.sizeY / 2, z: 0 },
+        offset: { x: centre.x, y: centre.y, z: 0 },
       });
-      x += part.sizeX + GAP;
-      rowDepth = Math.max(rowDepth, part.sizeY);
     }
   }
 

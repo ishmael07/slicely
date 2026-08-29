@@ -25,6 +25,14 @@ export interface PlatePart {
   /** Footprint width/depth in mm (the larger two of the bounding box). */
   w: number;
   d: number;
+  /** Where the packer put it: the footprint's lower-left corner, in mm from
+   *  the bed's origin. Set by packPlates.
+   *
+   *  This exists so ONE algorithm decides layout. Previously the packer chose
+   *  which parts shared a plate and the 3MF writer independently chose where
+   *  they sat, so the two could disagree about whether a plate actually fit. */
+  x?: number;
+  y?: number;
 }
 
 /** A usable bed area in mm (build volume minus a safety margin). */
@@ -48,6 +56,11 @@ export interface PackResult {
  *  min_object_distance default (duplicate_distance = 6 mm). Callers should pass
  *  the profile-derived spacing instead of relying on this. */
 export const DEFAULT_SPACING = 6;
+
+/** Clearance kept between the outermost part and the bed edge, in mm.
+ *  PrusaSlicer draws the skirt and brim outside the objects, so a part flush
+ *  against the edge puts that outline off the bed. */
+const BED_MARGIN_MM = 10;
 
 /**
  * Pack parts onto as few plates as possible using a first-fit shelf algorithm.
@@ -75,97 +88,154 @@ export function packPlates(
     return ok;
   });
 
-  // Largest footprint first packs more tightly.
-  const sorted = [...fits].sort(
-    (a, b) => Math.max(b.w, b.d) - Math.max(a.w, a.d),
-  );
+  // Try several orderings and keep whichever needs the fewest plates.
+  //
+  // The shelf packer's result depends entirely on the order parts arrive in,
+  // and no single ordering is best. On a real job — two 255x99 stand halves and
+  // one 24x269 bar on a 325x320 bed — longest-side-first put the long bar on a
+  // shelf with one stand half, leaving a shelf too shallow for the second, and
+  // split a job that fits ONE plate across two. Sorting by depth groups the two
+  // equal-depth halves onto the same shelf and everything fits.
+  //
+  // Each ordering is a linear pass over a handful of parts, so trying four
+  // costs nothing measurable and removes the worst outcomes.
+  const ORDERINGS: Array<(a: PlatePart, b: PlatePart) => number> = [
+    (a, b) => b.d - a.d || b.w - a.w, // deepest first — groups equal depths
+    (a, b) => b.w - a.w || b.d - a.d, // widest first
+    (a, b) => b.w * b.d - a.w * a.d, // biggest area first
+    (a, b) => Math.max(b.w, b.d) - Math.max(a.w, a.d), // longest side first
+  ];
 
-  const plates: Plate[] = [];
-  for (const part of sorted) {
-    let placed = false;
-    for (const plate of plates) {
-      if (placeOnPlate(plate, part, bed.w, bed.d, spacing)) {
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      const plate: Plate = { parts: [] };
-      placeOnPlate(plate, part, bed.w, bed.d, spacing); // fits (passed `fits`)
-      plates.push(plate);
-    }
+  let best: Plate[] | undefined;
+  for (const compare of ORDERINGS) {
+    const attempt = packWithOrder([...fits].sort(compare), bed, spacing);
+    if (!best || attempt.length < best.length) best = attempt;
+    if (best.length === 1) break; // cannot do better than one plate
   }
 
-  return { plates, oversized };
+  return { plates: best ?? [], oversized };
 }
 
-/** True if the part fits the bed in its AS-IMPORTED orientation. PrusaSlicer's
- *  CLI arranger does not rotate parts, so we must NOT credit a 90° turn the
- *  slicer would never make — a part that fits only rotated is oversized. No
- *  inter-part spacing applies to the oversized check (it's a bed-fit test). */
+/** True if the part fits the bed in its AS-IMPORTED orientation. Parts are
+ *  never rotated here — the pose is the orientation pass's decision, and
+ *  re-spinning a part to make it fit would contradict what was reported to the
+ *  user and what the geometry handed to the slicer actually is. */
 function fitsAsImported(p: PlatePart, bedW: number, bedD: number): boolean {
-  return p.w <= bedW && p.d <= bedD;
+  // Against the USABLE area, since that is where a part can actually be placed.
+  return p.w <= bedW - 2 * BED_MARGIN_MM && p.d <= bedD - 2 * BED_MARGIN_MM;
 }
 
 /**
- * Try to add `part` to `plate` using a shelf model: track shelves as rows that
- * grow downward. `spacing` is the gap left BETWEEN parts on a shelf and BETWEEN
- * shelves (not against the bed edge). Parts are placed WITHOUT rotation so the
- * grouping matches PrusaSlicer's un-rotated arrange (which would otherwise drop
- * a part that only "fit" rotated).
+ * One packing pass over parts in the order given, placing each at a concrete
+ * position.
+ *
+ * Uses a free-rectangle model rather than shelves. Shelves force parts into
+ * full-width rows, which fails badly on mixed shapes: two 255x99 stand halves
+ * and one 24x269 bar fit easily side by side on a 325x320 bed, but any shelf
+ * ordering wastes a whole row on the deep bar and splits the job across two
+ * plates. Free rectangles let a tall narrow part sit BESIDE a stack of short
+ * wide ones, which is what a person would do.
+ *
+ * Parts are never rotated, matching the rest of this module: the pose is the
+ * orientation pass's decision, and re-spinning a part here would contradict it.
  */
-function placeOnPlate(
+function packWithOrder(sorted: PlatePart[], bed: BedArea, spacing: number): Plate[] {
+  const plates: Plate[] = [];
+  const freeLists: Rect[][] = [];
+
+  for (const part of sorted) {
+    let placed = false;
+    for (let i = 0; i < plates.length && !placed; i++) {
+      placed = placeInFree(freeLists[i], plates[i], part, spacing, bed);
+    }
+    if (!placed) {
+      const plate: Plate = { parts: [] };
+      // Keep clear of the bed edge. Parts are now placed at explicit
+      // coordinates rather than left to PrusaSlicer's arranger, and the slicer
+      // draws a skirt/brim AROUND the objects — packing flush to (0,0) pushed
+      // the toolpath to X-7 Y-7, i.e. off the bed.
+      const free: Rect[] = [
+        {
+          x: BED_MARGIN_MM,
+          y: BED_MARGIN_MM,
+          w: Math.max(0, bed.w - 2 * BED_MARGIN_MM),
+          d: Math.max(0, bed.d - 2 * BED_MARGIN_MM),
+        },
+      ];
+      plates.push(plate);
+      freeLists.push(free);
+      // A part that fits the bed at all must fit an empty plate; if it somehow
+      // does not, drop it rather than loop forever.
+      if (!placeInFree(free, plate, part, spacing, bed)) {
+        plates.pop();
+        freeLists.pop();
+      }
+    }
+  }
+  return plates;
+}
+
+/** A free area on the bed. */
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+}
+
+/**
+ * Place a part in the best free rectangle, then split what remains.
+ *
+ * "Best" is the tightest fit by leftover area, which keeps large open regions
+ * intact for the parts still to come.
+ *
+ * `spacing` is reserved on the part's top and right, so neighbours never touch:
+ * the gap belongs to whichever part is placed first, and the bed edge needs no
+ * margin (PrusaSlicer's arranger uses distance_from_bed = 0).
+ */
+function placeInFree(
+  free: Rect[],
   plate: Plate,
   part: PlatePart,
-  bedW: number,
-  bedD: number,
   spacing: number,
+  bed: BedArea,
 ): boolean {
-  // Reconstruct shelves from already-placed parts (small N, so recompute).
-  const shelves = buildShelves(plate.parts, bedW, spacing);
+  let best = -1;
+  let bestWaste = Infinity;
+  for (let i = 0; i < free.length; i++) {
+    const r = free[i];
+    if (part.w > r.w || part.d > r.d) continue;
+    // The gap only has to be reserved where a neighbour could actually go —
+    // against the bed's own edge there is nothing to keep clear, and demanding
+    // it there would waste a strip of every plate.
+    const atRightEdge = r.x + part.w >= bed.w - BED_MARGIN_MM - 1e-6;
+    const atTopEdge = r.y + part.d >= bed.d - BED_MARGIN_MM - 1e-6;
+    if (!atRightEdge && part.w + spacing > r.w) continue;
+    if (!atTopEdge && part.d + spacing > r.d) continue;
 
-  for (const shelf of shelves) {
-    // Add to this shelf if there's room widthwise (gap before this part) and the
-    // part is no taller than the shelf band.
-    const needW = shelf.usedW > 0 ? spacing + part.w : part.w;
-    if (shelf.usedW + needW <= bedW && part.d <= shelf.height) {
-      plate.parts.push(part);
-      return true;
+    const waste = r.w * r.d - part.w * part.d;
+    if (waste < bestWaste) {
+      bestWaste = waste;
+      best = i;
     }
   }
+  if (best < 0) return false;
 
-  // New shelf below the existing ones (gap before the new shelf if any exist).
-  const occupiedH =
-    shelves.reduce((s, sh) => s + sh.height, 0) +
-    Math.max(0, shelves.length - 1) * spacing;
-  const needH = shelves.length > 0 ? spacing + part.d : part.d;
-  if (occupiedH + needH <= bedD && part.w <= bedW) {
-    plate.parts.push(part);
-    return true;
+  const r = free[best];
+  const placedPart: PlatePart = { ...part, x: r.x, y: r.y };
+  plate.parts.push(placedPart);
+
+  // Guillotine split: the strip to the right, and the strip above.
+  const usedW = Math.min(r.w, part.w + spacing);
+  const usedD = Math.min(r.d, part.d + spacing);
+  const remainder: Rect[] = [];
+  if (r.w - usedW > 0) {
+    remainder.push({ x: r.x + usedW, y: r.y, w: r.w - usedW, d: r.d });
   }
-
-  return false;
-}
-
-interface Shelf {
-  usedW: number;
-  height: number;
-}
-
-/** Greedily reconstruct shelves for the parts already on a plate. `usedW` is the
- *  occupied width including inter-part gaps; `height` is the tallest part on the
- *  shelf (its depth band). */
-function buildShelves(parts: PlatePart[], bedW: number, spacing: number): Shelf[] {
-  const shelves: Shelf[] = [];
-  for (const p of parts) {
-    const shelf = shelves[shelves.length - 1];
-    const needW = shelf && shelf.usedW > 0 ? spacing + p.w : p.w;
-    if (shelf && shelf.usedW + needW <= bedW) {
-      shelf.usedW += needW;
-      shelf.height = Math.max(shelf.height, p.d);
-    } else {
-      shelves.push({ usedW: p.w, height: p.d });
-    }
+  if (r.d - usedD > 0) {
+    remainder.push({ x: r.x, y: r.y + usedD, w: usedW, d: r.d - usedD });
   }
-  return shelves;
+  free.splice(best, 1, ...remainder);
+  return true;
 }
+

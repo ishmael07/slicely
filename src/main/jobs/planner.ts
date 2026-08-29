@@ -305,9 +305,20 @@ export async function planJob(
   const jobPlates: JobPlate[] = packedPlates.map((plate, i) => {
     const counts = new Map<string, number>();
     for (const pp of plate.parts) counts.set(pp.path, (counts.get(pp.path) ?? 0) + 1);
+    // Keep the packer's chosen positions, one entry per placed instance, so
+    // the 3MF places parts exactly where the plate was proven to fit. Two
+    // separate layout algorithms (one deciding grouping, one deciding
+    // positions) could disagree about whether a plate actually fits.
+    const placements = new Map<string, Array<{ x: number; y: number }>>();
+    for (const pp of plate.parts) {
+      const list = placements.get(pp.path) ?? [];
+      if (pp.x !== undefined && pp.y !== undefined) list.push({ x: pp.x, y: pp.y });
+      placements.set(pp.path, list);
+    }
     const plateParts: JobPart[] = [...counts.entries()].map(([idx, copies]) => ({
       ...packable[Number(idx)],
       copies,
+      placements: placements.get(idx),
     }));
     const colours = [...new Set(plateParts.map((p) => p.colourHex).filter((c): c is string => !!c))];
     return {

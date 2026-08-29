@@ -4,6 +4,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type {
   AgentEvent,
+  SliceMetrics,
   SliceParams,
   PrintGoal,
   PrintMaterial,
@@ -730,6 +731,49 @@ interface SliceRun {
  * hand-off consistent with what was sliced. Errors for STEP (can't slice a
  * non-mesh headlessly), matching the rest of the pipeline.
  */
+/**
+ * Slice several parts by planning them as a job.
+ *
+ * PrusaSlicer's CLI cannot slice a multi-part plate from a list of STLs: with
+ * --merge it fails (exit -1), and without it every input is re-exported to the
+ * same output so only the last survives. The job pipeline writes one 3MF
+ * containing every object, and orients and packs them on the way.
+ *
+ * Shaped as a PlateSliceResult so the caller's reporting is unchanged.
+ */
+async function sliceViaJobPipeline(
+  paths: string[],
+  params: SliceParams,
+  bed: { x: number; y: number; z: number },
+  emit: Emit,
+): Promise<PlateSliceResult> {
+  const { planJob, runJob } = await import("../jobs");
+  const prefs = getPreferences();
+  const planned = await planJob(
+    paths.map((path) => ({ path, copies: 1 })),
+    {
+      bed,
+      maxHeightMm: bed.z,
+      goal: prefs.goal ?? "quality",
+      material: prefs.material ?? "PLA",
+      params,
+      name: baseStem(paths[0]),
+      onProgress: (p) => {
+        const where = p.partName ? ` ${p.partName}` : "";
+        const counter = p.total > 1 && p.index > 0 ? ` (${p.index} of ${p.total})` : "";
+        emit({ type: "tool_progress", tool: "slice_model", label: `Preparing${where}${counter}…` });
+      },
+    },
+  );
+  const ran = await runJob(planned.id, (ev) => emit({ type: "job_progress", event: ev }));
+  return {
+    plates: ran.plates
+      .map((pl) => pl.metrics)
+      .filter((m): m is SliceMetrics => Boolean(m)),
+    oversized: (ran.oversized ?? []).map((p) => p.path),
+  };
+}
+
 async function runSlice(
   input: Record<string, unknown>,
   emit: Emit,
@@ -788,9 +832,19 @@ async function runSlice(
   const bedDim = resolved.printer?.bed ?? { x: 250, y: 210, z: 210 };
   const bed = { w: bedDim.x, d: bedDim.y };
 
-  // Slice — splitting across multiple plates when parts/copies overflow one bed.
-  const stem = `${baseStem(allParts[0])}${isMultiPart ? "-plate" : ""}`;
-  const job = await slicePlates(allParts, params, bed, resolved.configIni, stem);
+  // Slice. A multi-part plate goes through the JOB pipeline rather than
+  // slicePlates: handing several STLs to PrusaSlicer's CLI fails outright
+  // (exit -1) with --merge and silently keeps only the last part without it.
+  // The job pipeline writes a 3MF holding every object, so the whole plate
+  // slices together — and it also orients each part and packs the plates,
+  // which is what the user wanted from "slice all of these" anyway.
+  let job: PlateSliceResult;
+  if (isMultiPart) {
+    job = await sliceViaJobPipeline(allParts, params, bedDim, emit);
+  } else {
+    const stem = baseStem(allParts[0]);
+    job = await slicePlates(allParts, params, bed, resolved.configIni, stem);
+  }
 
   // Emit one metrics panel per plate.
   for (const m of job.plates) emit({ type: "metrics", metrics: m });

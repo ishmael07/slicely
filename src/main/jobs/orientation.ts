@@ -358,7 +358,16 @@ function evaluateCandidate(
   // e.g. a part lying perfectly flat was scored as if its entire footprint
   // overhung, which is backwards).
   const overhangSin = Math.sin(thresholdRad);
-  const BED_EPS_MM = 1e-3;
+  // How close to the lowest point still counts as touching the bed.
+  //
+  // This was 0.001mm, which no real mesh satisfies: a model's bottom is rarely
+  // planar to a micron, and any small feature slightly lower sets minZ for the
+  // whole part. On a real 269mm laptop-stand bar, a 5,697mm² flat bottom was
+  // counted as OVERHANG rather than bed contact, giving the correct flat pose a
+  // score of 0 — so Slicely stood the bar on end, 224mm tall, on 4.8mm² of
+  // contact. A face within roughly one first layer of the bed is touching it,
+  // and that is the physical question being asked here.
+  const BED_EPS_MM = 0.25;
   let overhangAreaMm2 = 0;
   let bedContactMm2 = 0;
   for (const t of triangles) {

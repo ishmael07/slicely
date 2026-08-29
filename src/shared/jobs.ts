@@ -113,6 +113,10 @@ export interface JobPart {
   extruder?: number;
   /** Per-part slice overrides that beat the job-level params. */
   overrides?: Partial<SliceParams>;
+  /** Where the packer put each instance on the bed, in mm from the origin
+   *  (the footprint's lower-left corner). One entry per copy. The slicer uses
+   *  these directly so grouping and positioning cannot disagree. */
+  placements?: Array<{ x: number; y: number }>;
 }
 
 export type PlateStatus =
