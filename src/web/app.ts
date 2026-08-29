@@ -454,12 +454,42 @@ function renderCards(models: CardLike[]): void {
   scrollToBottom();
 }
 
+/**
+ * Compact licence code, e.g. "CC BY-NC-SA".
+ *
+ * What a user needs at a glance is whether they may use it and whether it is
+ * commercial — not four dash-separated clauses. The full text stays on hover.
+ */
+function shortLicence(raw: string): string {
+  const l = raw.toLowerCase();
+  if (l.includes("public domain") || l.includes("cc0")) return "Public domain";
+  if (l.includes("creative commons") || l.startsWith("cc")) {
+    const parts = ["BY"];
+    if (l.includes("noncommercial") || l.includes("non-commercial") || l.includes("-nc")) {
+      parts.push("NC");
+    }
+    if (l.includes("share alike") || l.includes("sharealike") || l.includes("-sa")) parts.push("SA");
+    if (l.includes("noderiv") || l.includes("-nd")) parts.push("ND");
+    if (!l.includes("attribution") && !l.includes("by")) return "Creative Commons";
+    return `CC ${parts.join("-")}`;
+  }
+  if (l.includes("mit")) return "MIT";
+  if (l.includes("gpl")) return "GPL";
+  if (l.includes("standard digital file")) return "Standard licence";
+  if (l.includes("exclusive")) return "Exclusive licence";
+  // Unknown: keep it short rather than letting it wrap the card.
+  return raw.length > 22 ? `${raw.slice(0, 21)}…` : raw;
+}
+
 function buildCard(m: CardLike): HTMLElement {
   const card = make("div", "card");
   if (m.thumbnail) {
     const img = document.createElement("img");
     img.className = "thumb";
-    img.src = m.thumbnail;
+    // Via the server: several sources set Cross-Origin-Resource-Policy, so the
+    // browser refuses to paint their images in our page and every card would
+    // fall back to a grey placeholder.
+    img.src = `/api/thumb?url=${encodeURIComponent(m.thumbnail)}`;
     img.loading = "lazy";
     img.referrerPolicy = "no-referrer";
     img.onerror = () => img.replaceWith(placeholderThumb());
@@ -478,7 +508,10 @@ function buildCard(m: CardLike): HTMLElement {
     meta.appendChild(makeText("div", "score", `Printability ${Math.round(m.printability.score)}`));
   }
   if (m.license) {
-    const lic = makeText("div", "lic", m.license);
+    // Sources spell licences out in full ("Creative Commons — Attribution —
+    // Noncommercial — Share Alike"), which fills a whole card line, truncates,
+    // and tells the reader nothing they can act on. The short code does.
+    const lic = makeText("div", "lic", shortLicence(m.license));
     lic.title = m.license;
     meta.appendChild(lic);
   }
@@ -509,11 +542,35 @@ function placeholderThumb(): HTMLElement {
  *  thin result list reads as "MakerWorld timed out", not just "not much here". */
 function renderSourcesOutcome(sources: SearchOutcome["sources"] | undefined): void {
   if (!sources || sources.length === 0) return;
+  // Summarise rather than dumping every source's raw error into the
+  // transcript. Which sources CONTRIBUTED is the useful part; a Cloudflare
+  // block is background noise the user can do nothing about, so it collapses
+  // to a count and lives on hover.
   const note = make("div", "sources-note");
-  sources.forEach((s, i) => {
-    if (i > 0) note.appendChild(document.createTextNode(" · "));
-    note.appendChild(makeText("span", s.ok ? "" : "fail", s.ok ? `${s.id} (${s.count})` : `${s.id} ✕${s.error ? ` ${s.error}` : ""}`));
-  });
+  const worked = sources.filter((s) => s.ok && s.count > 0);
+  const failed = sources.filter((s) => !s.ok);
+  const empty = sources.filter((s) => s.ok && s.count === 0);
+
+  const found = worked
+    .slice()
+    .sort((a, b) => b.count - a.count)
+    .map((s) => `${s.id} ${s.count}`)
+    .join(" · ");
+  note.appendChild(makeText("span", "", found || "no sources returned results"));
+
+  if (failed.length > 0 || empty.length > 0) {
+    const quiet = makeText(
+      "span",
+      "fail",
+      ` · ${failed.length + empty.length} source${failed.length + empty.length === 1 ? "" : "s"} had nothing`,
+    );
+    // Full detail stays available without occupying the transcript.
+    quiet.title = [
+      ...failed.map((s) => `${s.id}: ${s.error ?? "failed"}`),
+      ...empty.map((s) => `${s.id}: no matches`),
+    ].join("\n");
+    note.appendChild(quiet);
+  }
   messagesEl.appendChild(note);
   scrollToBottom();
 }
