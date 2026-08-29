@@ -16,6 +16,7 @@ import { SlicelyAgent } from "../../main/agent/agent";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
+import { loadChats, saveChats, newChat, appendTurn } from "../chats";
 
 function writeSse(res: Response, wire: Record<string, unknown>): void {
   res.write(`data: ${JSON.stringify(wire)}\n\n`);
@@ -111,7 +112,15 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
           session.activeModelPaths[session.activeModelPaths.length - 1];
         sessionState.lastModelParts = session.activeModelPaths;
       }
-      await agent.send(message, emit);
+      // Collect the reply so it can be saved with the conversation. The UI
+      // gets it streamed either way; this is only for reopening later.
+      let replyText = "";
+      const emitAndRecord = (event: AgentEvent): void => {
+        if (event.type === "text") replyText += event.text;
+        emit(event);
+      };
+      await agent.send(message, emitAndRecord);
+      recordTurn(session, agent, message, replyText);
       // Pull back whatever the agent imported/downloaded/sliced this turn, so
       // a later turn — or a REST call like /api/slice — keeps working from
       // this session's file.
@@ -139,4 +148,35 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
   });
 
   return router;
+}
+
+/**
+ * Save a completed turn against the session's active chat.
+ *
+ * Both halves are stored: the transcript so it can be redrawn, and the agent's
+ * own history so reopening the chat continues it. Failures here are swallowed —
+ * a conversation that cannot be saved is a lost convenience, not a reason to
+ * fail a reply the user already received.
+ */
+function recordTurn(
+  session: SessionRecord,
+  agent: ChatAgent,
+  message: string,
+  reply: string,
+): void {
+  try {
+    const chats = loadChats(session.dir);
+    let chat = chats.find((c) => c.id === session.activeChatId);
+    if (!chat) {
+      chat = newChat();
+      chats.push(chat);
+      session.activeChatId = chat.id;
+    }
+    appendTurn(chat, { role: "user", text: message });
+    if (reply.trim()) appendTurn(chat, { role: "assistant", text: reply });
+    chat.agentHistory = agent.exportHistory?.() ?? [];
+    saveChats(session.dir, chats);
+  } catch {
+    /* saving history must never break the chat itself */
+  }
 }

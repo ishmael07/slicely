@@ -1731,3 +1731,58 @@ details.thinking summary::-webkit-details-marker {
     height: 180px;
   }
 }
+
+/* ── Chats ──────────────────────────────────────────────────────────────── */
+.chats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.chat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
+}
+.chat-row:hover {
+  background: var(--panel-2);
+  border-color: var(--border-bright);
+}
+.chat-row.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.chat-row .chat-title {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-row .chat-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+.chat-row .chat-del {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.chat-row .chat-del:hover {
+  color: var(--err);
+  background: var(--panel-2);
+}

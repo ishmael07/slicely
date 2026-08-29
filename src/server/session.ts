@@ -70,6 +70,10 @@ export interface GcodeEntry {
 export interface ChatAgent {
   send(message: string, emit: (event: AgentEvent) => void): Promise<void>;
   cancel(): void;
+  /** Clear the model's memory. Optional so a test stub need not implement it. */
+  reset?(): void;
+  exportHistory?(): unknown[];
+  importHistory?(history: unknown[]): void;
 }
 
 export interface SessionRecord {
@@ -97,6 +101,9 @@ export interface SessionRecord {
   /** True while a chat turn is streaming, so a second POST /api/chat from the
    *  same tab is rejected instead of racing the first. */
   busy: boolean;
+  /** Id of the conversation being added to. Chats live on disk (see chats.ts);
+   *  this is just which one new turns belong to. */
+  activeChatId?: string;
 }
 
 /** True when `target` resolves to a path inside (or equal to) `root`. Used

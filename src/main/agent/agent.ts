@@ -75,6 +75,31 @@ export class SlicelyAgent {
     });
   }
 
+  /**
+   * Forget this conversation.
+   *
+   * "New chat" has to clear the MODEL's memory too, not just the transcript on
+   * screen — otherwise the next message still carries every earlier turn, and
+   * the user gets answers about a model they thought they had left behind
+   * (while paying for those tokens on every request).
+   */
+  reset(): void {
+    this.history = [];
+    this.cancelled = false;
+  }
+
+  /** The conversation so far, for storing against a saved chat. */
+  exportHistory(): Anthropic.MessageParam[] {
+    return this.history;
+  }
+
+  /** Restore a previously saved conversation, so reopening a chat continues it
+   *  rather than starting over with the transcript merely redrawn. */
+  importHistory(history: Anthropic.MessageParam[]): void {
+    this.history = history;
+    this.cancelled = false;
+  }
+
   cancel(): void {
     this.cancelled = true;
   }

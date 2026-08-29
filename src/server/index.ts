@@ -22,6 +22,7 @@ import { createModelsRouter } from "./routes/models";
 import { createUploadRouter } from "./routes/upload";
 import { createSliceRouter } from "./routes/slice";
 import { createSettingsRouter } from "./routes/settings";
+import { createChatsRouter } from "./routes/chats";
 import { createPrintersRouter } from "./routes/printers";
 import { createJobsRouter } from "./routes/jobs";
 
@@ -76,6 +77,7 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   api.use(createPrintersRouter());
   api.use(createJobsRouter());
   api.use(createSettingsRouter());
+  api.use(createChatsRouter());
   app.use("/api", api);
 
   app.get("/healthz", (_req: Request, res: Response) => res.json({ ok: true }));

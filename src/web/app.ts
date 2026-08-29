@@ -2097,11 +2097,14 @@ document.addEventListener("keydown", (e) => {
 });
 
 const scrim = byId<HTMLElement>("scrim");
+const chatsSheet = byId<HTMLElement>("chatsSheet");
+const chatsList = byId<HTMLElement>("chatsList");
 
 /** Show exactly one sheet (or none), keeping the scrim in step. */
-function showSheet(which: "settings" | "jobs" | null): void {
+function showSheet(which: "settings" | "jobs" | "chats" | null): void {
   settingsSheet.classList.toggle("hidden", which !== "settings");
   jobsSheet.classList.toggle("hidden", which !== "jobs");
+  chatsSheet.classList.toggle("hidden", which !== "chats");
   scrim.classList.toggle("hidden", which === null);
 }
 
@@ -2122,6 +2125,109 @@ printerPill.addEventListener("click", () => settingsBtn.click());
 
 // Close buttons on each sheet — a sheet that covers the chat needs an obvious
 // way out, not just a second press on the icon that opened it.
+interface ChatSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+  turns: number;
+}
+
+/** Human-friendly age, so the list reads at a glance. */
+function whenLabel(ts: number): string {
+  const mins = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+async function refreshChats(): Promise<void> {
+  chatsList.replaceChildren();
+  try {
+    const data = await getJson<{ chats: ChatSummary[]; activeId?: string }>("/api/chats");
+    if (data.chats.length === 0) {
+      const empty = make("div", "note");
+      empty.textContent = "No saved chats yet. This one will appear here once you send a message.";
+      chatsList.appendChild(empty);
+      return;
+    }
+    for (const c of data.chats) {
+      const row = make("div", "chat-row");
+      if (c.id === data.activeId) row.classList.add("active");
+      row.appendChild(makeText("span", "chat-title", c.title));
+      row.appendChild(makeText("span", "chat-meta", whenLabel(c.updatedAt)));
+      const del = document.createElement("button");
+      del.className = "chat-del";
+      del.textContent = "×";
+      del.title = "Delete this chat";
+      del.onclick = (e) => {
+        e.stopPropagation();
+        void fetch(`/api/chats/${encodeURIComponent(c.id)}`, { method: "DELETE" })
+          .then(() => refreshChats());
+      };
+      row.appendChild(del);
+      row.onclick = () => void openChat(c.id);
+      chatsList.appendChild(row);
+    }
+  } catch {
+    const err = make("div", "note");
+    err.textContent = "Couldn't load your chats.";
+    chatsList.appendChild(err);
+  }
+}
+
+/** Reopen a saved conversation: redraw its turns and continue it. */
+async function openChat(id: string): Promise<void> {
+  try {
+    const chat = await getJson<{ id: string; title: string; turns: Array<{ role: string; text: string }> }>(
+      `/api/chats/${encodeURIComponent(id)}`,
+    );
+    clearTranscript();
+    for (const t of chat.turns) {
+      if (t.role === "user") {
+        addUserMessage(t.text);
+      } else {
+        // Reuse the streaming path so a restored reply gets the same markdown
+        // rendering as a live one, then close the bubble.
+        appendBotText(t.text);
+        endBotBubble();
+      }
+    }
+    showSheet(null);
+    scrollToBottom();
+  } catch {
+    renderError("Couldn't open that chat.");
+  }
+}
+
+/** Empty the visible transcript. The model's memory is cleared server-side. */
+function clearTranscript(): void {
+  messagesEl.replaceChildren();
+  activeChips.clear();
+  seenInfoPaths.clear();
+  endBotBubble();
+}
+
+byId<HTMLButtonElement>("chatsBtn").addEventListener("click", () => {
+  const willOpen = chatsSheet.classList.contains("hidden");
+  showSheet(willOpen ? "chats" : null);
+  if (willOpen) void refreshChats();
+});
+byId<HTMLButtonElement>("chatsClose").addEventListener("click", () => showSheet(null));
+byId<HTMLButtonElement>("newChatBtn").addEventListener("click", () => {
+  void (async () => {
+    try {
+      await postJson("/api/chats", {});
+      clearTranscript();
+      showEmptyState();
+      showSheet(null);
+    } catch {
+      renderError("Couldn't start a new chat.");
+    }
+  })();
+});
+
 byId<HTMLButtonElement>("settingsClose").addEventListener("click", () => showSheet(null));
 byId<HTMLButtonElement>("jobsClose").addEventListener("click", () => showSheet(null));
 document.addEventListener("keydown", (e) => {
