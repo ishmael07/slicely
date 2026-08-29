@@ -2,10 +2,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { thangsProvider } from "./thangs";
 
-test("availability() is search-only and marked best-effort", () => {
-  const a = thangsProvider.availability();
-  assert.equal(a.searchable, true);
-  assert.equal(a.downloadable, false);
+test("availability() is OFF by default — this source is bot-blocked in practice", () => {
+  // Waiting on these engines added ~8s to every search and returned nothing,
+  // so they are opt-in. See net.ts's scrapersEnabled().
+  const prev = process.env.SLICELY_ENABLE_SCRAPERS;
+  delete process.env.SLICELY_ENABLE_SCRAPERS;
+  try {
+    const a = thangsProvider.availability();
+    assert.equal(a.searchable, false);
+    assert.equal(a.downloadable, false);
+    assert.match(a.blockedReason ?? "", /SLICELY_ENABLE_SCRAPERS/);
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_ENABLE_SCRAPERS;
+    else process.env.SLICELY_ENABLE_SCRAPERS = prev;
+  }
+});
+
+test("availability() reports searchable again when explicitly enabled", () => {
+  const prev = process.env.SLICELY_ENABLE_SCRAPERS;
+  process.env.SLICELY_ENABLE_SCRAPERS = "1";
+  try {
+    assert.equal(thangsProvider.availability().searchable, true);
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_ENABLE_SCRAPERS;
+    else process.env.SLICELY_ENABLE_SCRAPERS = prev;
+  }
 });
 
 test("search() parses model links out of a (hypothetical, since the real site blocks bots) results page", async (t) => {

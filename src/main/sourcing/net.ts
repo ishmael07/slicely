@@ -232,3 +232,21 @@ export async function peekBytes(
   }
   return { res, head: Buffer.concat(chunks).subarray(0, maxBytes) };
 }
+
+/**
+ * Are the scraped meta-search engines enabled?
+ *
+ * Thangs, Yeggi, and STLfinder all sit behind bot protection that refuses an
+ * honestly-identified request, so in practice they return nothing. Measured on
+ * a real search: Yeggi alone spent 10,003ms of a 10,265ms search timing out,
+ * while every source that actually works finished inside 1.7 seconds. Leaving
+ * them on costs eight seconds of dead time per search and produces a row of
+ * failures the user can do nothing about.
+ *
+ * They stay in the codebase because the block is theirs, not ours, and may
+ * lift. Set SLICELY_ENABLE_SCRAPERS=1 to try them again.
+ */
+export function scrapersEnabled(): boolean {
+  const flag = (process.env.SLICELY_ENABLE_SCRAPERS ?? "").trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes";
+}

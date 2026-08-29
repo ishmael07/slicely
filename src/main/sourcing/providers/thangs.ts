@@ -19,7 +19,7 @@
 // Thangs' general page conventions (a search results grid of `/3d-model/...`
 // links), not confirmed against real markup.
 import type { SourceAvailability, SourcedModel, SourcePlugin } from "../../../shared/sourcing";
-import { fetchWithUA } from "../net";
+import { fetchWithUA , scrapersEnabled } from "../net";
 import { isBotChallenge } from "./scrape-common";
 import * as cheerio from "cheerio";
 
@@ -34,9 +34,13 @@ export const thangsProvider: SourcePlugin = {
     return {
       id: "thangs",
       label: "Thangs",
-      searchable: true,
+      // Off unless SLICELY_ENABLE_SCRAPERS is set: this source is
+      // bot-blocked in practice and only adds latency. See net.ts.
+      searchable: scrapersEnabled(),
       downloadable: false,
-      blockedReason: "Best-effort scrape — Thangs sits behind Cloudflare and may block automated requests.",
+      blockedReason: scrapersEnabled()
+        ? "Best-effort scrape — Thangs sits behind Cloudflare and may block automated requests."
+        : "Off by default: Thangs sits behind Cloudflare and blocks automated requests. Set SLICELY_ENABLE_SCRAPERS=1 to try it.",
     };
   },
 

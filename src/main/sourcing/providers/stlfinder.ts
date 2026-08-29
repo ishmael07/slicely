@@ -14,7 +14,7 @@
 // below are UNVERIFIED (no real search-results page was ever reached to
 // confirm markup).
 import type { SourceAvailability, SourcedModel, SourcePlugin } from "../../../shared/sourcing";
-import { fetchWithUA } from "../net";
+import { fetchWithUA , scrapersEnabled } from "../net";
 import { isBotChallenge } from "./scrape-common";
 import * as cheerio from "cheerio";
 
@@ -29,9 +29,13 @@ export const stlfinderProvider: SourcePlugin = {
     return {
       id: "stlfinder",
       label: "STLFinder",
-      searchable: true,
+      // Off unless SLICELY_ENABLE_SCRAPERS is set: this source is
+      // bot-blocked in practice and only adds latency. See net.ts.
+      searchable: scrapersEnabled(),
       downloadable: false,
-      blockedReason: "STLfinder's Cloudflare edge blocks non-browser requests outright — best-effort only.",
+      blockedReason: scrapersEnabled()
+        ? "STLfinder's Cloudflare edge blocks non-browser requests outright — best-effort only."
+        : "Off by default: STLfinder's Cloudflare edge blocks non-browser requests outright. Set SLICELY_ENABLE_SCRAPERS=1 to try it.",
     };
   },
 

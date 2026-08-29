@@ -2,10 +2,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stlfinderProvider } from "./stlfinder";
 
-test("availability() is search-only and notes STLfinder's Cloudflare edge block", () => {
-  const a = stlfinderProvider.availability();
-  assert.equal(a.searchable, true);
-  assert.equal(a.downloadable, false);
+test("availability() is OFF by default — this source is bot-blocked in practice", () => {
+  // Waiting on these engines added ~8s to every search and returned nothing,
+  // so they are opt-in. See net.ts's scrapersEnabled().
+  const prev = process.env.SLICELY_ENABLE_SCRAPERS;
+  delete process.env.SLICELY_ENABLE_SCRAPERS;
+  try {
+    const a = stlfinderProvider.availability();
+    assert.equal(a.searchable, false);
+    assert.equal(a.downloadable, false);
+    assert.match(a.blockedReason ?? "", /SLICELY_ENABLE_SCRAPERS/);
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_ENABLE_SCRAPERS;
+    else process.env.SLICELY_ENABLE_SCRAPERS = prev;
+  }
+});
+
+test("availability() reports searchable again when explicitly enabled", () => {
+  const prev = process.env.SLICELY_ENABLE_SCRAPERS;
+  process.env.SLICELY_ENABLE_SCRAPERS = "1";
+  try {
+    assert.equal(stlfinderProvider.availability().searchable, true);
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_ENABLE_SCRAPERS;
+    else process.env.SLICELY_ENABLE_SCRAPERS = prev;
+  }
 });
 
 test("search() parses result cards out of a (hypothetical) results page", async (t) => {

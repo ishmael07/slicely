@@ -94,7 +94,12 @@ export function createSliceRouter(): Router {
         extraInputs: requestedPaths.slice(1),
       };
 
-      const outName = `slice-${Date.now().toString(36)}`;
+      // Name the output after the model, not a timestamp. These files end up
+      // on the user's SD card, where "slice-mtetrlng.gcode" next to five more
+      // like it is unusable — they need to know which is which at the printer.
+      const stem = basename(primary).replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_");
+      const suffix = Date.now().toString(36).slice(-4);
+      const outName = `${stem || "slice"}-${suffix}`;
       const metricsList =
         requestedPaths.length > 1
           ? (await slicePlates(requestedPaths, params, { w: bed.x, d: bed.y }, undefined, outName)).plates

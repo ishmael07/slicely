@@ -102,6 +102,7 @@ Type what you want, or paste a link:
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | ✅ | — | Powers the agent. |
 | `SLICELY_PORT` | | `3000` | Web server port. |
+| `SLICELY_ENABLE_SCRAPERS` | | off | Re-enable Thangs / Yeggi / STLFinder. They are bot-blocked in practice and added ~8s to every search, so they are off by default. |
 | `SLICELY_MULTI_USER` | | off | Set for a **public** deployment: disables LAN discovery and LAN-only transports, because the server's network is not the visitor's. |
 | `SLICELY_WORKDIR` | | `~/Slicely` | Downloads, slices, and per-visitor session workspaces. |
 | `THINGIVERSE_APP_TOKEN` | | — | Thingiverse search + download. |
@@ -142,7 +143,7 @@ src/
 
 - **Bambu LAN** upload works (implicit FTPS, written against RFC 959/4217 since no dependency here speaks FTP). Starting the print afterwards uses a community-derived MQTT command; if it doesn't take, the file is already on the printer and can be started from its screen. **Bambu Cloud** has no documented file-submission API, so add the printer as a LAN connection to send to it.
 - **Prusa Connect** publishes no third-party API. Those endpoints are documented guesses and marked unverified in the source.
-- **Thangs / Yeggi / STLFinder** sit behind bot protection that blocks honestly-identified requests. They're best-effort discovery; Slicely does not spoof a browser to get around it.
+- **Thangs / Yeggi / STLFinder** sit behind bot protection that blocks honestly-identified requests, so they return nothing while costing ~8 seconds per search. They are **off by default** (`SLICELY_ENABLE_SCRAPERS=1` to try them). Slicely does not spoof a browser to get around the block.
 - **Login-gated sources** are handed to your browser rather than circumvented. That's the correct outcome, not a bug.
 - **Orientation scoring** is a heuristic over face normals — a real area computation, but a proxy for support *volume*, not a physics simulation. Eyeball the preview.
 - **Binary G-code:** metrics are parsed from plaintext G-code comments. Disable `.bgcode` output in your profile.
