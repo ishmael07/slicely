@@ -894,6 +894,25 @@ function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElemen
     ? `${plate.status} · ${plate.metrics.estimatedPrintTime}${plate.metrics.filamentUsedG !== undefined ? ` · ${plate.metrics.filamentUsedG.toFixed(1)} g` : ""}`
     : plate.status;
   label.appendChild(makeText("div", "sub", sub));
+  // Which filament this plate needs. When colours are grouped one-per-plate,
+  // this is the whole point: you have to know what to load before each plate.
+  if (plate.colours.length > 0) {
+    const swatches = make("div", "plate-colours");
+    for (const c of plate.colours) {
+      const dot = make("span", "swatch");
+      dot.style.background = c;
+      dot.title = c;
+      swatches.appendChild(dot);
+    }
+    swatches.appendChild(
+      makeText(
+        "span",
+        "swatch-label",
+        plate.colours.length === 1 ? `load ${plate.colours[0]}` : `${plate.colours.length} colours`,
+      ),
+    );
+    label.appendChild(swatches);
+  }
   if (plate.status === "failed" && plate.error) label.appendChild(errorBlock(plate.error));
   row.appendChild(label);
   if (gcodeId) {

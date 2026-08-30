@@ -1917,3 +1917,23 @@ details.thinking summary::-webkit-details-marker {
     transform: none;
   }
 }
+
+/* Which filament a plate needs. When colours are grouped one per plate, this
+   is the instruction the user acts on before starting each print. */
+.plate-colours {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+.plate-colours .swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 0.5px solid var(--border-bright);
+  flex: 0 0 auto;
+}
+.plate-colours .swatch-label {
+  font-size: 11px;
+  color: var(--text-faint);
+}

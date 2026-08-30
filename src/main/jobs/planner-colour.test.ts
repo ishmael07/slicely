@@ -67,10 +67,17 @@ test("repeated substitutions of one colour produce a single warning", () => {
   assert.equal(plan.warnings.length, 1, "one swap, one warning — not one per part");
 });
 
-test("a single loaded slot reports preview-only colour", () => {
-  const plan = planColours([part("/m/a.stl", "#00b3a4")], [slot(0, "#c81e1e")]);
+test("a single loaded slot is reported as single-extruder, without claiming the colour is ignored", () => {
+  // Two colours, so there IS something to say about the printer's limits.
+  const plan = planColours(
+    [part("/m/a.stl", "#00b3a4"), part("/m/b.stl", "#c81e1e")],
+    [slot(0, "#c81e1e")],
+  );
   assert.equal(plan.singleExtruder, true);
-  assert.ok(plan.warnings.some((w) => /preview-only/i.test(w)));
+  assert.ok(plan.warnings.some((w) => /one colour at a time/i.test(w)));
+  // The planner puts each colour on its own plate, so the colours are real;
+  // saying "preview-only" here contradicted what actually happens.
+  assert.ok(!plan.warnings.some((w) => /preview-only/i.test(w)));
 });
 
 test("an implausibly small part is flagged as a likely units error", () => {

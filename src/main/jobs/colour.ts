@@ -27,11 +27,27 @@ export function planColours(parts: JobPart[], slots: FilamentSlot[]): ColourPlan
 
   const warnings: string[] = [];
   if (singleExtruder) {
-    warnings.push(
-      usable.length === 0
-        ? "No loaded filament slots reported — colour can't be resolved against the printer; treating every part's colour as preview-only."
-        : "Only one usable filament slot is loaded — this is a single-extruder print. Requested colours are preview-only and won't change the physical filament.",
-    );
+    // Deliberately NOT claiming "preview-only" here.
+    //
+    // Whether a requested colour actually prints depends on something this
+    // function cannot see: the planner groups a single-extruder job so each
+    // colour gets its OWN PLATE, and then the colours are entirely real — you
+    // load red, print plate 1, load blue, print plate 2. Saying "preview-only"
+    // told users their colours had been ignored moments after Slicely arranged
+    // the whole job around them. The planner explains the outcome instead,
+    // because only it knows the grouping.
+    // With a SINGLE requested colour there is nothing to resolve or warn about:
+    // the user loads that filament and prints. Saying "colours can't be matched
+    // to specific spools" made the simplest, most common request — "print this
+    // in black" — read like a failure.
+    const requested = [...new Set(parts.map((p) => p.colourHex).filter(Boolean))];
+    if (requested.length > 1) {
+      warnings.push(
+        usable.length === 0
+          ? "No filament is reported loaded, so colours can't be matched to specific spools."
+          : "Only one filament slot is loaded, so this printer prints one colour at a time.",
+      );
+    }
   }
 
   const assignments: ColourAssignment[] = parts.map((part) => resolveOne(part, usable, singleExtruder));

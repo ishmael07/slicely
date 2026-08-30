@@ -278,6 +278,29 @@ export async function planJob(
   // Identity for packing: a part's position in `packable`. See toPlateParts.
   const indexOf = new Map(packable.map((p, i) => [p, i]));
 
+  // Say what actually happens to the requested colours. This is the only place
+  // that knows both the printer's slots AND the grouping decision, and the
+  // answer is completely different in each case.
+  const realColours = [...distinctColours].filter(Boolean).length;
+  if (realColours === 1 && !multiMaterial) {
+    const only = [...distinctColours].find(Boolean);
+    notes.push(`Load ${only} filament before printing — that's the colour you asked for.`);
+  }
+  if (realColours > 1 && !multiMaterial) {
+    if (groupByColour) {
+      notes.push(
+        `This printer prints one colour at a time, so each colour is on its own plate. ` +
+          `Load the right filament before each plate and the colours will be real.`,
+      );
+    } else {
+      notes.push(
+        `Several colours were asked for but they share one plate on a single-extruder ` +
+          `printer, so they will all print in whatever filament is loaded. Ask for one ` +
+          `colour per plate, or use colourBands to change filament partway up.`,
+      );
+    }
+  }
+
   if (multiMaterial && distinctColours.size > 1 && opts.groupByColour !== true) {
     notes.push(
       `Printer has ${usableSlots} filament slots loaded, so colours share a plate — ` +

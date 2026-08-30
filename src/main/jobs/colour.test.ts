@@ -59,19 +59,34 @@ test("a part with no requested colour gets 'default', not a fabricated preferenc
   assert.equal(plan.assignments[0].reason, "default");
 });
 
-test("singleExtruder warning fires with only one usable slot, and colour is passed through as preview-only", () => {
+test("ONE requested colour on a single-extruder printer is not a problem, so it does not warn", () => {
+  // "Print this in black" is the commonest request there is. Warning that
+  // "colours can't be matched to specific spools" made it read as a failure —
+  // the user simply loads that filament.
   const slots: FilamentSlot[] = [{ index: 0, colourHex: "#ff0000", loaded: true }];
   const plan = planColours([part("/a.stl", "#00ff00")], slots);
   assert.equal(plan.singleExtruder, true);
-  assert.ok(plan.warnings.some((w) => /preview-only|single-extruder/i.test(w)));
+  assert.deepEqual(plan.warnings, [], `expected no warnings, got ${plan.warnings.join(" | ")}`);
+  // The requested colour survives untouched for the preview and the summary.
   assert.equal(plan.assignments[0].reason, "user");
   assert.equal(plan.assignments[0].colourHex, "#00ff00");
 });
 
-test("an empty/unloaded slot list also reports singleExtruder with a distinct warning", () => {
-  const plan = planColours([part("/a.stl", "#123456")], []);
+test("SEVERAL colours on a single-extruder printer says what the printer can do", () => {
+  const slots: FilamentSlot[] = [{ index: 0, colourHex: "#ff0000", loaded: true }];
+  const plan = planColours([part("/a.stl", "#00ff00"), part("/b.stl", "#0000ff")], slots);
   assert.equal(plan.singleExtruder, true);
-  assert.ok(plan.warnings.some((w) => /no loaded filament slots/i.test(w)));
+  assert.equal(plan.warnings.length, 1);
+  assert.match(plan.warnings[0], /one colour at a time/i);
+  // Never claims the colours are ignored: the planner splits them across
+  // plates so they are genuinely printed.
+  assert.ok(!/preview-only/i.test(plan.warnings[0]));
+});
+
+test("no loaded slots and several colours reports that spools are unknown", () => {
+  const plan = planColours([part("/a.stl", "#123456"), part("/b.stl", "#654321")], []);
+  assert.equal(plan.singleExtruder, true);
+  assert.match(plan.warnings[0], /no filament is reported loaded/i);
 });
 
 test("loaded:false slots are excluded from matching", () => {
