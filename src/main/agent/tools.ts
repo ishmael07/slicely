@@ -10,7 +10,15 @@ import type {
   PrintMaterial,
   ModelInfo,
 } from "../../shared/types";
-import { searchModels, downloadModel, type SourceFilter } from "../providers";
+// The v1 tools use the SAME sourcing layer as find_models. They used to call a
+// legacy registry whose Printables client was search-only, so import_model
+// could only ever fetch Thingiverse — the agent would try, fail, and send the
+// user off to a browser for a file Slicely could have downloaded.
+import {
+  searchModels as sourcingSearch,
+  downloadModel as sourcingDownload,
+} from "../sourcing";
+import type { SourceId } from "../../shared/sourcing";
 import {
   getStatus,
   getModelInfo,
@@ -213,7 +221,8 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "Search free, open-source 3D-printable model marketplaces for models matching a query. " +
       "Returns a list of models with titles, creators, licenses, and whether Slicely can download " +
       "them directly. Use this whenever the user wants to find or print something (e.g. 'a model car'). " +
-      "Thingiverse models are directly downloadable in-app; Printables and MakerWorld open in the browser.",
+      "Trust each result's `downloadable` flag rather than assuming by source: Printables, MyMiniFactory, " +
+      "NIH 3D, Smithsonian, NASA and GitHub are all directly downloadable in-app alongside Thingiverse.",
     input_schema: {
       type: "object",
       properties: {
@@ -224,7 +233,10 @@ const V1_TOOLS: Anthropic.Tool[] = [
         },
         source: {
           type: "string",
-          enum: ["all", "thingiverse", "printables", "makerworld"],
+          enum: [
+            "all", "thingiverse", "printables", "myminifactory", "nih3d",
+            "smithsonian", "nasa", "github", "makerworld",
+          ],
           description:
             "Which marketplace to search. Default 'all'. Prefer 'thingiverse' when the user wants something they can import directly.",
         },
@@ -240,12 +252,16 @@ const V1_TOOLS: Anthropic.Tool[] = [
     name: "import_model",
     description:
       "Download a model's mesh file (STL/3MF) from Thingiverse into the local workspace so it can be " +
-      "inspected and sliced. Only works for Thingiverse models (downloadable: true). For Printables/MakerWorld, " +
-      "use open_in_browser instead. Returns the local file path.",
+      "inspected and sliced. Works for ANY result whose `downloadable` flag is true — Thingiverse, Printables, " +
+      "MyMiniFactory, NIH 3D, Smithsonian, NASA and GitHub. Only fall back to open_in_browser when `downloadable` " +
+      "is false. Returns the local file path.",
     input_schema: {
       type: "object",
       properties: {
-        source: { type: "string", enum: ["thingiverse", "printables", "makerworld"] },
+        source: {
+          type: "string",
+          description: "The result's own `source` value from the search results.",
+        },
         modelId: { type: "string", description: "The model's id from search_models." },
         fileId: {
           type: "string",
@@ -259,7 +275,8 @@ const V1_TOOLS: Anthropic.Tool[] = [
     name: "open_in_browser",
     description:
       "Open a model's web page in the user's default browser, so they can download it manually. " +
-      "Use for Printables and MakerWorld models, whose downloads are login-gated.",
+      "Use ONLY for results with `downloadable: false`, whose files really are gated at source. " +
+      "If a result is downloadable, import it instead of sending the user off to fetch it themselves.",
     input_schema: {
       type: "object",
       properties: {
@@ -439,9 +456,13 @@ export async function executeTool(
     case "search_models": {
       const query = String(input.query ?? "").trim();
       if (!query) return "Error: empty query.";
-      const source = (input.source as SourceFilter) ?? "all";
+      const source = input.source ? String(input.source) : "all";
       const limit = typeof input.limit === "number" ? input.limit : 8;
-      const models = await searchModels(query, { source, limit });
+      const outcome = await sourcingSearch(query, {
+        limit,
+        sources: source === "all" ? undefined : [source as SourceId],
+      });
+      const models = outcome.results;
       sessionState.lastResults = models;
       emit({ type: "models", models });
       if (models.length === 0) {
@@ -468,7 +489,7 @@ export async function executeTool(
           (m) => m.id === modelId && m.source === source,
         ) ?? sessionState.lastResults.find((m) => m.id === modelId);
 
-      const result = await downloadModel(source, modelId, fileId);
+      const result = await sourcingDownload(source as SourceId, modelId, { fileId });
       sessionState.lastModelPath = result.localPath;
       // Track every sliceable mesh part so a later slice can arrange them all
       // onto one plate. STEP parts are GUI-only, so exclude them from the
