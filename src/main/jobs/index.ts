@@ -146,3 +146,89 @@ export async function previewMesh(
   const mesh = await parseMesh(meshPath);
   return buildPreviewMesh(mesh.triangles, target);
 }
+
+/**
+ * A preview of a whole PLATE: every part, in the pose and position it will
+ * actually print in.
+ *
+ * Showing one part of a three-part plate was misleading — the interesting thing
+ * about a plate is the arrangement, which is exactly what the packer worked out
+ * and what the user wants to sanity-check before committing hours of printing.
+ */
+export async function previewPlate(
+  jobId: string,
+  plateIndex: number,
+): Promise<import("./preview").PreviewMesh> {
+  const { parseMesh } = await import("./mesh");
+  const { buildPreviewMesh } = await import("./preview");
+  const { eulerToMatrix, matVec } = await import("./vec3");
+
+  const job = await getJobById(jobId);
+  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const plate = job.plates.find((p) => p.index === plateIndex);
+  if (!plate) throw new Error(`Plate ${plateIndex} not found`);
+
+  const scale = job.params.scale && job.params.scale > 0 ? job.params.scale : 1;
+  const combined: Array<{ a: Vec3Like; b: Vec3Like; c: Vec3Like; normal: Vec3Like }> = [];
+
+  for (const part of plate.parts) {
+    const mesh = await parseMesh(part.path);
+    const o = part.orientation;
+    const m =
+      o && (o.rotXDeg !== 0 || o.rotYDeg !== 0 || o.rotZDeg !== 0)
+        ? eulerToMatrix(o.rotXDeg, o.rotYDeg, o.rotZDeg)
+        : undefined;
+
+    // Same transform the slicer receives: scale, rotate, then sit on the bed
+    // centred on the origin — so the preview shows the real thing, not an
+    // approximation of it.
+    const put = (v: Vec3Like): Vec3Like => {
+      const s = { x: v.x * scale, y: v.y * scale, z: v.z * scale };
+      return m ? matVec(m, s) : s;
+    };
+    const placed = mesh.triangles.map((t) => ({
+      a: put(t.a),
+      b: put(t.b),
+      c: put(t.c),
+      normal: m ? matVec(m, t.normal) : t.normal,
+    }));
+
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
+    for (const t of placed) {
+      for (const v of [t.a, t.b, t.c]) {
+        if (v.x < minX) minX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.z < minZ) minZ = v.z;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y > maxY) maxY = v.y;
+      }
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    const copies = Math.max(1, part.copies);
+    for (let i = 0; i < copies; i++) {
+      const at = part.placements?.[i];
+      const tx = (at ? at.x + part.sizeX / 2 : 0) - cx;
+      const ty = (at ? at.y + part.sizeY / 2 : 0) - cy;
+      for (const t of placed) {
+        combined.push({
+          a: { x: t.a.x + tx, y: t.a.y + ty, z: t.a.z - minZ },
+          b: { x: t.b.x + tx, y: t.b.y + ty, z: t.b.z - minZ },
+          c: { x: t.c.x + tx, y: t.c.y + ty, z: t.c.z - minZ },
+          normal: t.normal,
+        });
+      }
+    }
+  }
+
+  return buildPreviewMesh(combined as never, 5000);
+}
+
+/** Minimal vector shape, so this file need not import the mesh types. */
+interface Vec3Like {
+  x: number;
+  y: number;
+  z: number;
+}

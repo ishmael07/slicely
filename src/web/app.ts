@@ -593,7 +593,7 @@ function renderInfo(info: ModelInfo): void {
     if (seenInfoPaths.has(info.filePath)) return;
     seenInfoPaths.add(info.filePath);
   }
-  const panel = make("div", "panel");
+  const panel = make("div", "panel enter");
   panel.appendChild(panelHead("◳", "Model"));
   const grid = make("div", "metrics");
   addMetric(grid, "Width", `${info.sizeX.toFixed(1)} mm`);
@@ -614,7 +614,7 @@ function renderInfo(info: ModelInfo): void {
  * Loaded lazily and failing silently: a preview is a nicety, and a model the
  * viewer cannot read must never take the metrics panel down with it.
  */
-function attachViewer(panel: HTMLElement, filePath: string): void {
+function attachViewer(panel: HTMLElement, filePath?: string, url?: string): void {
   const holder = make("div", "viewer");
   const canvas = document.createElement("canvas");
   holder.appendChild(canvas);
@@ -626,7 +626,7 @@ function attachViewer(panel: HTMLElement, filePath: string): void {
   void (async () => {
     try {
       const mesh = await getJson<PreviewMeshData>(
-        `/api/preview?path=${encodeURIComponent(filePath)}`,
+        url ?? `/api/preview?path=${encodeURIComponent(filePath ?? "")}`,
       );
       if (mesh.triangles === 0) {
         holder.remove();
@@ -747,7 +747,7 @@ function attachSendSlot(container: HTMLElement, gcodeId: string, size?: "small")
 
 function renderMetrics(m: SliceMetrics, gcodeId?: string): void {
   endBotBubble();
-  const panel = make("div", "panel");
+  const panel = make("div", "panel enter");
   const title = m.plateCount && m.plateCount > 1 ? `Plate ${m.plateIndex} of ${m.plateCount}` : "Slice result";
   panel.appendChild(panelHead("✦", title));
 
@@ -914,7 +914,7 @@ function createJobPanel(initial: WireJob): JobPanel {
   let job: PrintJob = initial;
   mergeGcodeIds(gcodeIds, initial);
 
-  const panel = make("div", "panel");
+  const panel = make("div", "panel enter");
 
   function render(): void {
     panel.replaceChildren();
@@ -929,6 +929,14 @@ function createJobPanel(initial: WireJob): JobPanel {
       if (job.totals.filamentCost !== undefined) addMetric(grid, "Est. cost", job.totals.filamentCost.toFixed(2));
       if (job.totals.toolChanges !== undefined) addMetric(grid, "Tool changes", String(job.totals.toolChanges));
       panel.appendChild(grid);
+    }
+
+    // Show the PLATE — every part, in the pose and position it will print in.
+    // A job that says "Slicing plate 1…" for two minutes with nothing to look
+    // at feels stalled, and the arrangement is the thing worth checking before
+    // committing hours of printing.
+    if (job.plates.length > 0) {
+      attachViewer(panel, undefined, `/api/jobs/${encodeURIComponent(job.id)}/plate/1/preview`);
     }
 
     const list = make("div", "plate-list");
@@ -963,7 +971,11 @@ function createJobPanel(initial: WireJob): JobPanel {
       panel.appendChild(details);
     }
 
-    if (job.status === "planned" || job.status === "failed") {
+    // Don't offer "Run job" while it is already running. job.status stays
+    // "planned" until the last plate finishes, so the button sat there through
+    // the whole slice inviting a second run of the same work.
+    const running = job.plates.some((p) => p.status === "slicing");
+    if (!running && (job.status === "planned" || job.status === "failed")) {
       const actions = make("div", "actions");
       const runBtn = makeText("button", "btn primary small", job.status === "failed" ? "Retry job" : "Run job") as HTMLButtonElement;
       runBtn.onclick = () => {
@@ -1246,7 +1258,7 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
 
 function renderResolution(resolution: UrlResolution): void {
   endBotBubble();
-  const panel = make("div", "panel");
+  const panel = make("div", "panel enter");
   panel.appendChild(panelHead("🔗", resolution.kind));
   panel.appendChild(makeText("div", "", resolution.message));
   if (resolution.model) {

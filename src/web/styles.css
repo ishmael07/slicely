@@ -1842,3 +1842,78 @@ details.thinking summary::-webkit-details-marker {
   color: var(--text-dim);
   line-height: 1.45;
 }
+
+/* ── Motion ─────────────────────────────────────────────────────────────────
+   Small, consistent, and never decorative. Everything that appears uses the
+   same easing and roughly the same distance, so the interface reads as one
+   surface rather than a collection of separately-animated widgets. */
+
+/* Plate rows settle in sequence as a job is planned, rather than all at once. */
+.plate-row {
+  animation: enter 0.3s var(--ease) both;
+  transition: border-color 0.25s var(--ease), background 0.25s var(--ease);
+}
+.plate-list > .plate-row:nth-child(2) { animation-delay: 0.04s; }
+.plate-list > .plate-row:nth-child(3) { animation-delay: 0.08s; }
+.plate-list > .plate-row:nth-child(4) { animation-delay: 0.12s; }
+.plate-list > .plate-row:nth-child(n + 5) { animation-delay: 0.16s; }
+
+/* A plate finishing is worth noticing without being loud. */
+.status-dot {
+  transition: background 0.3s var(--ease), box-shadow 0.3s var(--ease);
+}
+.status-dot.ready,
+.status-dot.done {
+  animation: settle 0.45s var(--ease);
+}
+@keyframes settle {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+/* Result cards arrive in a quick cascade, left to right. */
+.cards > .card {
+  animation: enter 0.32s var(--ease) both;
+}
+.cards > .card:nth-child(2) { animation-delay: 0.03s; }
+.cards > .card:nth-child(3) { animation-delay: 0.06s; }
+.cards > .card:nth-child(4) { animation-delay: 0.09s; }
+.cards > .card:nth-child(n + 5) { animation-delay: 0.12s; }
+.card {
+  transition: transform 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-bright);
+}
+
+/* The preview fades up once its geometry has loaded, so it never flashes an
+   empty box first. */
+.viewer {
+  animation: enter 0.4s var(--ease) both;
+}
+
+/* Buttons acknowledge the press. */
+.btn {
+  transition: background 0.16s var(--ease), border-color 0.16s var(--ease),
+    transform 0.09s var(--ease), filter 0.16s var(--ease);
+}
+.btn:active {
+  transform: scale(0.97);
+}
+
+/* Honour a reduced-motion preference properly: keep state changes visible,
+   drop the movement. The 3D preview also stops turning (handled in script). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .card:hover {
+    transform: none;
+  }
+}

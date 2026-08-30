@@ -118,6 +118,28 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     res.json(all.filter((j) => session.jobIds.has(j.id)));
   });
 
+  /** Geometry for a whole plate, so the UI can show the real arrangement. */
+  router.get("/jobs/:id/plate/:index/preview", async (req: Request, res: Response) => {
+    const session = req.session!;
+    if (!session.jobIds.has(req.params.id)) {
+      res.status(404).json({ error: "Not found." });
+      return;
+    }
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 1) {
+      res.status(400).json({ error: "Bad plate index." });
+      return;
+    }
+    try {
+      const { previewPlate } = await import("../../main/jobs");
+      const mesh = await previewPlate(req.params.id, index);
+      res.setHeader("Cache-Control", "private, max-age=600");
+      res.json(mesh);
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message ?? "Could not build a preview." });
+    }
+  });
+
   router.get("/jobs/:id", async (req: Request, res: Response) => {
     const session = req.session!;
     // 404 rather than 403 for a job owned by someone else: a visitor should

@@ -30,6 +30,11 @@ interface Face {
   shade: number;
 }
 
+/** True when the viewer has asked the system for less animation. */
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+}
+
 /** Direction the key light comes from, in view space. Normalised. */
 const LIGHT = { x: -0.35, y: -0.6, z: 0.72 };
 
@@ -88,8 +93,9 @@ export class ModelViewer {
     const tick = (now: number): void => {
       const dt = Math.min(64, now - last);
       last = now;
-      // Slow enough to look considered, not like a spinning demo.
-      if (!this.dragging) this.angle += dt * 0.00035;
+      // Slow enough to look considered, not like a spinning demo. A user who
+      // asked for reduced motion gets a still model they can still drag.
+      if (!this.dragging && !prefersReducedMotion()) this.angle += dt * 0.00035;
       this.draw();
       this.raf = requestAnimationFrame(tick);
     };

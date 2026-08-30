@@ -40,6 +40,11 @@ function writeSse(res: Response, wire: Record<string, unknown>): void {
 function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentEvent) => void; flush: () => Promise<void> } {
   let chain: Promise<void> = Promise.resolve();
   const emit = (event: AgentEvent) => {
+    // Record jobs the AGENT creates. Ownership was only recorded by the REST
+    // /api/jobs route, so a job planned through chat belonged to nobody: the
+    // UI's own follow-up requests for it (plate preview, re-open, re-run) came
+    // back 404 from the very session that made it.
+    if (event.type === "job" && event.job?.id) session.jobIds.add(event.job.id);
     chain = chain.then(async () => {
       if (event.type === "metrics" && event.metrics.gcodePath) {
         const adopted = await adoptGcodeFile(session, event.metrics.gcodePath).catch(() => undefined);
