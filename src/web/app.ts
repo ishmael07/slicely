@@ -193,13 +193,20 @@ function renderMarkdownLite(src: string): DocumentFragment {
   let i = 0;
 
   const inline = (container: HTMLElement, s: string) => {
-    const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|_[^_]+_)/g;
+    // Links come first: telling someone to "go to prusa3d.com" in text they
+    // cannot click is a dead end, and the agent writes both [label](url) and
+    // bare URLs.
+    const re =
+      /(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>"')]+|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|_[^_]+_)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(s))) {
       if (m.index > last) container.appendChild(document.createTextNode(s.slice(last, m.index)));
       const token = m[0];
-      if (token.startsWith("**")) container.appendChild(makeText("strong", "", token.slice(2, -2)));
+      const md = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/.exec(token);
+      if (md) container.appendChild(externalLink(md[2], md[1]));
+      else if (/^https?:\/\//.test(token)) container.appendChild(externalLink(token, token));
+      else if (token.startsWith("**")) container.appendChild(makeText("strong", "", token.slice(2, -2)));
       else if (token.startsWith("`")) container.appendChild(makeText("code", "", token.slice(1, -1)));
       else container.appendChild(makeText("em", "", token.slice(1, -1)));
       last = re.lastIndex;
@@ -274,7 +281,6 @@ let activeBotRaw = "";
 let activeThinkingBody: HTMLElement | null = null;
 let activeThinkingRaw = "";
 let renderFrame = 0;
-const activeChips = new Map<string, HTMLElement>();
 
 function clearEmptyState(): void {
   messagesEl.querySelector(".empty")?.remove();
@@ -356,42 +362,152 @@ function endBotBubble(): void {
   activeBotRaw = "";
 }
 
-function startToolChip(tool: string, label: string): void {
+/**
+ * The running steps of one turn, as a single line.
+ *
+ * Every step used to append its own chip, so a routine "find something and
+ * slice it" left six or seven stacked status lines around the parts the user
+ * actually wanted — the models, the numbers, the answer. They now share one
+ * strip that shows the current step and folds the finished ones behind a
+ * count, which the user can open if they want the detail.
+ *
+ * Failures are the exception: a step that went wrong is pulled out and left
+ * on screen, because that is the one the user needs to see.
+ */
+interface Activity {
+  root: HTMLElement;
+  current: HTMLElement;
+  steps: HTMLElement;
+  toggle: HTMLElement;
+  count: number;
+}
+
+let activity: Activity | undefined;
+
+function getActivity(): Activity {
+  if (activity?.root.isConnected) return activity;
   endBotBubble();
-  const chip = make("div", "tool-chip enter");
-  chip.appendChild(make("span", "spin"));
-  chip.appendChild(makeText("span", "", label));
-  messagesEl.appendChild(chip);
-  activeChips.set(tool, chip);
+  const root = make("div", "activity enter");
+  const line = make("div", "activity-line");
+  line.appendChild(make("span", "spin"));
+  const current = makeText("span", "activity-current", "Working…");
+  const toggle = makeText("button", "activity-toggle hidden", "");
+  const steps = make("div", "activity-steps hidden");
+  toggle.onclick = () => {
+    const open = steps.classList.toggle("hidden");
+    toggle.textContent = open ? `${activity?.count ?? 0} steps` : "hide";
+  };
+  line.append(current, toggle);
+  root.append(line, steps);
+  messagesEl.appendChild(root);
+  activity = { root, current, steps, toggle, count: 0 };
+  return activity;
+}
+
+function startToolChip(_tool: string, label: string): void {
+  const a = getActivity();
+  a.current.textContent = label;
   scrollToBottom();
 }
 
-/** Update a running chip's text in place, so a long tool visibly moves. */
-function updateToolChip(tool: string, label: string): void {
-  const chip = activeChips.get(tool);
-  if (!chip) return;
-  const text = chip.querySelector("span:last-child");
-  if (text) text.textContent = label;
+/** Update the running step's text, so a long tool visibly moves. */
+function updateToolChip(_tool: string, label: string): void {
+  if (activity?.root.isConnected) activity.current.textContent = label;
 }
 
-function endToolChip(tool: string, ok: boolean, summary?: string): void {
-  const chip = activeChips.get(tool);
-  if (!chip) return;
-  chip.classList.add("done");
-  chip.querySelector(".spin")?.remove();
-  const icon = make("span", "ico");
+function endToolChip(_tool: string, ok: boolean, summary?: string): void {
+  const a = activity?.root.isConnected ? activity : undefined;
+  if (!a) return;
+  const label = a.current.textContent ?? "";
+
   if (!ok) {
-    chip.classList.add("err");
-    icon.textContent = "✕";
-    const label = chip.querySelector("span:last-child");
-    if (label) {
-      label.textContent = summary ? friendlyError(summary).what : "That didn't work.";
-    }
-  } else {
-    icon.textContent = "✓";
+    // Keep a failure where the user can see it, with the fix beside it.
+    const friendly = summary ? friendlyError(summary) : { what: "That didn't work." };
+    const chip = make("div", "tool-chip done err enter");
+    chip.appendChild(makeText("span", "ico", "✕"));
+    chip.appendChild(makeText("span", "", friendly.fix ? `${friendly.what} ${friendly.fix}` : friendly.what));
+    messagesEl.appendChild(chip);
+  } else if (label) {
+    const step = make("div", "activity-step");
+    step.appendChild(makeText("span", "ico", "✓"));
+    step.appendChild(makeText("span", "", label));
+    a.steps.appendChild(step);
+    a.count += 1;
+    a.toggle.classList.remove("hidden");
+    if (a.steps.classList.contains("hidden")) a.toggle.textContent = `${a.count} steps`;
   }
-  chip.insertBefore(icon, chip.firstChild);
-  activeChips.delete(tool);
+  a.current.textContent = "Working…";
+}
+
+/** Settle the strip when the turn ends: no spinner, and a plain summary of
+ *  what was done rather than a stale "Working…". */
+function finishActivity(): void {
+  if (!activity?.root.isConnected) {
+    activity = undefined;
+    return;
+  }
+  activity.root.querySelector(".spin")?.remove();
+  if (activity.count === 0) activity.root.remove();
+  else {
+    activity.current.textContent = activity.count === 1 ? "Done · 1 step" : `Done · ${activity.count} steps`;
+    activity.toggle.textContent = activity.steps.classList.contains("hidden")
+      ? "show"
+      : "hide";
+  }
+  activity = undefined;
+}
+
+/**
+ * An anchor to somewhere outside the app.
+ *
+ * Only http(s) is allowed through: the agent's text is model output, and a
+ * `javascript:` href in a rendered chat bubble is a script-injection hole.
+ */
+function externalLink(href: string, label: string): HTMLElement {
+  let safe = "";
+  try {
+    const u = new URL(href, location.href);
+    if (u.protocol === "http:" || u.protocol === "https:") safe = u.href;
+  } catch {
+    /* not a URL we can render as a link */
+  }
+  if (!safe) return makeText("span", "", label);
+  const a = document.createElement("a");
+  a.href = safe;
+  a.textContent = label;
+  a.className = "link";
+  a.target = "_blank";
+  a.rel = "noreferrer noopener";
+  return a;
+}
+
+/**
+ * A thing the user can do, as a button.
+ *
+ * Slicing happens on the server, so "I opened it in PrusaSlicer" is only true
+ * for whoever is sitting at that machine. A button that hands over the project
+ * (or the install page) is the version that works in a browser.
+ */
+function renderAction(action: {
+  label: string;
+  kind: string;
+  href?: string;
+  hint?: string;
+}): void {
+  endBotBubble();
+  if (!action.href) return;
+  const row = make("div", "action-row enter");
+  const btn = externalLink(action.href, action.label);
+  btn.className = "btn primary small";
+  if (action.kind === "open-project") {
+    // A download, not a navigation — keep the tab the user is working in.
+    (btn as HTMLAnchorElement).target = "_self";
+    (btn as HTMLAnchorElement).setAttribute("download", "");
+  }
+  row.appendChild(btn);
+  if (action.hint) row.appendChild(makeText("span", "action-hint", action.hint));
+  messagesEl.appendChild(row);
+  scrollToBottom();
 }
 
 function panelHead(glyph: string, label: string): HTMLElement {
@@ -578,10 +694,25 @@ function renderSourcesOutcome(sources: SearchOutcome["sources"] | undefined): vo
 }
 
 function renderDownloadNote(source: string, fileName: string): void {
+  const note = `Downloaded ${fileName} from ${source}`;
+  // Fold into the turn's activity rather than adding a chip of its own. A
+  // multi-part model downloads part after part, and each one used to leave its
+  // own line between the user and the result.
+  const a = activity?.root.isConnected ? activity : undefined;
+  if (a) {
+    const step = make("div", "activity-step");
+    step.appendChild(makeText("span", "ico", "⬇"));
+    step.appendChild(makeText("span", "", note));
+    a.steps.appendChild(step);
+    a.count += 1;
+    a.toggle.classList.remove("hidden");
+    if (a.steps.classList.contains("hidden")) a.toggle.textContent = `${a.count} steps`;
+    return;
+  }
   endBotBubble();
   const chip = make("div", "tool-chip done enter");
   chip.appendChild(makeText("span", "ico", "⬇"));
-  chip.appendChild(makeText("span", "", `Downloaded ${fileName} from ${source}`));
+  chip.appendChild(makeText("span", "", note));
   messagesEl.appendChild(chip);
 }
 
@@ -823,9 +954,15 @@ function placeholderJob(id: string): PrintJob {
  *  first one) — a real server-side quirk verified live. Keeping only the
  *  FIRST gcodeId seen per plate avoids ever downgrading a good, downloadable
  *  id to a later broken one for the same plate. */
-function mergeGcodeIds(store: Map<number, string>, job: WireJob): void {
+function mergeGcodeIds(
+  store: Map<number, string>,
+  job: WireJob,
+  projects?: Map<number, string>,
+): void {
   for (const p of job.plates) {
     if (p.gcodeId && !store.has(p.index)) store.set(p.index, p.gcodeId);
+    const projectId = (p as { projectId?: string }).projectId;
+    if (projects && projectId && !projects.has(p.index)) projects.set(p.index, projectId);
   }
 }
 
@@ -883,7 +1020,11 @@ function errorBlock(raw: string): HTMLElement {
   return box;
 }
 
-function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElement {
+function buildPlateRow(
+  plate: JobPlate,
+  gcodeId: string | undefined,
+  projectId?: string,
+): HTMLElement {
   const row = make("div", "plate-row");
   row.appendChild(make("span", `status-dot ${plate.status}`));
   const label = make("div", "label");
@@ -922,6 +1063,17 @@ function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElemen
     dl.textContent = "G-code";
     dl.href = `/api/gcode/${encodeURIComponent(gcodeId)}`;
     btns.appendChild(dl);
+    if (projectId) {
+      // Opens in PrusaSlicer showing the arrangement, orientations and colours
+      // as planned — a browser cannot launch the app, but it can hand over the
+      // project that does.
+      const proj = document.createElement("a");
+      proj.className = "btn small";
+      proj.textContent = "Open in PrusaSlicer";
+      proj.title = "Download the .3mf project — arranged, oriented and coloured as planned";
+      proj.href = `/api/gcode/${encodeURIComponent(projectId)}`;
+      btns.appendChild(proj);
+    }
     attachSendSlot(btns, gcodeId, "small");
     row.appendChild(btns);
   }
@@ -930,8 +1082,9 @@ function buildPlateRow(plate: JobPlate, gcodeId: string | undefined): HTMLElemen
 
 function createJobPanel(initial: WireJob): JobPanel {
   const gcodeIds = new Map<number, string>();
+  const projectIds = new Map<number, string>();
   let job: PrintJob = initial;
-  mergeGcodeIds(gcodeIds, initial);
+  mergeGcodeIds(gcodeIds, initial, projectIds);
 
   const panel = make("div", "panel enter");
 
@@ -959,7 +1112,11 @@ function createJobPanel(initial: WireJob): JobPanel {
     }
 
     const list = make("div", "plate-list");
-    for (const plate of job.plates) list.appendChild(buildPlateRow(plate, gcodeIds.get(plate.index)));
+    for (const plate of job.plates) {
+      list.appendChild(
+        buildPlateRow(plate, gcodeIds.get(plate.index), projectIds.get(plate.index)),
+      );
+    }
     panel.appendChild(list);
 
     if (job.colourPlan && job.colourPlan.warnings.length > 0) {
@@ -1008,7 +1165,7 @@ function createJobPanel(initial: WireJob): JobPanel {
   }
 
   function setJob(j: WireJob): void {
-    mergeGcodeIds(gcodeIds, j);
+    mergeGcodeIds(gcodeIds, j, projectIds);
     job = j;
     render();
   }
@@ -1016,7 +1173,7 @@ function createJobPanel(initial: WireJob): JobPanel {
   function applyEvent(ev: WireJobEvent): void {
     switch (ev.type) {
       case "job_planned":
-        mergeGcodeIds(gcodeIds, ev.job);
+        mergeGcodeIds(gcodeIds, ev.job, projectIds);
         job = ev.job;
         break;
       case "plate_start":
@@ -1030,7 +1187,7 @@ function createJobPanel(initial: WireJob): JobPanel {
         job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "failed", error: ev.error }));
         break;
       case "job_done":
-        mergeGcodeIds(gcodeIds, ev.job);
+        mergeGcodeIds(gcodeIds, ev.job, projectIds);
         job = ev.job;
         break;
       case "job_failed":
@@ -1261,11 +1418,15 @@ function handleAgentEvent(raw: Record<string, unknown>): void {
         getJobPanel(id).applyEvent(ev);
       }
       break;
+    case "action":
+      renderAction(event as unknown as { label: string; kind: string; href?: string; hint?: string });
+      break;
     case "error":
       renderError(event.message);
       break;
     case "done":
       endBotBubble();
+      finishActivity();
       setBusy(false);
       seenInfoPaths.clear();
       break;
@@ -2176,7 +2337,11 @@ async function loadStatus(): Promise<void> {
   try {
     const status = await getJson<SlicerStatus>("/api/status");
     applyStatus(status);
-    bannerEl.classList.add("hidden");
+    // Only clear a stale connection warning. Blanket-hiding used to wipe the
+    // "PrusaSlicer isn't installed" banner applyStatus had just raised, one
+    // line earlier — so on first load the one blocker worth interrupting for
+    // was shown and hidden in the same frame, and nobody ever saw it.
+    if (!bannerEl.classList.contains("banner-action")) bannerEl.classList.add("hidden");
   } catch {
     statusText.textContent = "unknown";
     bannerEl.textContent = "Can't reach the Slicely server. Check your connection.";
@@ -2363,7 +2528,7 @@ async function openChat(id: string): Promise<void> {
 /** Empty the visible transcript. The model's memory is cleared server-side. */
 function clearTranscript(): void {
   messagesEl.replaceChildren();
-  activeChips.clear();
+  activity = undefined;
   seenInfoPaths.clear();
   endBotBubble();
 }

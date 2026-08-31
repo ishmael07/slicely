@@ -210,3 +210,64 @@ test("the custom-gcode document declares the printer it was written for", () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("per-triangle painting survives being written back out", async () => {
+  // A model whose author PAINTED it (rather than splitting it into parts)
+  // carries a code on every painted triangle. Rebuilding the mesh without
+  // those codes is how a downloaded multi-colour model came back grey — the
+  // colours were in the file the whole time.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-paint-"));
+  const f = join(dir, "painted.3mf");
+  const triangles = buildCubeTriangles(10);
+  try {
+    writeThreeMf(f, [
+      {
+        path: "painted.stl",
+        triangles,
+        extruder: 1,
+        paint: { attribute: "slic3rpe:mmu_segmentation", codes: new Map([[0, "4"], [5, "8C"]]) },
+      },
+    ]);
+    const model = execFileSync("unzip", ["-p", f, "3D/3dmodel.model"], { encoding: "utf8" });
+
+    assert.match(
+      model,
+      /xmlns:slic3rpe="http:\/\/schemas\.slic3r\.org\/3mf\/2017\/06"/,
+      "an attribute in a namespace nobody declared is not valid XML",
+    );
+    const tris = model.match(/<triangle [^>]*\/>/g) ?? [];
+    assert.equal(tris.length, 12, "a cube's twelve triangles");
+    assert.match(tris[0], /slic3rpe:mmu_segmentation="4"/);
+    assert.match(tris[5], /slic3rpe:mmu_segmentation="8C"/);
+    assert.ok(!/mmu_segmentation/.test(tris[1]), "an unpainted triangle stays unpainted");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Bambu's paint dialect is written back as Bambu's, not translated", async () => {
+  // The two encodings mean the same thing and are spelled differently. Writing
+  // a Bambu code into PrusaSlicer's attribute would be silently wrong.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-paint-bbs-"));
+  const f = join(dir, "painted.3mf");
+  try {
+    writeThreeMf(f, [
+      {
+        path: "painted.stl",
+        triangles: buildCubeTriangles(10),
+        extruder: 1,
+        paint: { attribute: "paint_color", codes: new Map([[2, "4"]]) },
+      },
+    ]);
+    const model = execFileSync("unzip", ["-p", f, "3D/3dmodel.model"], { encoding: "utf8" });
+    assert.match(model, /paint_color="4"/);
+    assert.ok(!/mmu_segmentation/.test(model));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a project with no painting declares no painting namespace", () => {
+  const buf = buildThreeMf([{ path: "a.stl", triangles: buildCubeTriangles(10), extruder: 1 }]);
+  assert.ok(!buf.toString("utf8").includes("slic3rpe"), "nothing to declare");
+});

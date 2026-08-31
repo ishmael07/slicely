@@ -6,7 +6,7 @@
 // environment this test runs in.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -108,5 +108,56 @@ test("POST /api/chat/cancel reaches this session's own agent instance", async ()
     await close();
     store.stopSweep();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an action's server-side file becomes a download token, never a raw path", async () => {
+  // "I opened it in PrusaSlicer" is only true for whoever is sitting at the
+  // server. The browser gets a button instead — and it must point at a session
+  // token, because a filesystem path from the server is both useless to the
+  // browser and a disclosure of where files live.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const project = join(root, "plate-1.3mf");
+  writeFileSync(project, "PKfake");
+
+  const stub: () => ChatAgent = () => ({
+    async send(_message, emit) {
+      emit({
+        type: "action",
+        label: "Open in PrusaSlicer",
+        kind: "open-project",
+        filePath: project,
+        hint: "Downloads the plate.",
+      });
+      emit({ type: "done" });
+    },
+    cancel() {
+      /* not exercised in this test */
+    },
+  });
+
+  const { base, close } = await listen(createApp({ sessionStore: store, chatAgentFactory: stub }));
+  try {
+    const resp = await fetch(`${base}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "open it" }),
+    });
+    const body = await resp.text();
+    const action = body
+      .split("\n\n")
+      .map((f) => f.trim())
+      .filter((f) => f.startsWith("data: "))
+      .map((f) => JSON.parse(f.slice(6)))
+      .find((f) => f.type === "action");
+
+    assert.ok(action, "the action must reach the browser");
+    assert.equal(action.label, "Open in PrusaSlicer");
+    assert.match(action.href, /^\/api\/gcode\/[0-9a-f]+$/, "must be a session token");
+    assert.equal(action.filePath, undefined, "the server path must not be disclosed");
+    assert.ok(!JSON.stringify(action).includes(root), "no server path anywhere in the frame");
+  } finally {
+    await close();
   }
 });

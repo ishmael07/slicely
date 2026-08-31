@@ -1937,3 +1937,90 @@ details.thinking summary::-webkit-details-marker {
   font-size: 11px;
   color: var(--text-faint);
 }
+
+/* ── Activity strip ─────────────────────────────────────────────────────────
+   One line for a turn's steps. Each step used to be its own chip, which buried
+   the models and the numbers under a stack of status text. */
+.activity {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.activity-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 0.5px solid var(--border);
+}
+.activity-current {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activity-toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: 2px;
+  font: inherit;
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.activity-toggle:hover {
+  opacity: 1;
+  color: var(--text);
+}
+.activity-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 12px 2px 14px;
+}
+.activity-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.activity-step .ico {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* ── Action button ──────────────────────────────────────────────────────────
+   Slicing runs on the server, so "opened it in PrusaSlicer" does nothing for a
+   browser elsewhere. These hand the user the file or the page instead. */
+.action-row {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.action-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Links inside the agent's own prose. */
+.bubble a.link,
+a.link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+a.link:hover {
+  opacity: 0.85;
+}
+ /* An action rendered as an anchor is still a button, not a link. */
+a.btn,
+a.btn:hover {
+  text-decoration: none;
+}

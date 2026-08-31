@@ -53,6 +53,15 @@ function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentE
           return;
         }
       }
+      // An action pointing at a server-side file becomes a session-scoped
+      // download. Without this the browser would be handed a path on someone
+      // else's disk, and the button would 404.
+      if (event.type === "action" && event.filePath) {
+        const adopted = await adoptGcodeFile(session, event.filePath).catch(() => undefined);
+        const { filePath: _dropped, ...rest } = event;
+        writeSse(res, adopted ? { ...rest, href: `/api/gcode/${adopted.id}` } : rest);
+        return;
+      }
       writeSse(res, event as unknown as Record<string, unknown>);
     });
   };

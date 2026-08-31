@@ -40,6 +40,16 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
       }
     }
     const opts = (body.opts ?? {}) as JobPlanOptions;
+    // The bed is the one option planning cannot invent: packing, oversize
+    // checks and plate splitting are all measured against it. Coming off the
+    // wire it is whatever the client sent, so check it here — otherwise a
+    // missing bed surfaces as "Cannot read properties of undefined (reading
+    // 'x')", which tells the user nothing they can act on.
+    const bedError = describeBadBed(opts.bed);
+    if (bedError) {
+      res.status(400).json({ error: bedError });
+      return;
+    }
     try {
       const job = await api.planJob(parts as PlanJobPartInput[], opts);
       // Record ownership: main/jobs/store.ts is process-wide, so this set is
@@ -165,12 +175,34 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
  *  strict JobEvent union) so we're free to add the extra `gcodeId` field on
  *  the wire without fighting excess-property checks on a discriminated
  *  union — the browser only ever duck-types on `.type` anyway. */
-async function relocateJobEventGcode(
+/**
+ * Why this bed cannot be used, or undefined when it is fine.
+ *
+ * Returns prose rather than a boolean because the message goes straight to a
+ * user who is trying to work out what to fix.
+ */
+function describeBadBed(bed: JobPlanOptions["bed"] | undefined): string | undefined {
+  if (!bed || typeof bed !== "object") {
+    return "No printer bed size was supplied, so parts can't be arranged. Pick a printer first.";
+  }
+  for (const axis of ["x", "y", "z"] as const) {
+    const v = (bed as Record<string, unknown>)[axis];
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      return `The printer bed's ${axis} size is ${String(v)}, which isn't a usable measurement in mm.`;
+    }
+  }
+  return undefined;
+}
+
+export async function relocateJobEventGcode(
   session: SessionRecord,
   event: JobEvent,
 ): Promise<Record<string, unknown>> {
   const wire = event as unknown as Record<string, unknown>;
 
+  // The plate PROJECT travels with the plate too, so the browser can offer it:
+  // a .3mf that opens in PrusaSlicer showing the arrangement and colours, which
+  // is the closest a web page can get to "open it in the slicer".
   if (event.type === "plate_done") {
     const adopted = await adoptGcodeFile(session, event.metrics.gcodePath).catch(() => undefined);
     if (!adopted) return wire;
@@ -180,10 +212,25 @@ async function relocateJobEventGcode(
   if (event.type === "job_planned" || event.type === "job_done") {
     const plates = await Promise.all(
       event.job.plates.map(async (plate) => {
-        if (!plate.gcodePath) return plate as unknown as Record<string, unknown>;
-        const adopted = await adoptGcodeFile(session, plate.gcodePath).catch(() => undefined);
-        if (!adopted) return plate as unknown as Record<string, unknown>;
-        return { ...plate, gcodePath: adopted.path, gcodeId: adopted.id };
+        const out: Record<string, unknown> = { ...plate };
+        if (plate.gcodePath) {
+          const adopted = await adoptGcodeFile(session, plate.gcodePath).catch(() => undefined);
+          if (adopted) {
+            out.gcodePath = adopted.path;
+            out.gcodeId = adopted.id;
+          }
+        }
+        // The .3mf project as well: it opens in PrusaSlicer showing the
+        // arrangement, orientations and colours Slicely planned, which is the
+        // closest a web page can get to "open it in the slicer".
+        if (plate.projectPath) {
+          const proj = await adoptGcodeFile(session, plate.projectPath).catch(() => undefined);
+          if (proj) {
+            out.projectPath = proj.path;
+            out.projectId = proj.id;
+          }
+        }
+        return out;
       }),
     );
     return { ...wire, job: { ...event.job, plates } };

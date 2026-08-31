@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { adoptGcodeFile, type SessionRecord } from "./session";
+import { adoptGcodeFile, isInsideDir, type SessionRecord } from "./session";
+import { relocateJobEventGcode } from "./routes/jobs";
 
 function fakeSession(root: string, id: string): SessionRecord {
   const dir = join(root, id);
@@ -112,6 +113,43 @@ test("job ownership: a session only ever sees the ids it recorded", () => {
     assert.deepEqual(visibleToBob.map((j) => j.id), ["job-b"]);
     // job-c belongs to neither and must be invisible to both.
     assert.ok(!alice.jobIds.has("job-c") && !bob.jobIds.has("job-c"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a plate's .3mf project is adopted into the session and gets its own token", async () => {
+  // The browser cannot launch PrusaSlicer, so the project file IS the handoff:
+  // it carries the arrangement, orientations and colours Slicely planned. If it
+  // never reaches the wire, a web user can only download bare G-code.
+  const root = mkdtempSync(join(tmpdir(), "slicely-project-"));
+  try {
+    const session = fakeSession(root, "s1");
+    const gcode = join(root, "plate-1.gcode");
+    const project = join(root, "plate-1.3mf");
+    writeFileSync(gcode, "; gcode\n");
+    writeFileSync(project, "PKfake-3mf");
+
+    const event = {
+      type: "job_done",
+      job: { id: "j1", plates: [{ index: 1, gcodePath: gcode, projectPath: project }] },
+    } as unknown as Parameters<typeof relocateJobEventGcode>[1];
+
+    const wire = (await relocateJobEventGcode(session, event)) as {
+      job: { plates: Array<Record<string, unknown>> };
+    };
+    const plate = wire.job.plates[0];
+
+    assert.ok(plate.gcodeId, "G-code must still be downloadable");
+    assert.ok(plate.projectId, "the project must be downloadable too");
+    assert.notEqual(plate.projectId, plate.gcodeId, "distinct files need distinct tokens");
+    for (const entry of session.gcodeFiles.values()) {
+      assert.ok(existsSync(entry.path), `dead token path: ${entry.path}`);
+      assert.ok(
+        isInsideDir(session.slicesDir, entry.path),
+        `token escaped the session sandbox: ${entry.path}`,
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

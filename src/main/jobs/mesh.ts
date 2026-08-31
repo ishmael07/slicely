@@ -12,12 +12,13 @@
 // back to ASCII parsing when that arithmetic doesn't check out.
 //
 // 3MF is best-effort: it's a zip containing an XML mesh at
-// 3D/3dmodel.model. We parse vertices/triangles for every <object><mesh> we
-// find and merge them, but we do NOT apply <component>/<build> transforms —
-// a 3MF assembled from multiple positioned components will come back with
-// its parts overlapping at the origin. That's an accepted limitation (see
-// parse3mf below); a file we can't make sense of throws a clear Error rather
-// than crashing the caller.
+// 3D/3dmodel.model. `parse3mfObjects` reads every <object><mesh> as its own
+// object and places it by its <build> item's transform; `parseMesh` then
+// merges them, because measuring a model wants one mesh while colouring one
+// needs the objects kept apart. <component> references — an object built out
+// of other objects — are still not resolved; such an object comes back with
+// its own mesh only. A file we can't make sense of throws a clear Error
+// rather than crashing the caller.
 //
 // Large files are read via a Node stream so the raw bytes are processed in
 // bounded chunks rather than pulled into memory as one Buffer. The one cost
@@ -405,7 +406,38 @@ function faceNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
  * model) have exactly one object at the identity transform and round-trip
  * correctly.
  */
+/** One object out of a 3MF, positioned by its build item. */
+export interface ThreeMfObject {
+  /** The object's id in the model document — the key every colour dialect
+   *  uses to say which object it is talking about. */
+  objectId: string;
+  triangles: Triangle[];
+}
+
 async function parse3mf(filePath: string): Promise<Triangle[]> {
+  const objects = await parse3mfObjects(filePath);
+  return objects.flatMap((o) => o.triangles);
+}
+
+/**
+ * Read a 3MF as SEPARATE objects, each placed where its build item puts it.
+ *
+ * `parseMesh` merges these into one soup, which is what measuring a model
+ * wants. Colour does not: every colour dialect in a 3MF says "object N is
+ * filament 2", so merging the objects throws the assignments away along with
+ * the boundaries they refer to. A downloaded multi-colour model arrives as one
+ * uncoloured blob because of it.
+ *
+ * Build-item transforms ARE applied here, so an assembly of positioned parts
+ * comes back laid out rather than every part overlapping at the origin. An
+ * object referenced by several items comes back once per item, because each is
+ * a real instance that has to be placed and printed.
+ *
+ * Still not handled: `<component>` references, where one object is built from
+ * others. Those are rare in print-ready downloads and would need the full
+ * transform graph; such an object comes back with its own mesh only.
+ */
+export async function parse3mfObjects(filePath: string): Promise<ThreeMfObject[]> {
   let xml: string;
   try {
     const directory = await unzipper.Open.file(filePath);
@@ -421,9 +453,12 @@ async function parse3mf(filePath: string): Promise<Triangle[]> {
   }
 
   const $ = cheerio.load(xml, { xmlMode: true });
-  const triangles: Triangle[] = [];
 
-  $("object").each((_i, objEl) => {
+  // Geometry per object id, in document order.
+  const meshes = new Map<string, Triangle[]>();
+  const order: string[] = [];
+  $("object").each((i, objEl) => {
+    const objectId = (objEl as { attribs?: Record<string, string> }).attribs?.id ?? String(i + 1);
     const vertices: Vec3[] = [];
     $(objEl)
       .find("mesh > vertices > vertex")
@@ -435,26 +470,78 @@ async function parse3mf(filePath: string): Promise<Triangle[]> {
           z: parseFloat(attribs.z ?? "0"),
         });
       });
+    const triangles: Triangle[] = [];
     $(objEl)
       .find("mesh > triangles > triangle")
       .each((_j, tEl) => {
         const attribs = (tEl as { attribs?: Record<string, string> }).attribs ?? {};
-        const i1 = Number(attribs.v1);
-        const i2 = Number(attribs.v2);
-        const i3 = Number(attribs.v3);
-        const a = vertices[i1];
-        const b = vertices[i2];
-        const c = vertices[i3];
-        if (a && b && c) {
-          triangles.push({ a, b, c, normal: faceNormal(a, b, c) });
-        }
+        const a = vertices[Number(attribs.v1)];
+        const b = vertices[Number(attribs.v2)];
+        const c = vertices[Number(attribs.v3)];
+        if (a && b && c) triangles.push({ a, b, c, normal: faceNormal(a, b, c) });
       });
+    if (triangles.length === 0) return;
+    meshes.set(objectId, triangles);
+    order.push(objectId);
   });
 
-  if (triangles.length === 0) {
+  // Place them. One entry per build item, so an object used twice is two
+  // instances rather than one that silently loses a copy.
+  const placed: ThreeMfObject[] = [];
+  const seen = new Set<string>();
+  $("build > item").each((_i, itemEl) => {
+    const attribs = (itemEl as { attribs?: Record<string, string> }).attribs ?? {};
+    const objectId = attribs.objectid;
+    const triangles = objectId ? meshes.get(objectId) : undefined;
+    if (!objectId || !triangles) return;
+    seen.add(objectId);
+    placed.push({ objectId, triangles: applyThreeMfTransform(triangles, attribs.transform) });
+  });
+
+  // An object nobody built is still geometry the user downloaded. Include it
+  // untransformed rather than silently dropping part of their model.
+  for (const objectId of order) {
+    if (seen.has(objectId)) continue;
+    placed.push({ objectId, triangles: meshes.get(objectId)! });
+  }
+
+  if (placed.length === 0) {
     throw new Error(
       `Couldn't parse 3MF "${filePath}": no mesh triangles found in 3D/3dmodel.model (Slicely's 3MF support is best-effort).`,
     );
   }
-  return triangles;
+  return placed;
+}
+
+/**
+ * Apply a 3MF `transform` attribute to a mesh.
+ *
+ * The attribute is twelve numbers: a 4x3 matrix in ROW-MAJOR order, the first
+ * nine being the 3x3 basis and the last three the translation. Points are row
+ * vectors multiplied on the LEFT, so a column of the basis is a destination
+ * axis:  x' = x*m0 + y*m3 + z*m6 + m9.
+ *
+ * Normals are re-derived from the transformed winding rather than rotated,
+ * because a transform may mirror — and a mirrored face whose normal was merely
+ * rotated would point into the solid.
+ */
+function applyThreeMfTransform(triangles: Triangle[], transform?: string): Triangle[] {
+  if (!transform) return triangles;
+  const m = transform.trim().split(/\s+/).map(Number);
+  if (m.length !== 12 || m.some((v) => !Number.isFinite(v))) return triangles;
+  // An identity transform is the common case; skip the whole pass.
+  const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+  if (identity.every((v, i) => m[i] === v)) return triangles;
+
+  const at = (v: Vec3): Vec3 => ({
+    x: v.x * m[0] + v.y * m[3] + v.z * m[6] + m[9],
+    y: v.x * m[1] + v.y * m[4] + v.z * m[7] + m[10],
+    z: v.x * m[2] + v.y * m[5] + v.z * m[8] + m[11],
+  });
+  return triangles.map((t) => {
+    const a = at(t.a);
+    const b = at(t.b);
+    const c = at(t.c);
+    return { a, b, c, normal: faceNormal(a, b, c) };
+  });
 }

@@ -7,8 +7,36 @@
 // on each builder for the derivation, since a flipped winding would make
 // volume/overhang assertions silently wrong rather than fail loudly.
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
 import type { Triangle } from "./mesh";
 import { type Vec3, add, cross, eulerToMatrix, matVec, sub } from "./vec3";
+
+/**
+ * Build a real 3MF — a ZIP — from a map of entry path to contents.
+ *
+ * Tests that read 3MF colour and geometry need files in dialects Slicely does
+ * not write (Bambu's, and core-spec material groups), so they cannot be built
+ * with the project's own writer. Returns the path and a cleanup that removes
+ * the whole temp tree.
+ */
+export function writeThreeMfFixture(entries: Record<string, string>): {
+  path: string;
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-fixture-"));
+  const staging = join(dir, "staging");
+  for (const [name, body] of Object.entries(entries)) {
+    const dest = join(staging, name);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, body, "utf8");
+  }
+  const path = join(dir, "model.3mf");
+  execFileSync("zip", ["-q", "-r", "-X", path, "."], { cwd: staging });
+  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 function tri(a: Vec3, b: Vec3, c: Vec3): Triangle {
   const n = cross(sub(b, a), sub(c, a));

@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeMeshData, detectStlKind, parseMesh } from "./mesh";
+import { computeMeshData, detectStlKind, parse3mfObjects, parseMesh } from "./mesh";
 import {
   binaryHeaderStartingWithSolid,
   buildCubeTriangles,
   buildTetrahedronTriangles,
   trianglesToAsciiStl,
   trianglesToBinaryStl,
+  writeThreeMfFixture,
 } from "./testFixtures";
 
 async function withTempFile(name: string, content: Buffer | string, fn: (path: string) => Promise<void>) {
@@ -114,4 +115,109 @@ test("volume sign is corrected when triangle winding is globally inverted", () =
   // cluster should have a normal whose z component is positive.
   const upFacing = mesh.largeFlatFaces.find((f) => f.normal.z > 0.9);
   assert.ok(upFacing, "expected an upward-facing large flat face after normal correction");
+});
+
+// ── 3MF objects, kept apart ────────────────────────────────────────────────
+// parseMesh merges a 3MF into one triangle soup, which is right for measuring
+// a model but destroys the thing that makes a multi-colour download
+// multi-colour: its objects. Each one carries its own extruder assignment, so
+// they have to survive as separate parts, positioned where the file put them.
+
+/** A 3MF holding two unit tetrahedra, each placed by its build item. */
+function twoObjectModel(transforms: [string, string]): string {
+  const mesh =
+    `<mesh><vertices>` +
+    `<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/>` +
+    `<vertex x="0" y="1" z="0"/><vertex x="0" y="0" z="1"/>` +
+    `</vertices><triangles>` +
+    `<triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/>` +
+    `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+    `</triangles></mesh>`;
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+    `<resources>` +
+    `<object id="10" type="model">${mesh}</object>` +
+    `<object id="20" type="model">${mesh}</object>` +
+    `</resources><build>` +
+    `<item objectid="10" transform="${transforms[0]}"/>` +
+    `<item objectid="20" transform="${transforms[1]}"/>` +
+    `</build></model>`
+  );
+}
+
+test("parse3mfObjects keeps each object separate, in document order", async () => {
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model": twoObjectModel([
+      "1 0 0 0 1 0 0 0 1 0 0 0",
+      "1 0 0 0 1 0 0 0 1 0 0 0",
+    ]),
+  });
+  try {
+    const objects = await parse3mfObjects(fixture.path);
+    assert.equal(objects.length, 2, "two objects must not be merged into one");
+    assert.deepEqual(objects.map((o: { objectId: string }) => o.objectId), ["10", "20"]);
+    assert.equal(objects[0].triangles.length, 4);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("build-item transforms are applied, so an assembly is laid out and not stacked", async () => {
+  // Without this, a 3MF assembled from several positioned parts comes back
+  // with every part overlapping at the origin — which looks like one object
+  // and slices like a collision.
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model": twoObjectModel([
+      "1 0 0 0 1 0 0 0 1 0 0 0",
+      "1 0 0 0 1 0 0 0 1 50 20 0", // translated 50mm in X, 20mm in Y
+    ]),
+  });
+  try {
+    const objects = await parse3mfObjects(fixture.path);
+    const second = objects[1].triangles.flatMap((t) => [t.a, t.b, t.c] as const);
+    assert.ok(
+      second.every((v) => v.x >= 50 && v.y >= 20),
+      "the second object must sit where its build item put it",
+    );
+    const first = objects[0].triangles.flatMap((t) => [t.a, t.b, t.c]);
+    assert.ok(first.some((v) => v.x === 0 && v.y === 0), "the first object stays at the origin");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a rotating transform rotates the geometry, not just its position", async () => {
+  // 90 degrees about Z: (1,0,0) -> (0,1,0). Row-major 4x3, translation last.
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model": twoObjectModel([
+      "0 1 0 -1 0 0 0 0 1 0 0 0",
+      "1 0 0 0 1 0 0 0 1 0 0 0",
+    ]),
+  });
+  try {
+    const objects = await parse3mfObjects(fixture.path);
+    const verts = objects[0].triangles.flatMap((t) => [t.a, t.b, t.c]);
+    assert.ok(
+      verts.some((v) => Math.abs(v.x) < 1e-9 && Math.abs(v.y - 1) < 1e-9),
+      "the vertex at (1,0,0) must have rotated to (0,1,0)",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("parseMesh still returns ONE merged mesh, so measuring a model is unchanged", async () => {
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model": twoObjectModel([
+      "1 0 0 0 1 0 0 0 1 0 0 0",
+      "1 0 0 0 1 0 0 0 1 50 20 0",
+    ]),
+  });
+  try {
+    const mesh = await parseMesh(fixture.path);
+    assert.equal(mesh.triangles.length, 8, "both objects, merged, as before");
+  } finally {
+    fixture.cleanup();
+  }
 });

@@ -10,9 +10,10 @@
 // yields a single-object 3MF.)
 //
 // Scope is deliberately narrow: one object per part, one instance each, an
-// identity transform plus a translation from the packer. No modifiers, no
-// per-face painting — painting a single mesh is a different problem that
-// genuinely requires the GUI.
+// identity transform plus a translation from the packer, and no modifiers.
+// Per-face painting is CARRIED, not created: codes read out of an imported
+// model are written back on the same triangles, so a painted download survives
+// the round trip. Choosing new regions by eye is still a GUI job.
 //
 // Format references: 3MF Core Specification 1.x, and PrusaSlicer's own
 // Slic3r_PE_model.config as emitted by --export-3mf (inspected directly).
@@ -21,6 +22,7 @@ import { writeFileSync } from "node:fs";
 import { deflateRawSync, crc32 } from "node:zlib";
 import { basename } from "node:path";
 import type { Triangle } from "./mesh";
+import type { ImportedPaint } from "./threemfColour";
 
 /**
  * A filament change partway up the print.
@@ -46,7 +48,20 @@ export interface ThreeMfPart {
   extruder: number;
   /** Translation applied to the object, in mm. */
   offset?: { x: number; y: number; z: number };
+  /**
+   * Per-triangle painting carried over from an imported 3MF, keyed by index
+   * into `triangles`. Re-emitted verbatim in its own dialect: this is how a
+   * model its author PAINTED — rather than split into parts — keeps its
+   * colours through Slicely instead of coming back grey.
+   */
+  paint?: ImportedPaint;
 }
+
+/** Namespace URIs for the painting attributes Slicely carries. Bambu's
+ *  `paint_color` uses no prefix, so it needs no declaration. */
+const PAINT_NAMESPACES: Record<string, string> = {
+  slic3rpe: "http://schemas.slic3r.org/3mf/2017/06",
+};
 
 /** XML-escape a value destined for an attribute. */
 function esc(s: string): string {
@@ -90,15 +105,20 @@ function modelXml(parts: ThreeMfPart[]): string {
       return next;
     };
 
-    for (const t of part.triangles) {
+    part.triangles.forEach((t, index) => {
       const a = vertexId(t.a.x, t.a.y, t.a.z);
       const b = vertexId(t.b.x, t.b.y, t.b.z);
       const c = vertexId(t.c.x, t.c.y, t.c.z);
       // A degenerate triangle (two shared vertices) is not printable geometry
       // and makes PrusaSlicer complain; drop it rather than pass it on.
-      if (a === b || b === c || a === c) continue;
-      triangles.push(`    <triangle v1="${a}" v2="${b}" v3="${c}"/>`);
-    }
+      if (a === b || b === c || a === c) return;
+      // The paint code is looked up by the triangle's index in the SOURCE
+      // list, so dropping a degenerate one shifts nothing: every surviving
+      // triangle keeps the code it was imported with.
+      const code = part.paint?.codes.get(index);
+      const painted = code ? ` ${part.paint!.attribute}="${esc(code)}"` : "";
+      triangles.push(`    <triangle v1="${a}" v2="${b}" v3="${c}"${painted}/>`);
+    });
 
     objects.push(
       `  <object id="${id}" type="model">\n` +
@@ -116,10 +136,23 @@ function modelXml(parts: ThreeMfPart[]): string {
     );
   });
 
+  // A namespaced attribute whose prefix was never declared is not valid XML,
+  // and a parser is entitled to reject the whole document over it — so the
+  // declaration appears exactly when something uses the prefix.
+  const prefixes = new Set(
+    parts
+      .map((p) => p.paint?.attribute)
+      .filter((a): a is string => !!a && a.includes(":"))
+      .map((a) => a.split(":")[0]),
+  );
+  const namespaces = [...prefixes]
+    .map((prefix) => ` xmlns:${prefix}="${esc(PAINT_NAMESPACES[prefix] ?? "")}"`)
+    .join("");
+
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<model unit="millimeter" xml:lang="en-US" ` +
-    `xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n` +
+    `xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${namespaces}>\n` +
     ` <resources>\n${objects.join("\n")}\n </resources>\n` +
     ` <build>\n${items.join("\n")}\n </build>\n` +
     `</model>\n`
