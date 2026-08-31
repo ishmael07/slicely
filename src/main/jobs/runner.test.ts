@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseDurationToMinutes, requestCancel, runJob, type SliceFn } from "./runner";
 import type { JobEvent, JobPart, JobPlate, PrintJob } from "../../shared/jobs";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCubeTriangles, trianglesToBinaryStl } from "./testFixtures";
@@ -164,6 +164,63 @@ test("a multi-part plate is sliced from ONE 3MF project, never from a list of ST
   }
 });
 
+
+test("a plate nobody asked to be coloured is sliced with NO filament_colour at all", async () => {
+  // The white-plate bug, at the seam where it actually reached PrusaSlicer.
+  // colour.ts fabricated "#ffffff" for a part with no requested colour, and
+  // the multi-instance path here filled its own gaps with "#FFFFFF" as well,
+  // so the plate's config carried an explicit `filament_colour = #FFFFFF` and
+  // the project opened WHITE. Writing no key leaves PrusaSlicer's own default,
+  // which is the honest answer when nobody has said anything about colour.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-nocolour-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 2)])]); // 2 copies => the 3MF project path
+    j.bed = { x: 220, y: 220, z: 250 };
+    let configPath: string | undefined;
+    const sliceFn: SliceFn = async (_p, _params, configIni) => {
+      configPath = configIni;
+      return { gcodePath: "out.gcode" };
+    };
+    await runJob(j, undefined, { sliceFn });
+
+    assert.ok(configPath, "the plate must be sliced against a config");
+    const ini = readFileSync(configPath!, "utf8");
+    assert.ok(
+      !/^\s*filament_colour\s*=/m.test(ini),
+      `no colour was requested, so no colour may be written. Got:\n${ini}`,
+    );
+    assert.ok(!/#FFFFFF/i.test(ini), "white must not be invented anywhere in the config");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a plate WITH a requested colour still carries it into the config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-colour-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const p = jobPart(a, 2);
+    p.colourHex = "#008080"; // teal
+    const j = job([{ index: 1, parts: [p], status: "planned", colours: ["#008080"] }]);
+    j.bed = { x: 220, y: 220, z: 250 };
+    let configPath: string | undefined;
+    const sliceFn: SliceFn = async (_path, _params, configIni) => {
+      configPath = configIni;
+      return { gcodePath: "out.gcode" };
+    };
+    await runJob(j, undefined, { sliceFn });
+
+    const ini = readFileSync(configPath!, "utf8");
+    assert.match(ini, /filament_colour = #008080/i, "a colour that WAS asked for must survive");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("parseDurationToMinutes handles day/hour/minute/second components", () => {
   assert.equal(parseDurationToMinutes("1d 2h 3m 4s"), 24 * 60 + 2 * 60 + 3 + Math.round(4 / 60));

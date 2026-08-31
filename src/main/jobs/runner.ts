@@ -18,8 +18,9 @@
 import type { JobEvent, JobPart, JobPlate, PrintJob } from "../../shared/jobs";
 import type { SliceMetrics, SliceParams, PrintMaterial } from "../../shared/types";
 import { slice } from "../prusaslicer";
+import { sessionSlicesDir } from "../session-context";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { parseMesh, type Triangle } from "./mesh";
 import { eulerToMatrix, matVec } from "./vec3";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
@@ -210,9 +211,36 @@ async function sliceOnePlate(
         job.bed,
         job.params.nozzleDiameterMm ?? 0.4,
         job.material ?? "PLA",
+        // One colour on this plate — show it, so opening the project in
+        // PrusaSlicer looks like what the user asked for.
+        plate.colours.length === 1 ? plate.colours[0] : undefined,
       ).path
     : undefined;
-  return doSlice(primary.path, params, configIni, outNameFor(plate));
+  const metrics = await doSlice(primary.path, params, configIni, outNameFor(plate, job));
+  // Leave a project behind for this plate too, so opening it in PrusaSlicer is
+  // the same action regardless of how many parts it holds — and so the colour
+  // travels with it.
+  try {
+    const mesh = await parseMesh(primary.path);
+    const projectPath = join(sessionSlicesDir(), `${outNameFor(plate, job)}.3mf`);
+    writeThreeMf(
+      projectPath,
+      [
+        {
+          path: primary.path,
+          triangles: orientedTriangles(mesh.triangles, primary, job.params.scale),
+          extruder: 1,
+          offset: { x: (job.bed?.x ?? 250) / 2, y: (job.bed?.y ?? 210) / 2, z: 0 },
+        },
+      ],
+      [],
+      readConfigText(configIni),
+    );
+    plate.projectPath = projectPath;
+  } catch {
+    // A missing project only costs the "open in PrusaSlicer" convenience.
+  }
+  return metrics;
 }
 
 /**
@@ -335,8 +363,13 @@ function orientedTriangles(
   }));
 }
 
-function outNameFor(plate: JobPlate): string {
-  return `plate-${plate.index}`;
+function outNameFor(plate: JobPlate, job: PrintJob): string {
+  // The job id is part of the name because a session slices more than once and
+  // every job has a plate 1. Sharing "plate-1.gcode" meant the second job
+  // overwrote the first's output in place — and since the first job's download
+  // token still pointed at that path, asking for the earlier plate handed back
+  // the later job's G-code.
+  return `plate-${plate.index}-${job.id.slice(0, 8)}`;
 }
 
 /**
@@ -357,15 +390,17 @@ async function sliceMultiMaterialPlate(
   const nozzleMm = job.params.nozzleDiameterMm ?? 0.4;
   const material: PrintMaterial = job.material ?? "PLA";
 
-  // Each extruder takes the colour of the part assigned to it.
+  // Each extruder takes the colour of the part assigned to it. A gap here is
+  // left UNDEFINED rather than filled with white: an extruder whose parts
+  // carry no colour is one nobody has said anything about, and writing
+  // "#FFFFFF" into the config turned that silence into an explicit white
+  // plate. Only the multi-extruder config below, which must state a value per
+  // extruder, substitutes anything — and only for slots this plate never uses.
   const extruders = distinctExtruders(plate.parts);
-  const colours: string[] = [];
+  const colours: Array<string | undefined> = [];
   for (const e of extruders) {
-    const owner = plate.parts.find((p) => (p.extruder ?? 1) === e);
-    colours[e - 1] = owner?.colourHex ?? "#FFFFFF";
-  }
-  for (let i = 0; i < colours.length; i++) {
-    if (!colours[i]) colours[i] = "#FFFFFF";
+    const owner = plate.parts.find((p) => (p.extruder ?? 1) === e && p.colourHex);
+    colours[e - 1] = owner?.colourHex;
   }
 
   // Place each instance where the PACKER put it. That layout is the one proven
@@ -397,10 +432,37 @@ async function sliceMultiMaterialPlate(
     }
   }
 
-  const outName = outNameFor(plate);
-  const projectPath = join(tmpdir(), `slicely-${outName}-${Date.now()}.3mf`);
-  writeThreeMf(projectPath, threeMfParts);
-  const configIni = synthesizeMultiMaterialConfig({ bed, nozzleMm, material, colours });
+  const outName = outNameFor(plate, job);
+  // Kept, not thrown into a temp file: this project IS the arranged, coloured
+  // plate, and opening it in PrusaSlicer is the natural way to check the
+  // layout and supports before committing hours of printing.
+  const projectPath = join(sessionSlicesDir(), `${outName}.3mf`);
+  // A plate can hold several parts and still need only one colour, and the
+  // multi-material config has a floor of two extruders (the wipe tower needs
+  // somewhere to purge to). Handing that to a single-colour plate opens the
+  // project as a two-spool printer carrying a phantom white filament. Use the
+  // plain single-extruder config when one colour is all this plate needs.
+  const configIni =
+    extruders.length > 1
+      ? synthesizeMultiMaterialConfig({
+          bed,
+          nozzleMm,
+          material,
+          // Per-extruder vectors must have an entry for every extruder, so an
+          // unused or uncoloured slot gets a neutral placeholder HERE, where it
+          // means "this spool is not part of the plan" — never as a stand-in
+          // for a colour a part was supposed to have.
+          colours: colours.map((c) => c ?? "#FFFFFF"),
+        })
+      : synthesizeConfigForGeometry(
+          "Slicely job printer",
+          bed,
+          nozzleMm,
+          material,
+          colours[0],
+        ).path;
+  writeThreeMf(projectPath, threeMfParts, [], readConfigText(configIni));
+  plate.projectPath = projectPath;
 
   // The 3MF already carries geometry, placement, and extruder assignment, so
   // extraInputs / arrange / merge would fight it.
@@ -413,6 +475,18 @@ async function sliceMultiMaterialPlate(
     brimWidthMm: job.params.brimWidthMm,
   };
   return doSlice(projectPath, params, configIni, outName);
+}
+
+/** The text of a synthesized config, or undefined if it can't be read. A
+ *  project without its settings still opens — it just shows the user's own
+ *  profile instead of the one Slicely sliced against. */
+function readConfigText(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 /** Sum whatever's known from completed plates into job.totals. Slice-derived

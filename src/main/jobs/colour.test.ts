@@ -108,3 +108,28 @@ test("toolChanges counts colour transitions between consecutive parts", () => {
   assert.equal(plan.toolChanges, 1);
   assert.equal(plan.wasteG, 3);
 });
+
+test("no requested colour and no known slots means NO colour — never a fabricated white", () => {
+  // This is the white-plate bug. With nothing requested and no printer polled
+  // (the ordinary case), resolveOne used to return "#ffffff" labelled
+  // reason:"user". The planner stamped it on every part, the runner wrote
+  // `filament_colour = #FFFFFF` into the plate's config, and PrusaSlicer
+  // opened a white plate the user never asked for. Absent must mean absent:
+  // PrusaSlicer's own default is a better answer than a confident wrong one.
+  const plan = planColours([part("/a.stl")], []);
+  assert.equal(plan.assignments[0].colourHex, undefined);
+  assert.equal(plan.assignments[0].reason, "unset");
+});
+
+test("a requested colour still survives when no slots are known", () => {
+  const plan = planColours([part("/a.stl", "#008080")], []);
+  assert.equal(plan.assignments[0].colourHex, "#008080");
+  assert.equal(plan.assignments[0].reason, "user");
+});
+
+test("with one loaded slot and nothing requested, the loaded colour is reported — it is real", () => {
+  const slots: FilamentSlot[] = [{ index: 0, colourHex: "#c81e1e", loaded: true }];
+  const plan = planColours([part("/a.stl")], slots);
+  assert.equal(plan.assignments[0].colourHex, "#c81e1e");
+  assert.equal(plan.assignments[0].reason, "default");
+});

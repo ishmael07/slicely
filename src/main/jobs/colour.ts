@@ -60,7 +60,9 @@ export function planColours(parts: JobPart[], slots: FilamentSlot[]): ColourPlan
   assignments.forEach((a, i) => {
     if (a.reason !== "nearest-colour") return;
     const requested = parts[i]?.colourHex;
-    if (requested) substituted.set(requested.toLowerCase(), a.colourHex);
+    // A nearest-colour match always resolved to a real slot, so a.colourHex is
+    // set; the guard keeps that guarantee explicit rather than asserted.
+    if (requested && a.colourHex) substituted.set(requested.toLowerCase(), a.colourHex);
   });
   for (const [requested, got] of substituted) {
     warnings.push(
@@ -100,12 +102,22 @@ function resolveOne(
   // colour. This is also the path taken when the caller didn't supply any
   // slot info at all (e.g. printer status hasn't been polled yet).
   if (singleExtruder) {
-    return {
-      partPath: part.path,
-      extruder: usable.length === 1 ? usable[0].index + 1 : 1,
-      colourHex: requested ?? usable[0]?.colourHex ?? "#ffffff",
-      reason: "user",
-    };
+    const extruder = usable.length === 1 ? usable[0].index + 1 : 1;
+    // What the user asked for wins, and is real: they load that spool.
+    if (requested) {
+      return { partPath: part.path, extruder, colourHex: requested, reason: "user" };
+    }
+    // Nothing requested, but the printer told us what is loaded — also real.
+    const loaded = normalizeHex(usable[0]?.colourHex);
+    if (loaded) {
+      return { partPath: part.path, extruder, colourHex: loaded, reason: "default" };
+    }
+    // Nothing requested and nothing known. Say so. Returning a colour here —
+    // "#ffffff" is what this used to do — is not a harmless placeholder: it
+    // travels through the planner into the plate config as an explicit
+    // `filament_colour`, and PrusaSlicer opens a white plate the user never
+    // asked for. This is the whole of the white-plate bug.
+    return { partPath: part.path, extruder, reason: "unset" };
   }
 
   // No colour requested at all: assign a slot round-robin-free default (the

@@ -69,10 +69,16 @@ export interface ColourAssignment {
   partPath: string;
   /** 1-based PrusaSlicer extruder index. */
   extruder: number;
-  /** "#RRGGBB" actually loaded in that slot. */
-  colourHex: string;
-  /** How the assignment was made. */
-  reason: "user" | "matched-slot" | "nearest-colour" | "default";
+  /** "#RRGGBB" actually loaded in that slot.
+   *
+   *  UNDEFINED means no colour is known — nothing was requested and no spool
+   *  reported one. That is a real answer, not a gap to fill in: inventing a
+   *  colour here is how a plate nobody asked to be white was written into a
+   *  project as `filament_colour = #FFFFFF`. Absent must stay absent all the
+   *  way down, so PrusaSlicer's own default is what shows. */
+  colourHex?: string;
+  /** How the assignment was made. `unset` = no colour is known at all. */
+  reason: "user" | "matched-slot" | "nearest-colour" | "default" | "unset";
 }
 
 /** A whole-job colour plan resolved against the printer's real loaded spools. */
@@ -136,6 +142,10 @@ export interface JobPlate {
   status: PlateStatus;
   /** Path to the sliced G-code, once sliced. */
   gcodePath?: string;
+  /** The 3MF project for this plate: every part arranged, oriented and
+   *  coloured as planned. Opening this in PrusaSlicer shows the real layout,
+   *  where opening the source STLs shows an unarranged pile. */
+  projectPath?: string;
   metrics?: SliceMetrics;
   /** Distinct colours on this plate, for the UI and for tool-change costing. */
   colours: string[];
