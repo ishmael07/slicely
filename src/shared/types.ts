@@ -225,6 +225,23 @@ export type AgentEvent =
   | { type: "job_progress"; event: JobEvent }
   /** Orientation pass result for a single part. */
   | { type: "orientation"; partPath: string; result: OrientationResult }
+  /** Something the user can act on, rendered as a button rather than buried in
+   *  prose. Slicely runs the slicer on the SERVER, so "opened it in PrusaSlicer"
+   *  means nothing to a browser on another machine — a button that hands over
+   *  the file (or the install page) is the version that actually works there. */
+  | {
+      type: "action";
+      /** Button text, e.g. "Open in PrusaSlicer". */
+      label: string;
+      kind: "open-project" | "link" | "install";
+      /** Where the button goes. For a server-side file the chat route swaps
+       *  this for a session-scoped download URL before it reaches the browser. */
+      href?: string;
+      /** Server-side file to hand over. Never sent to the browser as-is. */
+      filePath?: string;
+      /** One short line under the button, when the button alone isn't obvious. */
+      hint?: string;
+    }
   | { type: "error"; message: string }
   | { type: "done" };
 

@@ -26,7 +26,12 @@ import { eulerToMatrix, matVec } from "./vec3";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
 import { synthesizeMultiMaterialConfig, distinctExtruders } from "./multimaterial";
 import { synthesizeConfigForGeometry } from "../profiles";
-import { insertColourChanges, bandsToChanges } from "./colourchange";
+import {
+  insertColourChanges,
+  bandsToChanges,
+  stopsToChanges,
+  type HeightColourChange,
+} from "./colourchange";
 
 /** Job ids with a cancellation request in flight. Checked between plates
  *  (never mid-slice — PrusaSlicer's CLI has no cooperative cancellation
@@ -85,7 +90,7 @@ export async function runJob(
 
     try {
       const metrics = await sliceOnePlate(plate, job, doSlice);
-      applyColourBands(plate, job, metrics);
+      applyColourBands(plate, metrics);
       plate.status = "ready";
       plate.metrics = metrics;
       plate.gcodePath = metrics.gcodePath;
@@ -152,6 +157,11 @@ async function sliceOnePlate(
     throw new Error(`Plate ${plate.index} has no parts.`);
   }
   const primary = plate.parts[0];
+  // Resolve the plate's filament swaps FIRST. They are needed in two places
+  // that used to disagree: the project written for the user to open, and the
+  // finished G-code. Computing them once, here, is what keeps those two
+  // describing the same print.
+  resolveColourChanges(plate, job);
   // File-existence is validated by the slicer function itself (the real
   // prusaslicer.ts `slice()` already throws a clear "Model file not found"
   // before spawning anything) — checking it again here would just duplicate
@@ -212,8 +222,9 @@ async function sliceOnePlate(
         job.params.nozzleDiameterMm ?? 0.4,
         job.material ?? "PLA",
         // One colour on this plate — show it, so opening the project in
-        // PrusaSlicer looks like what the user asked for.
-        plate.colours.length === 1 ? plate.colours[0] : undefined,
+        // PrusaSlicer looks like what the user asked for. A banded plate has
+        // no single part colour, so it shows the colour it STARTS in instead.
+        plateDisplayColour(plate),
       ).path
     : undefined;
   const metrics = await doSlice(primary.path, params, configIni, outNameFor(plate, job));
@@ -233,7 +244,7 @@ async function sliceOnePlate(
           offset: { x: (job.bed?.x ?? 250) / 2, y: (job.bed?.y ?? 210) / 2, z: 0 },
         },
       ],
-      [],
+      plate.colourChanges ?? [],
       readConfigText(configIni),
     );
     plate.projectPath = projectPath;
@@ -241,6 +252,46 @@ async function sliceOnePlate(
     // A missing project only costs the "open in PrusaSlicer" convenience.
   }
   return metrics;
+}
+
+/**
+ * Work out this plate's filament swaps, and the colour it starts in.
+ *
+ * Explicit stops beat equal bands: "black up to 5 mm" is a more specific
+ * request than "two colours", and a caller that supplied both meant the
+ * specific one. Both are resolved against THIS plate's tallest part rather
+ * than the job's, because a swap is a height on a bed — a plate of short parts
+ * and a plate of tall ones do not change colour in the same place.
+ */
+function resolveColourChanges(plate: JobPlate, job: PrintJob): void {
+  const height = Math.max(...plate.parts.map((p) => p.sizeZ), 0);
+  const layerHeight = job.params.layerHeightMm ?? 0.2;
+
+  let changes: HeightColourChange[] = [];
+  let startColour: string | undefined;
+
+  if (job.colourStops && job.colourStops.length > 0) {
+    changes = stopsToChanges(height, layerHeight, job.colourStops);
+    // A stop at or below the bed IS the starting colour — stopsToChanges drops
+    // it as a swap precisely because nothing has to change to reach it.
+    startColour = job.colourStops.find(
+      (st) => (st.atZ ?? st.atLayer ?? st.atFraction ?? 0) <= (st.atLayer !== undefined ? 1 : 0),
+    )?.colourHex;
+  } else if (job.colourBands && job.colourBands.length >= 2) {
+    changes = bandsToChanges(height, job.colourBands);
+    startColour = job.colourBands[0];
+  }
+
+  plate.colourChanges = changes.length > 0 ? changes : undefined;
+  plate.startColour = startColour;
+}
+
+/** The single colour to paint this plate with in PrusaSlicer, if there is one.
+ *  A banded plate shows the colour it starts in; otherwise the one colour its
+ *  parts share. Several part colours means no single swatch is honest. */
+function plateDisplayColour(plate: JobPlate): string | undefined {
+  if (plate.startColour) return plate.startColour;
+  return plate.colours.length === 1 ? plate.colours[0] : undefined;
 }
 
 /**
@@ -252,13 +303,9 @@ async function sliceOnePlate(
  * Notes go on the plate so the user sees the heights the swaps actually landed
  * on, which are quantised to layer boundaries.
  */
-function applyColourBands(plate: JobPlate, job: PrintJob, metrics: SliceMetrics): void {
-  const bands = job.colourBands;
-  if (!bands || bands.length < 2 || !metrics.gcodePath) return;
-
-  const height = Math.max(...plate.parts.map((p) => p.sizeZ), 0);
-  const changes = bandsToChanges(height, bands);
-  if (changes.length === 0) return;
+function applyColourBands(plate: JobPlate, metrics: SliceMetrics): void {
+  const changes = plate.colourChanges;
+  if (!changes || changes.length === 0 || !metrics.gcodePath) return;
 
   try {
     const res = insertColourChanges(metrics.gcodePath, changes);
@@ -402,6 +449,9 @@ async function sliceMultiMaterialPlate(
     const owner = plate.parts.find((p) => (p.extruder ?? 1) === e && p.colourHex);
     colours[e - 1] = owner?.colourHex;
   }
+  // A banded plate has no per-part colour to show; the colour it starts in is
+  // the honest swatch for extruder 1.
+  if (!colours[0] && plate.startColour) colours[0] = plate.startColour;
 
   // Place each instance where the PACKER put it. That layout is the one proven
   // to fit; re-deriving positions here with a second algorithm is how a plate
@@ -461,7 +511,15 @@ async function sliceMultiMaterialPlate(
           material,
           colours[0],
         ).path;
-  writeThreeMf(projectPath, threeMfParts, [], readConfigText(configIni));
+  writeThreeMf(
+    projectPath,
+    threeMfParts,
+    plate.colourChanges ?? [],
+    readConfigText(configIni),
+    // More than one extruder means an AMS/MMU printer — one hot end fed by
+    // several spools, which PrusaSlicer calls MultiAsSingle.
+    extruders.length > 1 ? "MultiAsSingle" : "SingleExtruder",
+  );
   plate.projectPath = projectPath;
 
   // The 3MF already carries geometry, placement, and extruder assignment, so

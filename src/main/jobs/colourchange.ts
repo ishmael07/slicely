@@ -106,6 +106,70 @@ export function insertColourChanges(
 }
 
 /**
+ * One place a colour starts, expressed the way a person says it.
+ *
+ * Exactly one of the three positions is used, in the order listed. They exist
+ * because equal bands cannot express any of the requests people actually make:
+ * "black up to 5 mm" is a height, "change at layer 40" is a layer, and "the
+ * bottom third in black" is a fraction.
+ */
+export interface ColourStop {
+  /** Absolute height in mm at which this colour starts. */
+  atZ?: number;
+  /** 1-based layer number that is the FIRST layer in this colour. */
+  atLayer?: number;
+  /** Fraction of the model's height (0–1) at which this colour starts. */
+  atFraction?: number;
+  /** Colour that begins here, "#RRGGBB". */
+  colourHex: string;
+}
+
+/**
+ * Resolve explicit stops to the concrete heights `insertColourChanges` wants.
+ *
+ * A stop at or below the bed is the colour the print STARTS in — whatever is
+ * already loaded — so it produces no swap; emitting one would pause the printer
+ * before the first layer had been laid down. Everything above that becomes a
+ * swap, in height order.
+ *
+ * Stops above the model are deliberately kept rather than dropped:
+ * `insertColourChanges` reports them as skipped, and a request that quietly did
+ * nothing is worse than one the user is told about.
+ */
+export function stopsToChanges(
+  modelHeightMm: number,
+  layerHeightMm: number,
+  stops: ColourStop[],
+): HeightColourChange[] {
+  const layer = layerHeightMm > 0 ? layerHeightMm : 0.2;
+  const out: HeightColourChange[] = [];
+
+  for (const stop of stops) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(stop.colourHex)) continue; // not a colour; don't guess
+
+    let z: number | undefined;
+    if (typeof stop.atZ === "number" && Number.isFinite(stop.atZ)) {
+      z = stop.atZ;
+    } else if (typeof stop.atLayer === "number" && Number.isFinite(stop.atLayer)) {
+      // Layer N's top sits at N * layerHeight, and a swap lands on the first
+      // layer whose top is at or above the requested height — so N * layer
+      // makes layer N the first one in the new colour. Layer 1 is the bed.
+      z = stop.atLayer <= 1 ? 0 : stop.atLayer * layer;
+    } else if (typeof stop.atFraction === "number" && Number.isFinite(stop.atFraction)) {
+      z = modelHeightMm > 0 ? stop.atFraction * modelHeightMm : undefined;
+    }
+    // No position at all: there is nothing to resolve. Placing it somewhere
+    // plausible would be inventing a request the user never made.
+    if (z === undefined) continue;
+    if (z <= 0) continue; // the starting colour needs no swap
+
+    out.push({ atZ: Number(z.toFixed(2)), colourHex: stop.colourHex });
+  }
+
+  return out.sort((a, b) => a.atZ - b.atZ);
+}
+
+/**
  * Turn "make the bottom third red and the rest blue" into concrete heights.
  *
  * Bands are equal fractions of the model's height. The first colour starts at

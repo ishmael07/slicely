@@ -32,6 +32,7 @@ import type {
 } from "../shared/types";
 import { packPlates, type PlatePart } from "./plates";
 import { getConfig } from "./config";
+import { sessionSlicesDir } from "./session-context";
 import { ensureBackgroundProcessing } from "./profiles";
 
 const APP_NAME = "PrusaSlicer";
@@ -244,7 +245,7 @@ export async function slice(
   const base = basename(stlPath, extname(stlPath));
   // Name multi-part output as a "-plate" so it doesn't collide with single slices.
   const stem = outName ?? `${base}${multi ? "-plate" : ""}`;
-  const gcodePath = join(cfg.slicesDir, `${stem}.gcode`);
+  const gcodePath = join(sessionSlicesDir(), `${stem}.gcode`);
 
   // Load a printer/filament config. CLI overrides below take precedence over
   // --load values (priority: overrides > --load > 3mf-embedded > compiled
@@ -291,11 +292,6 @@ export async function slice(
     if (typeof p.rotateDeg === "number" && p.rotateDeg !== 0) {
       args.push("--rotate", String(p.rotateDeg));
     }
-    // Filament colour: preview-only on a single-extruder FDM print. We still
-    // pass it so the GUI/preview matches; the agent/UI tells the user it won't
-    // change the physical print. Normalize to #RRGGBB.
-    const colour = normalizeHexColour(p.filamentColour);
-    if (colour) args.push("--filament-colour", colour);
     return args;
   };
 
@@ -479,8 +475,23 @@ export async function readArrangeSpacing(
  *  through --save/--load), as opposed to per-import transforms like scale or
  *  rotate. Used by both the headless slice and the GUI-open path so the two
  *  can never drift apart. */
-function settingArgs(params: SliceParams): string[] {
+export function settingArgs(params: SliceParams): string[] {
   const args: string[] = [];
+
+  // Filament colour. This lives HERE, in the shared settings, rather than
+  // alongside the slice-only transforms where it started: writeEffectiveConfig
+  // builds the GUI's config from settingArgs alone, so a colour added further
+  // down reached a headless slice and never the editor. Asking for a black
+  // print and having PrusaSlicer open showing the default teal was that gap.
+  //
+  // Both keys are set because they answer different questions: filament_colour
+  // is the spool swatch in the sidebar, extruder_colour is what the plater
+  // paints the object with.
+  const colour = normalizeHexColour(params.filamentColour);
+  if (colour) {
+    args.push("--filament-colour", colour);
+    args.push("--extruder-colour", colour);
+  }
 
   // Plain-mm value, no multiplier.
   if (typeof params.layerHeightMm === "number") {
@@ -591,7 +602,7 @@ export async function writeEffectiveConfig(
         ? cfg.prusaConfigIni
         : undefined;
 
-  const outPath = join(cfg.slicesDir, "_gui-settings.ini");
+  const outPath = join(sessionSlicesDir(), "_gui-settings.ini");
   const args: string[] = [];
   if (base) args.push("--load", base);
   args.push(...settingArgs(params), "--save", outPath);

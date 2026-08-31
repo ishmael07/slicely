@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { insertColourChanges, bandsToChanges } from "./colourchange";
+import { insertColourChanges, bandsToChanges, stopsToChanges } from "./colourchange";
 
 /** A G-code skeleton with the layer markers PrusaSlicer emits. */
 function fakeGcode(layerHeights: number[]): string {
@@ -106,4 +106,71 @@ test("no changes leaves the file byte-identical", () => {
     assert.equal(res.inserted, 0);
     assert.equal(readFileSync(p, "utf8"), before);
   });
+});
+
+// ── Explicit stops ─────────────────────────────────────────────────────────
+// Equal bands answer "make it three colours". They cannot answer "black up to
+// 5 mm", "change at layer 40", or "the bottom third in black" — the requests
+// people actually make about a two-tone print.
+
+test("stopsToChanges resolves an absolute height straight through", () => {
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atZ: 5, colourHex: "#1E6FC8" }]), [
+    { atZ: 5, colourHex: "#1E6FC8" },
+  ]);
+});
+
+test("stopsToChanges resolves a layer number against the layer height", () => {
+  // "Change at layer 40" means layer 40 is the FIRST layer in the new colour.
+  // insertColourChanges lands a swap on the first layer whose top is at or
+  // above the height, and layer N's top is N * layerHeight — so 40 * 0.2.
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atLayer: 40, colourHex: "#000000" }]), [
+    { atZ: 8, colourHex: "#000000" },
+  ]);
+});
+
+test("stopsToChanges resolves a fraction of the model height", () => {
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atFraction: 1 / 3, colourHex: "#000000" }]), [
+    { atZ: 10, colourHex: "#000000" },
+  ]);
+});
+
+test("a stop at the bed is the STARTING colour, not a swap", () => {
+  // The colour a print starts in needs no filament change — it is whatever is
+  // already loaded. Emitting a swap at z=0 would pause before the first layer.
+  assert.deepEqual(
+    stopsToChanges(30, 0.2, [
+      { atZ: 0, colourHex: "#000000" },
+      { atZ: 10, colourHex: "#1E6FC8" },
+    ]),
+    [{ atZ: 10, colourHex: "#1E6FC8" }],
+  );
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atLayer: 1, colourHex: "#000000" }]), []);
+});
+
+test("stops come back in height order however they were given", () => {
+  assert.deepEqual(
+    stopsToChanges(30, 0.2, [
+      { atFraction: 0.5, colourHex: "#00FF00" },
+      { atZ: 4, colourHex: "#FF0000" },
+      { atLayer: 100, colourHex: "#0000FF" },
+    ]),
+    [
+      { atZ: 4, colourHex: "#FF0000" },
+      { atZ: 15, colourHex: "#00FF00" },
+      { atZ: 20, colourHex: "#0000FF" },
+    ],
+  );
+});
+
+test("a stop with no usable height, or an unusable colour, is dropped rather than guessed at", () => {
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ colourHex: "#FF0000" }]), []);
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atZ: 5, colourHex: "not a colour" }]), []);
+});
+
+test("stopsToChanges keeps a too-high stop so the caller can report it as skipped", () => {
+  // insertColourChanges already reports out-of-range changes; silently dropping
+  // them here would mean the user is never told their "at 90 mm" did nothing.
+  assert.deepEqual(stopsToChanges(30, 0.2, [{ atZ: 90, colourHex: "#FF0000" }]), [
+    { atZ: 90, colourHex: "#FF0000" },
+  ]);
 });

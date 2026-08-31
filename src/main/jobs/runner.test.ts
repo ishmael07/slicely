@@ -222,6 +222,114 @@ test("a plate WITH a requested colour still carries it into the config", async (
   }
 });
 
+/** Read one entry out of a written 3MF project. */
+async function entryText(threeMfPath: string, name: string): Promise<string | undefined> {
+  const unzipper = await import("unzipper");
+  const archive = await unzipper.Open.file(threeMfPath);
+  const entry = archive.files.find((f) => f.path === name);
+  return entry ? (await entry.buffer()).toString("utf8") : undefined;
+}
+
+test("colour bands travel INTO the plate project, not just into the G-code", async () => {
+  // Bands were only ever post-processed into the finished G-code as M600s. The
+  // project a user opens was written with no colour changes at all, so the
+  // plate showed one flat colour and the swaps were invisible and un-editable.
+  // A project that carries them shows the bands in Preview and can be adjusted
+  // by hand — which is the whole reason to open it.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-bands-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 1)])]);
+    j.bed = { x: 220, y: 220, z: 250 };
+    j.colourBands = ["#000000", "#1E6FC8"]; // black bottom half, blue top half
+    const sliceFn: SliceFn = async () => ({ gcodePath: join(dir, "out.gcode") });
+    writeFileSync(join(dir, "out.gcode"), ";LAYER_CHANGE\n;Z:5\nG1 X1\n");
+
+    const result = await runJob(j, undefined, { sliceFn });
+    const project = result.plates[0].projectPath;
+    assert.ok(project, "the plate must leave a project behind");
+
+    const xml = await entryText(project!, "Metadata/Slic3r_PE_custom_gcode_per_print_z.xml");
+    assert.ok(xml, "the project must carry the colour changes");
+    assert.match(xml!, /print_z="5"/, "the swap sits at half the 10mm part's height");
+    assert.match(xml!, /color="#1E6FC8"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a banded plate opens showing the colour it STARTS in", async () => {
+  // filament_colour is the swatch PrusaSlicer paints the plate with. With bands
+  // there is no single part colour to use, so the plate opened in the default
+  // colour — the one colour the user definitely did not ask for.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-bandcolour-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 1)])]);
+    j.bed = { x: 220, y: 220, z: 250 };
+    j.colourBands = ["#000000", "#1E6FC8"];
+    let configPath: string | undefined;
+    const sliceFn: SliceFn = async (_p, _params, configIni) => {
+      configPath = configIni;
+      return { gcodePath: join(dir, "out.gcode") };
+    };
+    writeFileSync(join(dir, "out.gcode"), ";LAYER_CHANGE\n;Z:5\nG1 X1\n");
+    await runJob(j, undefined, { sliceFn });
+
+    const ini = readFileSync(configPath!, "utf8");
+    assert.match(ini, /filament_colour = #000000/i, "the first band is the colour the print starts in");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bands reach the project on a multi-instance plate too", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-bands-mm-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 2)])]);
+    j.bed = { x: 220, y: 220, z: 250 };
+    j.colourBands = ["#000000", "#1E6FC8"];
+    const sliceFn: SliceFn = async () => ({ gcodePath: join(dir, "out.gcode") });
+    writeFileSync(join(dir, "out.gcode"), ";LAYER_CHANGE\n;Z:5\nG1 X1\n");
+
+    const result = await runJob(j, undefined, { sliceFn });
+    const xml = await entryText(
+      result.plates[0].projectPath!,
+      "Metadata/Slic3r_PE_custom_gcode_per_print_z.xml",
+    );
+    assert.ok(xml, "the multi-instance project must carry the colour changes too");
+    assert.match(xml!, /color="#1E6FC8"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the heights the swaps actually landed on are recorded on the plate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-runner-bandz-"));
+  const a = join(dir, "a.stl");
+  writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+  try {
+    const j = job([plate(1, [jobPart(a, 1)])]);
+    j.bed = { x: 220, y: 220, z: 250 };
+    j.colourBands = ["#000000", "#1E6FC8"];
+    const sliceFn: SliceFn = async () => ({ gcodePath: join(dir, "out.gcode") });
+    writeFileSync(join(dir, "out.gcode"), ";LAYER_CHANGE\n;Z:5\nG1 X1\n");
+
+    const result = await runJob(j, undefined, { sliceFn });
+    assert.deepEqual(result.plates[0].colourChanges, [{ atZ: 5, colourHex: "#1E6FC8" }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("parseDurationToMinutes handles day/hour/minute/second components", () => {
   assert.equal(parseDurationToMinutes("1d 2h 3m 4s"), 24 * 60 + 2 * 60 + 3 + Math.round(4 / 60));
   assert.equal(parseDurationToMinutes("45m 30s"), 45 + Math.round(30 / 60));

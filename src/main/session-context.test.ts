@@ -3,14 +3,16 @@
 // other's active model, preferences, or job.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { getConfig } from "./config";
 import {
   runInSession,
   sessionContext,
   currentSessionId,
   DEFAULT_SESSION_ID,
+  sessionSlicesDir,
 } from "./session-context";
 import { sessionState } from "./agent/state";
 import { getSettings, updateSettings } from "./settings";
@@ -103,4 +105,30 @@ after(() => {
       force: true,
     });
   }
+});
+
+test("two sessions never share a slices directory", () => {
+  // PrusaSlicer names output after the plate, so concurrent visitors all want
+  // "plate-1.gcode". When that resolved to one shared directory, the second
+  // slice overwrote the first before the server could adopt it, and the first
+  // visitor downloaded the second's part.
+  const a = sessionContext("sess-a", join(tmpdir(), "slicely-iso-a"));
+  const b = sessionContext("sess-b", join(tmpdir(), "slicely-iso-b"));
+
+  const dirA = runInSession(a, () => sessionSlicesDir());
+  const dirB = runInSession(b, () => sessionSlicesDir());
+
+  assert.notEqual(dirA, dirB);
+  assert.ok(dirA.startsWith(a.dir), `${dirA} must live inside ${a.dir}`);
+  assert.ok(dirB.startsWith(b.dir), `${dirB} must live inside ${b.dir}`);
+  assert.ok(existsSync(dirA) && existsSync(dirB), "both directories must be created");
+
+  rmSync(a.dir, { recursive: true, force: true });
+  rmSync(b.dir, { recursive: true, force: true });
+});
+
+test("outside a session, slices still land where Electron has always put them", () => {
+  // The desktop app has one user and an existing workdir; session scoping must
+  // not relocate its output.
+  assert.equal(sessionSlicesDir(), join(getConfig().workdir, "slices"));
 });

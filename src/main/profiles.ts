@@ -248,9 +248,10 @@ export function synthesizeConfigForGeometry(
   bed: { x: number; y: number; z: number },
   nozzleMm: number,
   material = "PLA",
+  colourHex?: string,
 ): { path: string; printer: PrinterPreset } {
   const printer: PrinterPreset = { label, nozzleMm, bed };
-  const path = writeSynthConfig("custom", printer, material);
+  const path = writeSynthConfig("custom", printer, material, colourHex);
   return { path, printer };
 }
 
@@ -260,12 +261,16 @@ function writeSynthConfig(
   stem: string,
   printer: PrinterPreset,
   material: string,
+  colourHex?: string,
 ): string {
   const fil = MATERIAL_FILAMENT[material] ?? MATERIAL_FILAMENT.PLA;
   const cfg = getConfig();
   const dir = join(cfg.workdir, "configs");
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${stem}-${material}.ini`);
+  // The colour is part of the identity: two plates of the same printer and
+  // material but different filament need different configs.
+  const tag = colourHex ? `-${colourHex.replace("#", "")}` : "";
+  const path = join(dir, `${stem}-${material}${tag}.ini`);
 
   // bed_shape is a comma-separated list of "XxY" rectangle vertices.
   const { x, y, z } = printer.bed;
@@ -283,7 +288,15 @@ function writeSynthConfig(
     `binary_gcode = 0\n` +
     `filament_diameter = 1.75\n` +
     `filament_density = ${fil.densityGCm3}\n` +
-    `filament_cost = ${fil.costPerKg}\n`;
+    `filament_cost = ${fil.costPerKg}\n` +
+    // Show the requested colour in PrusaSlicer. The physical print is whatever
+    // filament is loaded, but a project that opens showing the part in the
+    // colour the user asked for is the point of asking — otherwise their
+    // request survives only as text in a chat log.
+    (colourHex && /^#[0-9a-fA-F]{6}$/.test(colourHex)
+      ? `filament_colour = ${colourHex.toUpperCase()}\n` +
+        `extruder_colour = ${colourHex.toUpperCase()}\n`
+      : "");
 
   writeFileSync(path, ini, "utf8");
   return path;

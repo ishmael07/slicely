@@ -149,6 +149,14 @@ export interface JobPlate {
   metrics?: SliceMetrics;
   /** Distinct colours on this plate, for the UI and for tool-change costing. */
   colours: string[];
+  /** Filament swaps up the height of this plate, resolved against the plate's
+   *  own tallest part. Written into the plate's project so PrusaSlicer SHOWS
+   *  them and lets the user move them, and inserted into the finished G-code
+   *  as the actual swap commands. */
+  colourChanges?: Array<{ atZ: number; colourHex: string }>;
+  /** The colour the plate STARTS in, when it is banded. Used as the project's
+   *  filament_colour so it opens looking like the print's first layer. */
+  startColour?: string;
   /** Why these parts were grouped together. */
   rationale?: string;
   /** Set when status is "failed". */
@@ -194,6 +202,20 @@ export interface PrintJob {
    * a banded plate holds more than one part.
    */
   colourBands?: string[];
+  /**
+   * Colour changes at heights the user named, rather than at equal fractions.
+   * "black up to 5 mm", "change at layer 40", "the bottom third in black" —
+   * requests equal bands cannot express. Resolved by colourchange.ts against
+   * the plate's height and the active layer height.
+   *
+   * When both are given, stops win: they are the more specific request.
+   */
+  colourStops?: Array<{
+    atZ?: number;
+    atLayer?: number;
+    atFraction?: number;
+    colourHex: string;
+  }>;
   colourPlan?: ColourPlan;
   /** Summed across every plate, once sliced. */
   totals?: JobTotals;
@@ -230,6 +252,8 @@ export interface JobPlanOptions {
   slots?: FilamentSlot[];
   /** Colours stacked up the print, bottom first — see PrintJob.colourBands. */
   colourBands?: string[];
+  /** Explicit colour stops — see PrintJob.colourStops. */
+  colourStops?: PrintJob["colourStops"];
   /** Called as planning proceeds, so a caller can show what is happening
    *  instead of a spinner that never changes. */
   onProgress?: (p: PlanProgress) => void;

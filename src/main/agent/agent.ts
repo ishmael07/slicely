@@ -35,8 +35,8 @@ MAX-OUT SLICING — multi-part, multi-plate, copies, transforms, colour:
 - DEFAULT "OPEN" = THE EDITABLE EDITOR, PRE-SLICED. When the user says "open it", "open in PrusaSlicer", "slice it and open in the editor", "let me take over", or "tweak it myself", use open_in_slicer. It opens the MODEL in the normal, editable PrusaSlicer (all parts arranged) with the slice settings loaded AND — if PrusaSlicer is currently CLOSED — turns on its background-processing pref so the model auto-slices as it loads (the user just clicks the Preview tab, no Slice click). Relay whatever the tool returns: if PrusaSlicer was ALREADY open, pre-slicing couldn't be enabled for that session (it reads prefs at launch), so the user presses Slice this time — or can quit it and reopen via Slicely to get auto-slice-on-load. This is the right choice unless the user explicitly wants the read-only finished result.
 - FINISHED SLICE / G-CODE VIEWER = OPT-IN ONLY. Use slice_and_open ONLY when the user explicitly wants to SEE THE FINISHED RESULT in a read-only view — phrasings like "show me the finished product", "show me the finished slice", "open the export/g-code", "just show me the toolpaths". It slices headlessly (accurate, deduped metrics — shown once) and opens the ALREADY-SLICED G-code in PrusaSlicer's G-code viewer, zero clicks. Prefer open_in_slicer (editable, pre-sliced) when the user might want to adjust anything; use slice_and_open when they only want to look.
 - HONESTY: PrusaSlicer exposes no API to auto-press the Slice button or to open the editor directly on its Preview tab (any action flag forces headless mode; tab control is internal). The honest best for the editor is background-processing (auto-slice on load → one tap on Preview, no wait). The only TRUE zero-click finished view is the read-only G-code viewer. Never claim Slicely "clicks Slice" or opens the editor straight onto Preview.
-- You can pass slice_model / slice_and_open: copies (N auto-arranged copies of one model), scale, rotateDeg, merge (combine parts into one object), arrangeParts (default true), and filamentColour.
-- FILAMENT COLOUR IS PREVIEW-ONLY on a single-extruder printer: it changes the on-screen preview, NOT the physical print (the real colour is whatever filament is loaded). Always say this when setting a colour, so the user isn't misled.
+- You can pass slice_model / slice_and_open: copies (N auto-arranged copies of one model), scale, rotateDeg, merge (combine parts into one object), arrangeParts (default true), and filamentColour. open_in_slicer also takes scale, rotateDeg and filamentColour — pass them there when the user asks to open something at a different size, angle or colour, so what opens matches what they asked for.
+- COLOUR: when the user names a colour ("make it black", "in red"), ALWAYS pass filamentColour. It sets the colour in the project and in PrusaSlicer, so the plate opens showing the part in the colour they asked for. Do NOT skip it, and do NOT offer it as an optional extra — asking for black and being shown the default teal is a broken result. Add ONE short line that the physical colour is whichever spool is loaded, so they know to load that filament; never dwell on it or call the colour "preview-only".
 - MULTI-PLATE + OPEN: when a job splits across multiple plates, the GUI shows ONE bed at a time. slice_and_open opens the finished G-code for plate 1; tell the user the other plates are sliced too and they can open each one separately.
 - LIVE GUI: PrusaSlicer has no API to control its already-open window in real time. The honest equivalents are: open_in_slicer (open the model in the editor with settings loaded, ready to slice — the default), or slice_and_open (slice headlessly, then open the finished G-code in the viewer — only when the user wants the finished result). Frame it that way — don't claim to puppeteer the live window or auto-press buttons.
 
@@ -137,6 +137,18 @@ export class SlicelyAgent {
           } catch (err) {
             const msg = (err as Error).message ?? String(err);
             emit({ type: "tool_end", tool: tu.name, ok: false, summary: msg });
+            // A missing slicer is the one failure the user can actually fix, so
+            // give them the install page as a button instead of leaving the fix
+            // as a sentence inside an error string.
+            if (/prusaslicer not found|not installed/i.test(msg)) {
+              emit({
+                type: "action",
+                label: "Download PrusaSlicer",
+                kind: "install",
+                href: "https://www.prusa3d.com/page/prusaslicer_424/",
+                hint: "Slicely needs PrusaSlicer to slice. Searching and importing work without it.",
+              });
+            }
             toolResults.push({
               type: "tool_result",
               tool_use_id: tu.id,

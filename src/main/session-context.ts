@@ -73,6 +73,29 @@ export function currentSessionId(): string {
   return currentSession().id;
 }
 
+/**
+ * Where slicer output for the ambient session belongs.
+ *
+ * PrusaSlicer names its output after the plate ("plate-1.gcode"), so every
+ * visitor slicing at the same time wants the same filename. Writing those into
+ * one shared directory meant one visitor's slice could overwrite another's
+ * between the moment PrusaSlicer wrote it and the moment the server adopted
+ * it — the second visitor would then download the first's part. Giving each
+ * session its own directory removes the collision instead of racing it.
+ *
+ * For the default session (Electron, and anything outside a request) this is
+ * `<workdir>/slices` — exactly where v1 wrote, so nothing moves.
+ */
+export function sessionSlicesDir(): string {
+  const dir = join(currentSession().dir, "slices");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* surfaced later if we actually fail to write */
+  }
+  return dir;
+}
+
 /** Resolve a filename inside the ambient session's directory. */
 export function sessionFile(name: string): string {
   return join(currentSession().dir, name);

@@ -38,6 +38,7 @@ import {
 } from "../profiles";
 import { getPreferences, printerGeometry, updatePreferences } from "../settings";
 import { sessionState } from "./state";
+import { join } from "node:path";
 import {
   V2_TOOLS,
   V2_TOOL_NAMES,
@@ -208,7 +209,9 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
   filamentColour: {
     type: "string",
     description:
-      'Filament colour as hex, e.g. "#33aaff". PREVIEW-ONLY on a single-extruder printer — does not change the physical print.',
+      'Filament colour as hex, e.g. "#33aaff". Pass this whenever the user names a colour: it is written into ' +
+      'the config and the plate project, so PrusaSlicer opens showing the part in that colour. The physical ' +
+      'print is whatever spool is loaded.',
   },
 };
 
@@ -434,6 +437,13 @@ const V1_TOOLS: Anthropic.Tool[] = [
         },
         brimWidthMm: { type: "number", description: "Brim width in mm (0 = none)." },
         nozzleDiameterMm: { type: "number", description: "Nozzle diameter in mm (e.g. 0.4)." },
+        // Declared here, not just on slice_model: "make it black and twice as
+        // big, then open it" is one request. While these were missing, the
+        // model had no way to express them on an open and they were silently
+        // dropped — the plate opened at stock size in the default colour.
+        filamentColour: SLICE_PROPERTIES.filamentColour,
+        scale: SLICE_PROPERTIES.scale,
+        rotateDeg: SLICE_PROPERTIES.rotateDeg,
       },
     },
   },
@@ -665,8 +675,37 @@ export async function executeTool(
     }
 
     case "open_in_slicer": {
-      // Open the whole plate (all parts) when using the active multi-part model.
+      // Prefer the planned PLATE PROJECT when there is one. It carries the
+      // arrangement, the chosen orientations and the requested colours, so
+      // PrusaSlicer opens showing what Slicely actually planned — opening the
+      // source STLs instead shows an unarranged, uncoloured pile.
       const usingActive = !input.path;
+      if (usingActive && sessionState.lastJobId) {
+        const { getJob } = await import("../jobs");
+        const job = await getJob(sessionState.lastJobId);
+        const projects = (job?.plates ?? [])
+          .map((pl) => pl.projectPath)
+          .filter((x): x is string => Boolean(x));
+        if (projects.length > 0) {
+          await openModelInEditorSliced(projects[0], sessionState.lastConfigIni);
+          // Slicely opened it on the machine running the server. For a browser
+          // anywhere else that did nothing visible, so hand over the file too.
+          emit({
+            type: "action",
+            label: "Open in PrusaSlicer",
+            kind: "open-project",
+            filePath: projects[0],
+            hint: "Downloads the plate as a .3mf project — arranged, oriented and coloured as planned.",
+          });
+          return (
+            `Opened plate 1 of "${job?.name ?? "the job"}" in PrusaSlicer — parts arranged, ` +
+            `oriented and coloured as planned.` +
+            (projects.length > 1
+              ? ` This job has ${projects.length} plates; ask to open another by number.`
+              : "")
+          );
+        }
+      }
       const paths =
         usingActive && sessionState.lastModelParts.length > 1
           ? sessionState.lastModelParts
@@ -701,11 +740,41 @@ export async function executeTool(
         }
       }
 
-      // Materialize the effective config and open the EDITABLE editor with it
-      // loaded — in pre-sliced mode (background_processing) so the slice is ready
-      // the moment the user clicks Preview.
+      // Materialize the effective config, then hand PrusaSlicer a PROJECT that
+      // carries it — not the loose models with the config on the command line.
+      //
+      // PrusaSlicer ships single_instance = 1. With the app already open, a
+      // second launch does not start a second instance: the file paths are
+      // passed to the running one and everything else on the command line,
+      // `--load` included, is dropped. The models appeared and the settings did
+      // not, so a plate opened ignoring the printer, the layer height and the
+      // colour the user asked for. Settings inside the file survive that.
       const guiConfig = await writeEffectiveConfig(params, baseConfig);
-      const opened = await openModelInEditorSliced(paths, guiConfig);
+      const { writeEditorProject } = await import("../jobs/editorProject");
+      const { sessionSlicesDir } = await import("../session-context");
+      const bed = resolveSliceConfig(
+        sessionState.printerKey,
+        sessionState.material,
+        customGeometry(),
+      ).printer?.bed ?? { x: 250, y: 210, z: 210 };
+      const project = await writeEditorProject({
+        paths: Array.isArray(paths) ? paths : [paths],
+        bed,
+        configIni: guiConfig,
+        destPath: join(sessionSlicesDir(), "open-in-slicer.3mf"),
+        scale: params.scale,
+        rotateDeg: params.rotateDeg,
+      }).catch(() => undefined);
+      const opened = await openModelInEditorSliced(project ?? paths, guiConfig);
+      if (project) {
+        emit({
+          type: "action",
+          label: "Open in PrusaSlicer",
+          kind: "open-project",
+          filePath: project,
+          hint: "Downloads the plate as a .3mf project, with your settings already in it.",
+        });
+      }
 
       const n = Array.isArray(paths) ? paths.length : 1;
       const applied = guiConfig ? " with your slicing settings applied" : "";
@@ -878,7 +947,7 @@ async function runSlice(
 
   const plateCount = job.plates.length;
   const colourNote = params.filamentColour
-    ? " Colour set for the preview only — it doesn't change a single-extruder print."
+    ? ` Set to ${params.filamentColour} — load that filament to print it.`
     : "";
   const configNote =
     resolved.source !== "user-config"

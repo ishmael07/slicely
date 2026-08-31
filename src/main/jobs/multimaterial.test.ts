@@ -135,3 +135,78 @@ test("a single colour still yields a valid two-extruder config floor", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a project's embedded config keeps its first setting", () => {
+  // PrusaSlicer discards the first line of Metadata/Slic3r_PE.config as a
+  // generator stamp. Emitting settings from line one silently lost whichever
+  // sorted first — bed_shape — so a plate arranged for a 325x320 bed opened
+  // against the built-in 200x200 one and every part read as out of bounds.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-cfg-"));
+  const f = join(dir, "t.3mf");
+  try {
+    const ini = [
+      "# Synthesized by Slicely",
+      "[print]",
+      "bed_shape = 0x0,325x0,325x320,0x320",
+      "filament_colour = #1E6FC8",
+      "; a stray comment",
+      "",
+      "layer_height = 0.2",
+    ].join("\n");
+
+    writeThreeMf(f, [{ path: "c.stl", triangles: buildCubeTriangles(10), extruder: 1 }], [], ini);
+    const cfg = execFileSync("unzip", ["-p", f, "Metadata/Slic3r_PE.config"], {
+      encoding: "utf8",
+    });
+    const lines = cfg.split("\n").filter(Boolean);
+
+    assert.ok(lines[0].startsWith("; ") && !lines[0].includes("="), "line 1 must be a header");
+    assert.ok(lines.includes("; bed_shape = 0x0,325x0,325x320,0x320"), "bed must survive");
+    assert.ok(lines.includes("; filament_colour = #1E6FC8"), "colour must survive");
+    assert.ok(lines.includes("; layer_height = 0.2"), "print settings must survive");
+    assert.ok(
+      !lines.some((l) => l.includes("[print]") || l.includes("stray comment")),
+      "ini section headers and comments do not belong in a project config",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a project written without settings carries no config part", () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-cfg-"));
+  const f = join(dir, "t.3mf");
+  try {
+    writeThreeMf(f, [{ path: "c.stl", triangles: buildCubeTriangles(10), extruder: 1 }]);
+    const listing = execFileSync("unzip", ["-l", f], { encoding: "utf8" });
+    assert.ok(!listing.includes("Metadata/Slic3r_PE.config"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the custom-gcode document declares the printer it was written for", () => {
+  // PrusaSlicer's CustomGCode::Mode. A project whose config has two extruders
+  // but whose colour changes claim "SingleExtruder" describes a printer that
+  // isn't there; MultiAsSingle is one hot end fed by several spools, which is
+  // exactly what `single_extruder_multi_material = 1` (an AMS/MMU) means.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-3mf-mode-"));
+  const single = join(dir, "single.3mf");
+  const ams = join(dir, "ams.3mf");
+  const parts = [{ path: "a.stl", triangles: buildCubeTriangles(10), extruder: 1 }];
+  const changes = [{ atZ: 5, colourHex: "#1E6FC8" }];
+  try {
+    writeThreeMf(single, parts, changes);
+    writeThreeMf(ams, parts, changes, undefined, "MultiAsSingle");
+    const read = (f: string) =>
+      execFileSync("unzip", ["-p", f, "Metadata/Slic3r_PE_custom_gcode_per_print_z.xml"], {
+        encoding: "utf8",
+      });
+    assert.match(read(single), /<mode value="SingleExtruder"\/>/);
+    assert.match(read(ams), /<mode value="MultiAsSingle"\/>/);
+    // Both still carry the change itself.
+    assert.match(read(ams), /print_z="5"[^>]*color="#1E6FC8"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
