@@ -8,7 +8,8 @@
 //
 // Three dialects exist in the wild and all three appear in real downloads:
 // PrusaSlicer's, Bambu Studio's (MakerWorld), and the 3MF core spec's own
-// material/colour groups.
+// material/colour groups. Per-triangle PAINTING is read by mesh.ts, which owns
+// the triangle list those codes index into — see mesh.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -122,52 +123,12 @@ test("core-spec base materials colour an object even with no slicer metadata at 
   }
 });
 
-test("per-triangle painting is read back, PrusaSlicer's dialect", async () => {
-  // This is what "the model already had colours on it" means for a single
-  // mesh: the author painted regions rather than splitting the model up.
-  const fixture = makeThreeMf({
-    "3D/3dmodel.model": modelDoc([
-      { id: "1", triAttrs: ["", 'slic3rpe:mmu_segmentation="4"', "", 'slic3rpe:mmu_segmentation="8C"'] },
-    ]),
-  });
-  try {
-    const found = await readThreeMfColours(fixture.path);
-    const paint = found.objects[0].paint;
-    assert.ok(paint, "the painting must survive the read");
-    assert.equal(paint!.attribute, "slic3rpe:mmu_segmentation");
-    assert.equal(paint!.codes.get(1), "4");
-    assert.equal(paint!.codes.get(3), "8C");
-    assert.equal(paint!.codes.get(0), undefined, "an unpainted triangle carries no code");
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test("per-triangle painting is read back, Bambu's dialect", async () => {
-  const fixture = makeThreeMf({
-    "3D/3dmodel.model": modelDoc([
-      { id: "1", triAttrs: ['paint_color="4"', "", 'paint_color="0C"', ""] },
-    ]),
-  });
-  try {
-    const found = await readThreeMfColours(fixture.path);
-    const paint = found.objects[0].paint;
-    assert.ok(paint);
-    assert.equal(paint!.attribute, "paint_color");
-    assert.equal(paint!.codes.get(0), "4");
-    assert.equal(paint!.codes.get(2), "0C");
-  } finally {
-    fixture.cleanup();
-  }
-});
-
 test("a plain 3MF with no colour information says so, rather than inventing a palette", async () => {
   const fixture = makeThreeMf({ "3D/3dmodel.model": modelDoc([{ id: "1" }]) });
   try {
     const found = await readThreeMfColours(fixture.path);
     assert.deepEqual(found.palette, []);
     assert.equal(found.objects[0].colourHex, undefined);
-    assert.equal(found.objects[0].paint, undefined);
   } finally {
     fixture.cleanup();
   }

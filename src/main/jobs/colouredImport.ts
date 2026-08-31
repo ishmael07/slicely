@@ -54,7 +54,8 @@ export async function summariseModelColours(
 
   const found = await readThreeMfColours(filePath);
   const colouredObjects = found.objects.filter((o) => o.colourHex).length;
-  const paintedObjects = found.objects.filter((o) => o.paint).length;
+  // Painting is counted from the geometry, which is where the codes live.
+  const paintedObjects = await countPaintedObjects(filePath);
   if (found.palette.length === 0 && paintedObjects === 0) return undefined;
 
   const distinct = [...new Set(found.objects.map((o) => o.colourHex).filter(Boolean))];
@@ -77,6 +78,17 @@ export async function summariseModelColours(
   }
 
   return { palette: found.palette, colouredObjects, paintedObjects, note: parts.join(" ") };
+}
+
+/** How many objects carry painting. Best-effort: a mesh we can't read simply
+ *  reports none, rather than failing a summary the caller only wanted to relay. */
+async function countPaintedObjects(filePath: string): Promise<number> {
+  try {
+    const objects = await parse3mfObjects(filePath);
+    return objects.filter((o) => o.paint).length;
+  } catch {
+    return 0;
+  }
 }
 
 /**

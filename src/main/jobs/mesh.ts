@@ -35,6 +35,7 @@ import { createInterface } from "node:readline";
 import { extname } from "node:path";
 import unzipper from "unzipper";
 import * as cheerio from "cheerio";
+import type { ImportedPaint } from "./threemfColour";
 import {
   type Vec3,
   add,
@@ -412,6 +413,16 @@ export interface ThreeMfObject {
    *  uses to say which object it is talking about. */
   objectId: string;
   triangles: Triangle[];
+  /**
+   * Per-triangle painting, indexed into `triangles`.
+   *
+   * Read HERE rather than beside the rest of the colour metadata because paint
+   * codes index the triangle list, and this is what builds that list. A second,
+   * independent walk over the mesh would have to agree about ordering,
+   * component flattening and dropped degenerate faces — and the first time it
+   * did not, the wrong face would be painted with nothing to show for it.
+   */
+  paint?: ImportedPaint;
 }
 
 async function parse3mf(filePath: string): Promise<Triangle[]> {
@@ -458,22 +469,30 @@ export async function parse3mfObjects(filePath: string): Promise<ThreeMfObject[]
   const parsed = new Map<string, Map<string, ParsedObject>>();
   for (const [path, xml] of documents) parsed.set(path, parseObjects(xml));
 
-  const resolve = (path: string, id: string, depth: number): Triangle[] => {
+  const empty = (): ResolvedMesh => ({ triangles: [], codes: new Map() });
+  const resolve = (path: string, id: string, depth: number): ResolvedMesh => {
     // A file that references itself, directly or round a longer loop, would
     // otherwise spin here forever.
-    if (depth > 8) return [];
+    if (depth > 8) return empty();
     const object = parsed.get(path)?.get(id);
-    if (!object) return [];
-    if (object.triangles.length > 0) return object.triangles;
-    const out: Triangle[] = [];
+    if (!object) return empty();
+    if (object.triangles.length > 0) {
+      return {
+        triangles: object.triangles,
+        codes: object.paintCodes,
+        attribute: object.paintAttribute,
+      };
+    }
+    // Components are concatenated, so their paint indices shift by however
+    // many triangles came before them.
+    const out = empty();
     for (const component of object.components) {
       const target = component.path ? normalizeModelPath(component.path) : path;
-      out.push(
-        ...applyThreeMfTransform(
-          resolve(target, component.objectid, depth + 1),
-          component.transform,
-        ),
-      );
+      const part = resolve(target, component.objectid, depth + 1);
+      const offset = out.triangles.length;
+      out.triangles.push(...applyThreeMfTransform(part.triangles, component.transform));
+      for (const [index, code] of part.codes) out.codes.set(offset + index, code);
+      out.attribute ??= part.attribute;
     }
     return out;
   };
@@ -488,21 +507,23 @@ export async function parse3mfObjects(filePath: string): Promise<ThreeMfObject[]
     const attribs = (itemEl as { attribs?: Record<string, string> }).attribs ?? {};
     const objectId = attribs.objectid;
     if (!objectId) return;
-    const triangles = applyThreeMfTransform(
-      resolve(ROOT_MODEL, objectId, 0),
-      attribs.transform,
-    );
+    const resolved = resolve(ROOT_MODEL, objectId, 0);
+    // A transform maps triangles one to one, so the paint indices still line
+    // up with the list they were read against.
+    const triangles = applyThreeMfTransform(resolved.triangles, attribs.transform);
     if (triangles.length === 0) return;
     built.add(objectId);
-    placed.push({ objectId, triangles });
+    placed.push({ objectId, triangles, paint: paintOf(resolved) });
   });
 
   // An object nobody built is still geometry the user downloaded. Include it
   // untransformed rather than silently dropping part of their model.
   for (const objectId of (parsed.get(ROOT_MODEL) ?? new Map()).keys()) {
     if (built.has(objectId)) continue;
-    const triangles = resolve(ROOT_MODEL, objectId, 0);
-    if (triangles.length > 0) placed.push({ objectId, triangles });
+    const resolved = resolve(ROOT_MODEL, objectId, 0);
+    if (resolved.triangles.length > 0) {
+      placed.push({ objectId, triangles: resolved.triangles, paint: paintOf(resolved) });
+    }
   }
 
   if (placed.length === 0) {
@@ -519,8 +540,21 @@ const ROOT_MODEL = "/3d/3dmodel.model";
 /** One object as the file describes it: its own mesh, or references to others. */
 interface ParsedObject {
   triangles: Triangle[];
+  /** Codes on this object's OWN triangles, indexed into `triangles`. */
+  paintCodes: Map<number, string>;
+  paintAttribute?: string;
   components: Array<{ path?: string; objectid: string; transform?: string }>;
 }
+
+/** A resolved object: its flattened triangles and the painting on them. */
+interface ResolvedMesh {
+  triangles: Triangle[];
+  codes: Map<number, string>;
+  attribute?: string;
+}
+
+/** Attributes that carry per-triangle painting, most specific first. */
+const PAINT_ATTRIBUTES = ["slic3rpe:mmu_segmentation", "mmu_segmentation", "paint_color"];
 
 /** Lowercased, leading-slash form, so a reference and an archive entry compare
  *  equal however each spelled the path. */
@@ -546,6 +580,12 @@ async function readModelDocuments(filePath: string): Promise<Map<string, string>
     out.set(normalizeModelPath(file.path), (await file.buffer()).toString("utf8"));
   }
   return out;
+}
+
+/** The published paint shape, or nothing when the object is unpainted. */
+function paintOf(resolved: ResolvedMesh): ImportedPaint | undefined {
+  if (!resolved.attribute || resolved.codes.size === 0) return undefined;
+  return { attribute: resolved.attribute, codes: resolved.codes };
 }
 
 /** The objects one model document declares, by id. */
@@ -577,6 +617,26 @@ function parseObjects(xml: string): Map<string, ParsedObject> {
         if (a && b && c) triangles.push({ a, b, c, normal: faceNormal(a, b, c) });
       });
 
+    // Painting, read off the same triangles in the same order they were just
+    // parsed in — which is what makes the indices mean anything.
+    const paintCodes = new Map<number, string>();
+    let paintAttribute: string | undefined;
+    $(objEl)
+      .find("mesh > triangles > triangle")
+      .each((index, tEl) => {
+        const attribs = (tEl as { attribs?: Record<string, string> }).attribs ?? {};
+        for (const name of PAINT_ATTRIBUTES) {
+          const code = attribs[name];
+          if (code === undefined || code === "") continue;
+          // The first dialect seen wins for the whole object. A file mixing
+          // two would be malformed, and guessing per-triangle would produce a
+          // paint set no slicer could read back.
+          paintAttribute ??= name;
+          if (name === paintAttribute) paintCodes.set(index, code);
+          break;
+        }
+      });
+
     const components: ParsedObject["components"] = [];
     $(objEl)
       .find("components > component")
@@ -593,7 +653,7 @@ function parseObjects(xml: string): Map<string, ParsedObject> {
         });
       });
 
-    out.set(objectId, { triangles, components });
+    out.set(objectId, { triangles, paintCodes, paintAttribute, components });
   });
 
   return out;

@@ -19,14 +19,21 @@
 //   • The 3MF core spec itself — <basematerials>/<colorgroup> resolved through
 //     an object's pid/pindex, which is all a non-slicer exporter writes.
 //
-// This module reads only. Geometry stays entirely in mesh.ts, so there is one
-// owner of triangles and this cannot drift from it.
+// Per-triangle PAINTING is deliberately not read here: those codes index a
+// triangle list, so mesh.ts reads them while it is building that list. Two
+// independent walks over a mesh would have to agree about ordering, component
+// flattening and dropped faces, and the first time they did not, the wrong
+// face would be painted with nothing to show for it.
 // ─────────────────────────────────────────────────────────────────────────────
 import unzipper from "unzipper";
 import * as cheerio from "cheerio";
 
 /**
  * Per-triangle painting, exactly as the file expressed it.
+ *
+ * Declared here with the rest of the colour vocabulary, but READ by
+ * mesh.ts — the codes index a triangle list, so only whatever builds that list
+ * can produce indices that mean anything.
  *
  * The codes are opaque on purpose: they are a slicer's private encoding of
  * "which filament, and how the triangle is subdivided", and re-emitting them
@@ -53,7 +60,6 @@ export interface ImportedObject {
   extruder?: number;
   /** The colour that extruder holds, "#rrggbb", when the palette says. */
   colourHex?: string;
-  paint?: ImportedPaint;
 }
 
 export interface ImportedColours {
@@ -64,9 +70,6 @@ export interface ImportedColours {
   /** Which dialect the colour information came from, for reporting. */
   source?: "prusaslicer" | "bambu" | "3mf-materials";
 }
-
-/** Attributes that carry per-triangle painting, most specific first. */
-const PAINT_ATTRIBUTES = ["slic3rpe:mmu_segmentation", "mmu_segmentation", "paint_color"];
 
 const EMPTY: ImportedColours = { objects: [], palette: [] };
 
@@ -110,9 +113,8 @@ export async function readThreeMfColours(filePath: string): Promise<ImportedColo
     return { objects: strip(objects), palette: materials, source: "3mf-materials" };
   }
 
-  // Painting may still be present with no palette at all — a file that says
-  // "these triangles are filament 2" without saying what filament 2 looks
-  // like. That is worth keeping: the regions are the hard part.
+  // No palette and no assignments. Painting may still be present — that is
+  // read by parse3mfObjects, which owns the triangles the codes index into.
   return { objects: strip(objects), palette: [] };
 }
 
@@ -166,25 +168,6 @@ function readObjects(modelXml: string): WorkingObject[] {
       const index = Number(attribs.pindex ?? 0);
       if (Number.isFinite(index)) obj.materialIndex = index;
     }
-
-    const codes = new Map<number, string>();
-    let attribute: string | undefined;
-    $(el)
-      .find("mesh > triangles > triangle")
-      .each((index, tEl) => {
-        const tri = (tEl as { attribs?: Record<string, string> }).attribs ?? {};
-        for (const name of PAINT_ATTRIBUTES) {
-          const code = tri[name];
-          if (code === undefined || code === "") continue;
-          // First dialect seen wins for the whole object. A file mixing two
-          // would be malformed, and guessing per-triangle would produce a
-          // paint set no slicer could read back.
-          attribute ??= name;
-          if (name === attribute) codes.set(index, code);
-          break;
-        }
-      });
-    if (attribute && codes.size > 0) obj.paint = { codes, attribute };
 
     objects.push(obj);
   });
@@ -342,12 +325,11 @@ function apply(
 
 /** Drop the working-only fields so callers see the published shape. */
 function strip(objects: WorkingObject[]): ImportedObject[] {
-  return objects.map(({ objectId, name, extruder, colourHex, paint }) => {
+  return objects.map(({ objectId, name, extruder, colourHex }) => {
     const out: ImportedObject = { objectId };
     if (name !== undefined) out.name = name;
     if (extruder !== undefined) out.extruder = extruder;
     if (colourHex !== undefined) out.colourHex = colourHex;
-    if (paint !== undefined) out.paint = paint;
     return out;
   });
 }

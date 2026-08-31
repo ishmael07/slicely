@@ -88,7 +88,9 @@ async function readSourceObjects(path: string): Promise<SourceObject[]> {
       name: meta?.name ?? (objects.length > 1 ? `${name} #${i + 1}` : name),
       triangles: object.triangles,
       extruder: meta?.extruder ?? 1,
-      paint: meta?.paint,
+      // Paint comes from the object that owns the triangles, not from the
+      // colour metadata — its codes index that exact list.
+      paint: object.paint,
     };
   });
 }
