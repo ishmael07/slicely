@@ -249,19 +249,48 @@ across component boundaries, where a component's codes shift by however many
 triangles preceded it. `threemfColour.ts` keeps the `ImportedPaint` shape and
 the palette, and no longer claims to read painting.
 
-## Verified, and not
+## Verified against PrusaSlicer 2.9.5
 
-Every change is covered by tests in the existing `node:test` style (369 pass),
-and the import path is verified against a real MakerWorld 3MF: it reads as
-48 triangles at 78.7 x 46.0 x 6.4 mm, with a two-colour palette and one painted
-part, where before it could not be parsed at all.
+374 unit tests pass. Beyond those, every claim below was run against the real
+binary (`/Applications/Original Prusa Drivers/PrusaSlicer.app`, which is where
+`.env` already pointed `PRUSASLICER_PATH`).
 
-NOT verified on this machine: PrusaSlicer is not installed here, so the
-end-to-end claims this design inherits from `multimaterial.ts` — that a banded
-plate emits `M600` at the reported heights on a single-extruder machine, and
-that a two-slot job emits real `T0`/`T1` tool changes — have not been re-run
-against 2.9.5. The `<mode value="MultiAsSingle"/>` value is taken from
-PrusaSlicer's own `CustomGCode::Mode` enum rather than observed output.
+**Two colours on a single-extruder printer** — a 20 mm part banded teal/black
+slices to exactly one `M600`, landing at 10.07 mm: the real layer boundary
+nearest the requested 10 mm, reported to the user as that number rather than
+the request. The swap sits immediately before `;LAYER_CHANGE`, between layers.
+The plate's project carries the change and opens showing `#008080`, the colour
+the print starts in.
+
+**An AMS/MMU job** — two parts on two loaded spools slice to 126 real tool
+changes across `T0`/`T1`, with per-extruder totals (16.45 g and 14.93 g) and a
+wipe tower.
+
+**The white plate** — a plate with nothing said about colour produces
+`plate.colours: []`, no `filament_colour` key in the project config, and no
+`#FFFFFF` anywhere in it.
+
+**A real painted MakerWorld model** — `slice_model` on
+`downloads/thing-7389350/jailbreak-keycard.3mf` produces 32 tool changes and
+19.44 g black plus 5.60 g blue, in the model's own `#000000;#0086D6`. Before
+this branch the file could not be parsed at all.
+
+**The two paint dialects are interchangeable in practice** — the same painted
+mesh written as Bambu's `paint_color` and as PrusaSlicer's
+`slic3rpe:mmu_segmentation` slices to byte-identical results (22 tool changes,
+13.87 g / 4.90 g). Carrying codes verbatim is correct; no translation is needed.
+
+**The CLI ignores a project's colour changes**, as `colourchange.ts` claims: a
+project carrying one slices happily and emits no `M600`. The G-code
+post-processing is therefore still required, and the two mechanisms are
+complementary rather than alternatives.
+
+Still unverified: whether PrusaSlicer's GUI *displays* the colour changes we
+write into the project. The CLI drops that part on `--export-3mf` exactly as it
+drops the config, so a round trip cannot answer it, and the `MultiAsSingle`
+mode value is taken from PrusaSlicer's `CustomGCode::Mode` enum rather than
+from observed output. The printed result does not depend on either — the
+G-code carries the swaps regardless.
 
 ## Out of scope
 
