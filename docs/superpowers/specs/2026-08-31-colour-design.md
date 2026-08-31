@@ -1,6 +1,6 @@
 # Colour, made real
 
-**Status:** design, approved for implementation
+**Status:** implemented
 **Date:** 2026-08-31
 
 Colour is the feature Slicely was worst at. Asking for an Arduino Uno R3 board
@@ -214,6 +214,54 @@ against real PrusaSlicer 2.9.5 the way `multimaterial.ts` documents its
 findings: a single-extruder band print must emit `M600` at the reported heights,
 and a two-slot job must emit real `T0`/`T1` tool changes with per-extruder
 filament totals.
+
+## Found during implementation
+
+Two things this design did not anticipate, both discovered by pointing the new
+reader at a real MakerWorld download already in `downloads/`.
+
+### 6. Slicely could not read a Bambu/MakerWorld 3MF at all
+
+`mesh.ts` read only `3D/3dmodel.model`. Bambu Studio — and therefore every
+MakerWorld file — uses the 3MF **production extension**, which puts each
+object's geometry in its own part file, referenced by
+`<component p:path="/3D/Objects/object_1.model">`. The root document holds no
+triangles, so `parseMesh` threw "no mesh triangles found" on exactly the files
+multi-colour models come from. This predates the colour work and blocked all of
+it.
+
+`parse3mfObjects` now reads every `.model` document in the archive and resolves
+component references across them, composing the component transform with the
+build item's — Bambu puts the model's **scale** on the item, so applying one
+without the other gives a part of the wrong size in the wrong place. Recursion
+is depth-capped, so a cyclic file terminates rather than hangs.
+
+### 7. Paint has to be read by whatever owns the triangles
+
+The design put paint reading in `threemfColour.ts`. That is wrong: the codes
+index a triangle list, and a second independent walk over the mesh would have
+to agree with the first about ordering, component flattening and dropped
+degenerate faces. In a Bambu file it agreed about nothing, because the root
+document it walked has no triangles.
+
+Reading moved into `parse3mfObjects`, which produces the indices — including
+across component boundaries, where a component's codes shift by however many
+triangles preceded it. `threemfColour.ts` keeps the `ImportedPaint` shape and
+the palette, and no longer claims to read painting.
+
+## Verified, and not
+
+Every change is covered by tests in the existing `node:test` style (369 pass),
+and the import path is verified against a real MakerWorld 3MF: it reads as
+48 triangles at 78.7 x 46.0 x 6.4 mm, with a two-colour palette and one painted
+part, where before it could not be parsed at all.
+
+NOT verified on this machine: PrusaSlicer is not installed here, so the
+end-to-end claims this design inherits from `multimaterial.ts` — that a banded
+plate emits `M600` at the reported heights on a single-extruder machine, and
+that a two-slot job emits real `T0`/`T1` tool changes — have not been re-run
+against 2.9.5. The `<mode value="MultiAsSingle"/>` value is taken from
+PrusaSlicer's own `CustomGCode::Mode` enum rather than observed output.
 
 ## Out of scope
 
