@@ -404,6 +404,7 @@ export async function planJob(
     plates: jobPlates,
     bed: opts.bed,
     colourBands: opts.colourBands,
+    colourStops: opts.colourStops,
     params,
     goal,
     material,

@@ -38,6 +38,7 @@ import {
 } from "../profiles";
 import { getPreferences, printerGeometry, updatePreferences } from "../settings";
 import { sessionState } from "./state";
+import { colourRequest, type ColourRequest } from "./colourRequest";
 import { join } from "node:path";
 import {
   V2_TOOLS,
@@ -209,9 +210,41 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
   filamentColour: {
     type: "string",
     description:
-      'Filament colour as hex, e.g. "#33aaff". Pass this whenever the user names a colour: it is written into ' +
-      'the config and the plate project, so PrusaSlicer opens showing the part in that colour. The physical ' +
-      'print is whatever spool is loaded.',
+      'ONE filament colour as hex, e.g. "#33aaff". Use this only when the user names a SINGLE colour. It is ' +
+      'written into the config and the plate project, so PrusaSlicer opens showing the part in that colour. ' +
+      'For two or more colours use `colours` or `colourStops` — never collapse several colours into this one.',
+  },
+  colours: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      'TWO OR MORE colours for a single model, stacked BOTTOM-FIRST, e.g. ["#000000", "#008080"] for a black ' +
+      'base and a teal top. Slicely divides the model\'s height into equal bands and changes filament at each ' +
+      'boundary. Use this whenever the user names more than one colour without saying where they change ' +
+      '("make it teal and black") — passing just one of them is the wrong print. Works on EVERY printer: on a ' +
+      'single-extruder machine the printer pauses so the user swaps the spool; on an AMS/MMU it swaps itself.',
+  },
+  colourStops: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        atZ: { type: "number", description: "Height in mm where this colour starts." },
+        atLayer: { type: "integer", description: "First layer number printed in this colour." },
+        atFraction: {
+          type: "number",
+          description: "Fraction of the model height (0-1) where this colour starts, e.g. 0.33.",
+        },
+        colourHex: { type: "string", description: 'e.g. "#000000".' },
+      },
+      required: ["colourHex"],
+    },
+    description:
+      'Colour changes at heights the user actually NAMED, rather than at equal fractions: "black up to 5 mm" ' +
+      '(atZ 0 black, atZ 5 the next colour), "change at layer 40" (atLayer), "the bottom third in black" ' +
+      '(atFraction 0.33). Give exactly one of atZ / atLayer / atFraction per entry. A stop at the bed ' +
+      '(atZ 0 / atLayer 1) is the colour the print STARTS in and needs no swap. Prefer this over `colours` ' +
+      'whenever the user said WHERE the colour changes.',
   },
 };
 
@@ -442,6 +475,8 @@ const V1_TOOLS: Anthropic.Tool[] = [
         // model had no way to express them on an open and they were silently
         // dropped — the plate opened at stock size in the default colour.
         filamentColour: SLICE_PROPERTIES.filamentColour,
+        colours: SLICE_PROPERTIES.colours,
+        colourStops: SLICE_PROPERTIES.colourStops,
         scale: SLICE_PROPERTIES.scale,
         rotateDeg: SLICE_PROPERTIES.rotateDeg,
       },
@@ -518,12 +553,28 @@ export async function executeTool(
         emit({ type: "download", model, result });
       }
       const count = result.parts?.length ?? 1;
+      // Say what the file already knows about its own colours. A user who
+      // picked a multi-colour model picked it FOR the colours, and being asked
+      // "what colour would you like?" about a model whose author already
+      // answered is how those colours got thrown away.
+      let colourNote = "";
+      try {
+        const { summariseModelColours } = await import("../jobs/colouredImport");
+        const summary = await summariseModelColours(result.localPath);
+        if (summary) {
+          colourNote =
+            ` ${summary.note} Slicely will use them as they are — say so if you want different colours.`;
+        }
+      } catch {
+        // Never let a colour read cost the user their download.
+      }
       return (
         `Downloaded "${result.fileName}" (${formatBytes(result.sizeBytes)})` +
         (count > 1
           ? ` plus ${count - 1} more part(s) — ${count} parts total. They'll be arranged onto one plate when sliced.`
           : ".") +
-        ` It is now the active model for inspect/slice.`
+        ` It is now the active model for inspect/slice.` +
+        colourNote
       );
     }
 
@@ -718,6 +769,8 @@ export async function executeTool(
       //   • else recommend from the model's geometry (skip for non-sliceable
       //     STEP, which can't be inspected headlessly — open with base config).
       const explicit = explicitParams(input);
+      const colour = colourRequest(input);
+      if (colour.filamentColour) explicit.filamentColour = colour.filamentColour;
       let params: SliceParams;
       let baseConfig: string | undefined;
       if (sessionState.lastSliceParams && !Object.keys(explicit).length) {
@@ -757,6 +810,10 @@ export async function executeTool(
         sessionState.material,
         customGeometry(),
       ).printer?.bed ?? { x: 250, y: 210, z: 210 };
+      // Resolve the colour changes against the real model, so the heights in
+      // the project are the ones this model actually changes colour at rather
+      // than fractions of a guess.
+      const colourChanges = await resolveOpenColourChanges(colour, primary, params);
       const project = await writeEditorProject({
         paths: Array.isArray(paths) ? paths : [paths],
         bed,
@@ -764,6 +821,7 @@ export async function executeTool(
         destPath: join(sessionSlicesDir(), "open-in-slicer.3mf"),
         scale: params.scale,
         rotateDeg: params.rotateDeg,
+        colourChanges,
       }).catch(() => undefined);
       const opened = await openModelInEditorSliced(project ?? paths, guiConfig);
       if (project) {
@@ -790,7 +848,12 @@ export async function executeTool(
         n > 1
           ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied}.`
           : `Opened ${primary} in PrusaSlicer${applied}.`;
-      return lead + previewNote;
+      const colourNote = colourChanges.length
+        ? ` It changes filament at ${colourChanges
+            .map((c) => `${c.atZ} mm (${c.colourHex.toUpperCase()})`)
+            .join(", ")} — the changes are in the project, so you can see and move them in Preview.`
+        : "";
+      return lead + colourNote + previewNote;
     }
 
     default:
@@ -831,19 +894,81 @@ interface SliceRun {
  *
  * Shaped as a PlateSliceResult so the caller's reporting is unchanged.
  */
+/**
+ * Turn a colour request into the heights this particular model changes at.
+ *
+ * Resolved against the real model rather than a nominal height, because a
+ * fraction of the wrong number is the wrong place: "the bottom third" of a
+ * 12 mm part and of a 120 mm part are 4 mm and 40 mm apart. Returns nothing
+ * when there is one colour, or when the model can't be measured — an open that
+ * shows the model is better than one that fails over a swatch.
+ */
+async function resolveOpenColourChanges(
+  colour: ColourRequest,
+  path: string,
+  params: SliceParams,
+): Promise<Array<{ atZ: number; colourHex: string }>> {
+  if (!colour.isMultiColour) return [];
+  try {
+    const info = await getModelInfo(path);
+    const scale = params.scale && params.scale > 0 ? params.scale : 1;
+    const height = info.sizeZ * scale;
+    const { bandsToChanges, stopsToChanges } = await import("../jobs/colourchange");
+    return colour.stops.length
+      ? stopsToChanges(height, params.layerHeightMm ?? 0.2, colour.stops)
+      : bandsToChanges(height, colour.bands);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Split a model that already carries its own colours into coloured parts.
+ *
+ * A multi-colour download says which object is which filament. Slicing it as
+ * one mesh throws that away and prints it in a single colour — the model
+ * arrives coloured and comes out grey. Writing each object as its own part,
+ * with the colour its author gave it, puts those colours back into the
+ * ordinary pipeline.
+ *
+ * Returns an empty list for anything with nothing to split: an STL, a
+ * single-colour 3MF, or a model painted inside one mesh (whose colours are
+ * carried through as painting instead — see threemf.ts).
+ */
+async function expandImportedColours(
+  path: string,
+): Promise<Array<{ path: string; colourHex?: string }>> {
+  try {
+    const { expandColouredThreeMf } = await import("../jobs/colouredImport");
+    const { sessionSlicesDir } = await import("../session-context");
+    return await expandColouredThreeMf(path, sessionSlicesDir());
+  } catch {
+    // Colour is an enhancement to a slice. Failing to read it must never cost
+    // the user the slice itself.
+    return [];
+  }
+}
+
 async function sliceViaJobPipeline(
   paths: string[],
   params: SliceParams,
   bed: { x: number; y: number; z: number },
   emit: Emit,
+  colour?: ColourRequest,
+  importedParts: Array<{ path: string; colourHex?: string }> = [],
 ): Promise<PlateSliceResult> {
   const { planJob, runJob } = await import("../jobs");
   const prefs = getPreferences();
+  const colourOf = new Map(importedParts.map((p) => [p.path, p.colourHex]));
   const planned = await planJob(
-    paths.map((path) => ({ path, copies: 1 })),
+    paths.map((path) => ({ path, copies: 1, colourHex: colourOf.get(path) })),
     {
       bed,
       maxHeightMm: bed.z,
+      // Colour by height belongs to the JOB, not to a part: a filament swap
+      // stops the whole printer, so it applies to everything on the plate.
+      colourBands: colour?.bands.length ? colour.bands : undefined,
+      colourStops: colour?.stops.length ? colour.stops : undefined,
       goal: prefs.goal ?? "quality",
       material: prefs.material ?? "PLA",
       params,
@@ -873,13 +998,19 @@ async function runSlice(
   // Explicit per-setting overrides the user/agent passed on this call.
   const explicit = explicitParams(input);
   const hasExplicit = Object.keys(explicit).length > 0;
+  // Everything the caller said about colour, in one shape. A request naming
+  // more than one colour has to reach the machinery that can deliver more than
+  // one colour; dropping the extra was the old behaviour and it is simply the
+  // wrong print.
+  const colour = colourRequest(input);
+  if (colour.filamentColour) explicit.filamentColour = colour.filamentColour;
   const reInput = recommendInput(input);
   if (reInput.material) sessionState.material = reInput.material;
 
   // The full set of distinct sliceable parts to print. When using the active
   // model, that's all its parts; otherwise just the given path.
   const usingActive = !input.path;
-  const allParts =
+  let allParts =
     usingActive && sessionState.lastModelParts.length > 1
       ? sessionState.lastModelParts
       : [path];
@@ -890,6 +1021,16 @@ async function runSlice(
     throw new Error(
       `"${allParts[0]}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
     );
+  }
+
+  // A downloaded model that already carries its own colours becomes one
+  // coloured part per object, so the colours its author chose flow through
+  // orientation, packing and plating like any other multi-part job. Skipped
+  // when the caller asked for specific colours: they are overriding the file.
+  let importedParts: Array<{ path: string; colourHex?: string }> = [];
+  if (allParts.length === 1 && !colour.isMultiColour && !colour.filamentColour) {
+    importedParts = await expandImportedColours(allParts[0]);
+    if (importedParts.length > 1) allParts = importedParts.map((p) => p.path);
   }
 
   const isMultiPart = allParts.length > 1;
@@ -929,8 +1070,12 @@ async function runSlice(
   // slices together — and it also orients each part and packs the plates,
   // which is what the user wanted from "slice all of these" anyway.
   let job: PlateSliceResult;
-  if (isMultiPart) {
-    job = await sliceViaJobPipeline(allParts, params, bedDim, emit);
+  if (isMultiPart || colour.isMultiColour) {
+    // A single part with several colours goes through the job pipeline too:
+    // the filament swaps live there, and slicePlates has no way to express
+    // them. Routing on part count alone is what left a two-colour request
+    // with one colour and no explanation.
+    job = await sliceViaJobPipeline(allParts, params, bedDim, emit, colour, importedParts);
   } else {
     const stem = baseStem(allParts[0]);
     job = await slicePlates(allParts, params, bed, resolved.configIni, stem);
@@ -946,9 +1091,18 @@ async function runSlice(
   }
 
   const plateCount = job.plates.length;
-  const colourNote = params.filamentColour
-    ? ` Set to ${params.filamentColour} — load that filament to print it.`
-    : "";
+  // The band/stop heights the swaps LANDED on are reported by the runner
+  // through metrics.fixes (they are quantised to layer boundaries), so this
+  // says what mechanism was used and leaves the numbers to that.
+  const colourNote = colour.isMultiColour
+    ? ` ${(colour.stops.length ? colour.stops.length : colour.bands.length)} colours, ` +
+      `changed partway up the print: the printer pauses at each change so you load the ` +
+      `next colour (an AMS/MMU swaps it for you). Starts in ${colour.filamentColour ?? "the loaded filament"}.`
+    : params.filamentColour
+      ? ` Set to ${params.filamentColour} — load that filament to print it.`
+      : importedParts.length > 1
+        ? ` Kept the model's own ${new Set(importedParts.map((p) => p.colourHex).filter(Boolean)).size} colours.`
+        : "";
   const configNote =
     resolved.source !== "user-config"
       ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"

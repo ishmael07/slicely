@@ -38,6 +38,7 @@ import {
 } from "../jobs";
 import { getPreferences, printerGeometry } from "../settings";
 import { sessionState } from "./state";
+import { colourRequest } from "./colourRequest";
 
 type Emit = (event: AgentEvent) => void;
 
@@ -235,6 +236,27 @@ export const V2_TOOLS: Anthropic.Tool[] = [
           type: "boolean",
           description:
             "Choose the best orientation per part (default true). Set false only if the user wants parts left as modelled.",
+        },
+        colourStops: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              atZ: { type: "number", description: "Height in mm where this colour starts." },
+              atLayer: { type: "integer", description: "First layer number in this colour." },
+              atFraction: {
+                type: "number",
+                description: "Fraction of the model height (0-1) where this colour starts.",
+              },
+              colourHex: { type: "string", description: 'e.g. "#000000".' },
+            },
+            required: ["colourHex"],
+          },
+          description:
+            "Colour changes at heights the user NAMED, rather than at equal fractions: \"black up to 5 mm\", " +
+            "\"change at layer 40\", \"the bottom third in black\". One of atZ / atLayer / atFraction per entry; " +
+            "a stop at the bed (atZ 0) is the colour the print starts in. Prefer this over colourBands whenever " +
+            "the user said WHERE the colour changes.",
         },
         colourBands: {
           type: "array",
@@ -617,6 +639,7 @@ export async function executeV2Tool(
         colourBands: Array.isArray(input.colourBands)
           ? (input.colourBands as unknown[]).map(String).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c))
           : undefined,
+        colourStops: colourRequest(input).stops,
         goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",
         slots,
         name: input.name ? String(input.name) : undefined,
