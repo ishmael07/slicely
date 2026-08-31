@@ -158,7 +158,12 @@ function normalOf(t: Triangle): Vec3 {
  * Positions are preserved: the pieces of a split model are only meaningful
  * relative to each other, and re-centring each one would scatter them.
  */
-export function writeShellStl(destPath: string, shell: Shell): string {
+export function writeShellStl(
+  destPath: string,
+  // Only the triangles are needed, so anything carrying them can be written —
+  // an object lifted out of a 3MF as readily as a shell split out of a mesh.
+  shell: { triangles: Triangle[] },
+): string {
   const count = shell.triangles.length;
   const buf = Buffer.alloc(84 + count * 50);
   buf.write("Slicely split shell", 0, 79, "ascii");

@@ -13,10 +13,12 @@
 // file rather than beside it. It also carries placement, so two parts don't
 // land stacked on the origin the way loose STLs do.
 // ─────────────────────────────────────────────────────────────────────────────
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import { readFileSync } from "node:fs";
-import { parseMesh } from "./mesh";
+import { parseMesh, parse3mfObjects } from "./mesh";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
+import { readThreeMfColours, type ImportedPaint } from "./threemfColour";
+import { synthesizeMultiMaterialConfig } from "./multimaterial";
 import { packPlates, type PlatePart } from "../plates";
 import type { Triangle } from "./mesh";
 import type { Vec3 } from "./vec3";
@@ -26,6 +28,20 @@ interface Placed {
   triangles: Triangle[];
   /** Bed position of the footprint's centre, in mm. */
   centre: { x: number; y: number };
+  extruder: number;
+  paint?: ImportedPaint;
+}
+
+/** One printable object pulled out of an input file. A 3MF can hold several,
+ *  each with its own colour — which is precisely what makes it a multi-colour
+ *  model, and what rebuilding it as a single anonymous mesh threw away. */
+interface SourceObject {
+  /** Name for the object metadata; the source file's, when it has one. */
+  name: string;
+  triangles: Triangle[];
+  /** 1-based extruder the source file assigned, or 1. */
+  extruder: number;
+  paint?: ImportedPaint;
 }
 
 export interface EditorProjectInput {
@@ -41,6 +57,65 @@ export interface EditorProjectInput {
   scale?: number;
   /** Rotation about Z, degrees. */
   rotateDeg?: number;
+  /** Filament swaps up the height of the print, so the plate opens showing
+   *  them in Preview and the user can move them by hand. */
+  colourChanges?: Array<{ atZ: number; colourHex: string }>;
+}
+
+/**
+ * Read one input file as its printable objects.
+ *
+ * A 3MF is read as the objects it actually contains, WITH the extruder each
+ * one is assigned to and any painting on it. Everything else is one object on
+ * extruder 1. This is the difference between opening a downloaded multi-colour
+ * model in its own colours and opening it as a single grey lump.
+ */
+async function readSourceObjects(path: string): Promise<SourceObject[]> {
+  const name = basename(path);
+  if (extname(path).toLowerCase() !== ".3mf") {
+    const mesh = await parseMesh(path);
+    return [{ name, triangles: mesh.triangles, extruder: 1 }];
+  }
+
+  const [objects, colours] = await Promise.all([
+    parse3mfObjects(path),
+    readThreeMfColours(path),
+  ]);
+  const metaById = new Map(colours.objects.map((o) => [o.objectId, o]));
+  return objects.map((object, i) => {
+    const meta = metaById.get(object.objectId);
+    return {
+      name: meta?.name ?? (objects.length > 1 ? `${name} #${i + 1}` : name),
+      triangles: object.triangles,
+      extruder: meta?.extruder ?? 1,
+      paint: meta?.paint,
+    };
+  });
+}
+
+/**
+ * Merge PrusaSlicer .ini text, with `override` winning key by key.
+ *
+ * A model that arrives with two colours needs a config that HAS two extruders,
+ * or PrusaSlicer clamps every object back to extruder 1 and the colours vanish
+ * again. Replacing the user's config wholesale would throw away their printer
+ * to gain the colours; merging keeps both.
+ */
+function mergeIni(base: string, override: string): string {
+  const values = new Map<string, string>();
+  const order: string[] = [];
+  for (const text of [base, override]) {
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#") || line.startsWith(";") || line.startsWith("[")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      if (!values.has(key)) order.push(key);
+      values.set(key, line.slice(eq + 1).trim());
+    }
+  }
+  return order.map((key) => `${key} = ${values.get(key)}`).join("\n") + "\n";
 }
 
 /**
@@ -94,11 +169,27 @@ export async function writeEditorProject(
   const scale = typeof input.scale === "number" && input.scale > 0 ? input.scale : 1;
   const rotateDeg = typeof input.rotateDeg === "number" ? input.rotateDeg : 0;
 
-  const meshes: Array<{ path: string; triangles: Triangle[]; w: number; d: number }> = [];
+  // Every printable object across every input file. A 3MF contributes one per
+  // object it holds, so a two-colour download becomes two coloured parts
+  // rather than one anonymous mesh. `key` is the packer's identity for the
+  // object — a file path is not enough, because one file can supply several.
+  const meshes: Array<{
+    key: string;
+    object: SourceObject;
+    triangles: Triangle[];
+    w: number;
+    d: number;
+  }> = [];
   for (const path of input.paths) {
+    let objects: SourceObject[];
     try {
-      const mesh = await parseMesh(path);
-      const triangles = transformTriangles(mesh.triangles, scale, rotateDeg);
+      objects = await readSourceObjects(path);
+    } catch {
+      // One unreadable part shouldn't cost the user the whole handoff.
+      continue;
+    }
+    objects.forEach((object, i) => {
+      const triangles = transformTriangles(object.triangles, scale, rotateDeg);
       // Measure the footprint AFTER transforming, so packing sees the size the
       // part will actually print at.
       let minX = Infinity;
@@ -113,45 +204,49 @@ export async function writeEditorProject(
           if (v.y > maxY) maxY = v.y;
         }
       }
+      if (!Number.isFinite(minX)) return; // no geometry
       meshes.push({
-        path,
+        key: `${path}#${i}`,
+        object,
         triangles,
         w: maxX - minX,
         d: maxY - minY,
       });
-    } catch {
-      // One unreadable part shouldn't cost the user the whole handoff.
-    }
+    });
   }
   if (meshes.length === 0) return undefined;
 
   // Lay the parts out with the same packer the job pipeline uses, so an editor
   // open and a sliced plate agree about what fits where.
-  const toPack: PlatePart[] = meshes.map((m) => ({ path: m.path, w: m.w, d: m.d }));
+  const toPack: PlatePart[] = meshes.map((m) => ({ path: m.key, w: m.w, d: m.d }));
   const packed = packPlates(toPack, { w: input.bed.x, d: input.bed.y });
   const first = packed.plates[0];
   if (!first) return undefined;
 
   const placed = new Map<string, Placed>();
   for (const part of first.parts) {
-    const mesh = meshes.find((m) => m.path === part.path);
+    const mesh = meshes.find((m) => m.key === part.path);
     if (!mesh || part.x === undefined || part.y === undefined) continue;
     // The 3MF writer centres geometry on the origin, so a lower-left footprint
     // corner becomes a centre by adding half the part's size.
     placed.set(part.path, {
       triangles: mesh.triangles,
       centre: { x: part.x + mesh.w / 2, y: part.y + mesh.d / 2 },
+      extruder: mesh.object.extruder,
+      paint: mesh.object.paint,
     });
   }
   if (placed.size === 0) return undefined;
 
   const parts: ThreeMfPart[] = [];
-  for (const [path, p] of placed) {
+  for (const [key, p] of placed) {
+    const source = meshes.find((m) => m.key === key);
     parts.push({
-      path: basename(path),
+      path: source?.object.name ?? basename(key),
       triangles: p.triangles,
-      extruder: 1,
+      extruder: p.extruder,
       offset: { x: p.centre.x, y: p.centre.y, z: 0 },
+      paint: p.paint,
     });
   }
 
@@ -164,6 +259,49 @@ export async function writeEditorProject(
     }
   }
 
-  writeThreeMf(input.destPath, parts, [], configText);
+  // A model that arrived with its own colours needs a config that HAS the
+  // extruders those colours live on. Without it PrusaSlicer clamps every
+  // object back to extruder 1 and the imported colours disappear on the way
+  // in — which is the whole failure this path exists to fix.
+  const extruders = Math.max(...parts.map((p) => p.extruder), 1);
+  if (extruders > 1) {
+    const palette = await importedPalette(input.paths, extruders);
+    const multi = readFileSync(
+      synthesizeMultiMaterialConfig({
+        bed: input.bed,
+        nozzleMm: 0.4,
+        material: "PLA",
+        colours: palette,
+      }),
+      "utf8",
+    );
+    // The user's own settings stay; only the multi-extruder keys are imposed.
+    configText = configText ? mergeIni(configText, multi) : multi;
+  }
+
+  writeThreeMf(
+    input.destPath,
+    parts,
+    input.colourChanges ?? [],
+    configText,
+    extruders > 1 ? "MultiAsSingle" : "SingleExtruder",
+  );
   return input.destPath;
+}
+
+/** The filament colours the imported files name, one per extruder. A gap is a
+ *  spool the model never referred to, not a colour we are choosing for it. */
+async function importedPalette(paths: string[], extruders: number): Promise<string[]> {
+  const palette: string[] = [];
+  for (const path of paths) {
+    if (extname(path).toLowerCase() !== ".3mf") continue;
+    const found = await readThreeMfColours(path);
+    found.palette.forEach((colour, i) => {
+      palette[i] ??= colour;
+    });
+    for (const object of found.objects) {
+      if (object.extruder && object.colourHex) palette[object.extruder - 1] ??= object.colourHex;
+    }
+  }
+  return Array.from({ length: extruders }, (_, i) => palette[i] ?? "#FFFFFF");
 }

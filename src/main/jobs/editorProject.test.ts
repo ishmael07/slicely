@@ -10,7 +10,16 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeEditorProject } from "./editorProject";
-import { buildCubeTriangles } from "./testFixtures";
+import { buildCubeTriangles, writeThreeMfFixture } from "./testFixtures";
+
+const TETRA =
+  `<mesh><vertices>` +
+  `<vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>` +
+  `<vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/>` +
+  `</vertices><triangles>` +
+  `<triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/>` +
+  `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+  `</triangles></mesh>`;
 
 /** An ASCII STL of a cube, so the helper can be driven through real file I/O. */
 function writeCubeStl(path: string, size: number): void {
@@ -97,6 +106,109 @@ test("a requested scale is baked into the geometry, not left on a dropped flag",
       Math.abs(after / before - 2) < 0.01,
       `scale must reach the file: ${before} -> ${after}`,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a downloaded model's own colours open as its own colours", async () => {
+  // "Open it" on a multi-colour download rebuilt every object as extruder 1,
+  // so the plate opened one flat colour and the file's colours were gone. They
+  // were in the file the whole time.
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources>` +
+      `<object id="1" type="model">${TETRA}</object>` +
+      `<object id="2" type="model">${TETRA}</object>` +
+      `</resources><build>` +
+      `<item objectid="1"/><item objectid="2" transform="1 0 0 0 1 0 0 0 1 30 0 0"/>` +
+      `</build></model>`,
+    "Metadata/Slic3r_PE_model.config":
+      `<config>` +
+      `<object id="1"><metadata type="object" key="extruder" value="1"/></object>` +
+      `<object id="2"><metadata type="object" key="extruder" value="2"/></object>` +
+      `</config>`,
+    "Metadata/Slic3r_PE.config": `; generated\n; filament_colour = #008080;#000000\n`,
+  });
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-colour-"));
+  try {
+    const out = join(dir, "open.3mf");
+    const project = await writeEditorProject({
+      paths: [fixture.path],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: out,
+    });
+    assert.ok(project, "a coloured 3MF must still produce a project");
+
+    const config = execFileSync("unzip", ["-p", out, "Metadata/Slic3r_PE_model.config"], {
+      encoding: "utf8",
+    });
+    const extruders = [...config.matchAll(/key="extruder" value="(\d+)"/g)].map((m) => m[1]);
+    assert.ok(extruders.includes("1") && extruders.includes("2"), `got ${extruders.join(",")}`);
+
+    const print = execFileSync("unzip", ["-p", out, "Metadata/Slic3r_PE.config"], {
+      encoding: "utf8",
+    });
+    assert.match(print, /filament_colour = #008080;#000000/i, "both colours must be loaded");
+  } finally {
+    fixture.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("painting on an imported model survives being opened", async () => {
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" ` +
+      `xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">` +
+      `<resources><object id="1" type="model"><mesh><vertices>` +
+      `<vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>` +
+      `<vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/>` +
+      `</vertices><triangles>` +
+      `<triangle v1="0" v2="2" v3="1" slic3rpe:mmu_segmentation="4"/>` +
+      `<triangle v1="0" v2="1" v3="3"/>` +
+      `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+      `</triangles></mesh></object></resources>` +
+      `<build><item objectid="1"/></build></model>`,
+  });
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-paint-"));
+  try {
+    const out = join(dir, "open.3mf");
+    await writeEditorProject({
+      paths: [fixture.path],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: out,
+    });
+    const model = execFileSync("unzip", ["-p", out, "3D/3dmodel.model"], { encoding: "utf8" });
+    assert.match(model, /slic3rpe:mmu_segmentation="4"/, "the author's painting must survive");
+  } finally {
+    fixture.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("colour changes asked for at open time are in the project, ready to see", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-bands-"));
+  try {
+    const a = join(dir, "a.stl");
+    writeCubeStl(a, 20);
+    const out = join(dir, "open.3mf");
+    await writeEditorProject({
+      paths: [a],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: out,
+      colourChanges: [{ atZ: 10, colourHex: "#1E6FC8" }],
+    });
+    const xml = execFileSync(
+      "unzip",
+      ["-p", out, "Metadata/Slic3r_PE_custom_gcode_per_print_z.xml"],
+      { encoding: "utf8" },
+    );
+    assert.match(xml, /print_z="10"/);
+    assert.match(xml, /color="#1E6FC8"/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
