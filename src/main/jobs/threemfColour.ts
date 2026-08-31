@@ -194,17 +194,23 @@ function readPrusaSlicer(
   entries: Map<string, string>,
   objects: WorkingObject[],
 ): ImportedColours | undefined {
+  // Neither part is required. A file can name its palette without assigning
+  // any object to it — that palette is still the model's own colours, and
+  // gating on the assignments threw it away.
   const config = entries.get("metadata/slic3r_pe_model.config");
-  if (!config) return undefined;
 
   // PrusaSlicer tags its metadata with type="object"/"volume". A volume's
   // value overrides the object's when present — that is how a multi-part
   // object gets more than one colour — so it is tried first.
-  const extruders = readConfigExtruders(config, [
-    'metadata[type="volume"][key="extruder"]',
-    'metadata[type="object"][key="extruder"]',
-  ]);
-  const names = readConfigNames(config, 'metadata[key="name"]');
+  const extruders = config
+    ? readConfigExtruders(config, [
+        'metadata[type="volume"][key="extruder"]',
+        'metadata[type="object"][key="extruder"]',
+      ])
+    : new Map<string, number>();
+  const names = config
+    ? readConfigNames(config, 'metadata[key="name"]')
+    : new Map<string, string>();
 
   // The palette lives in the PRINT config, as commented key = value lines.
   const palette = readSemicolonList(
@@ -224,16 +230,19 @@ function readBambu(
   objects: WorkingObject[],
 ): ImportedColours | undefined {
   const config = entries.get("metadata/model_settings.config");
-  if (!config) return undefined;
 
   // Bambu writes an untyped <metadata key="extruder"> on the object, and the
   // same key on each <part> of a multi-part object. The part is the more
   // specific statement, so it is tried first.
-  const extruders = readConfigExtruders(config, [
-    'part > metadata[key="extruder"]',
-    'metadata[key="extruder"]',
-  ]);
-  const names = readConfigNames(config, 'metadata[key="name"]');
+  const extruders = config
+    ? readConfigExtruders(config, [
+        'part > metadata[key="extruder"]',
+        'metadata[key="extruder"]',
+      ])
+    : new Map<string, number>();
+  const names = config
+    ? readConfigNames(config, 'metadata[key="name"]')
+    : new Map<string, string>();
 
   const palette = readBambuPalette(entries.get("metadata/project_settings.config"));
 

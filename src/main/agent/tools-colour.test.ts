@@ -48,3 +48,24 @@ test("filamentColour's description sends more than one colour elsewhere", () => 
   assert.match(desc, /colourStops|colours/, "it must name the multi-colour argument");
   assert.match(desc, /single|ONE/i, "it must say it is for one colour only");
 });
+
+test("per-extruder settings are dropped before slicing a multi-extruder project", async () => {
+  // PrusaSlicer's precedence is overrides > --load, and an override REPLACES a
+  // vector rather than filling one slot of it. Sending "--nozzle-diameter 0.4"
+  // to a two-extruder config leaves a one-extruder printer, and painting that
+  // referred to the second colour prints in one. Verified against 2.9.5 on a
+  // real MakerWorld model: 32 tool changes without these, 0 with them.
+  const { withoutPerExtruderOverrides } = await import("./tools");
+  const stripped = withoutPerExtruderOverrides({
+    layerHeightMm: 0.2,
+    fillDensityPct: 20,
+    perimeters: 3,
+    nozzleDiameterMm: 0.4,
+    filamentColour: "#000000",
+  });
+  assert.equal(stripped.nozzleDiameterMm, undefined, "a scalar nozzle collapses the vector");
+  assert.equal(stripped.filamentColour, undefined, "so does a scalar colour");
+  assert.equal(stripped.layerHeightMm, 0.2, "scalars must survive untouched");
+  assert.equal(stripped.fillDensityPct, 20);
+  assert.equal(stripped.perimeters, 3);
+});

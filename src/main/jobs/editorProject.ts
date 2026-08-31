@@ -14,7 +14,7 @@
 // land stacked on the origin the way loose STLs do.
 // ─────────────────────────────────────────────────────────────────────────────
 import { basename, extname } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseMesh, parse3mfObjects } from "./mesh";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
 import { readThreeMfColours, type ImportedPaint } from "./threemfColour";
@@ -60,6 +60,15 @@ export interface EditorProjectInput {
   /** Filament swaps up the height of the print, so the plate opens showing
    *  them in Preview and the user can move them by hand. */
   colourChanges?: Array<{ atZ: number; colourHex: string }>;
+  /**
+   * Write the config this project ends up carrying to this path as well.
+   *
+   * A caller that goes on to SLICE the project needs it. PrusaSlicer's
+   * precedence is overrides > --load > the project's own settings, so slicing
+   * a painted project under a single-extruder --load silently overrides the
+   * extruders the painting needs and prints it in one colour.
+   */
+  emitConfigTo?: string;
 }
 
 /**
@@ -265,20 +274,37 @@ export async function writeEditorProject(
   // extruders those colours live on. Without it PrusaSlicer clamps every
   // object back to extruder 1 and the imported colours disappear on the way
   // in — which is the whole failure this path exists to fix.
-  const extruders = Math.max(...parts.map((p) => p.extruder), 1);
+  //
+  // PAINTING counts here too, and is easy to miss: a painted model is ONE
+  // object assigned to extruder 1, with its second colour living entirely in
+  // the triangle codes. Counting only the object assignments gives 1, the
+  // project opens as a single-extruder printer, and the painting has no second
+  // filament to use. Verified against PrusaSlicer 2.9.5 on a real MakerWorld
+  // model: the same painted mesh produces 22 tool changes with a two-extruder
+  // config and none at all with one.
+  const palette = await importedPalette(input.paths);
+  const painted = parts.some((p) => p.paint);
+  const extruders = Math.max(
+    ...parts.map((p) => p.extruder),
+    painted ? Math.max(palette.length, 2) : 1,
+    1,
+  );
   if (extruders > 1) {
-    const palette = await importedPalette(input.paths, extruders);
     const multi = readFileSync(
       synthesizeMultiMaterialConfig({
         bed: input.bed,
         nozzleMm: 0.4,
         material: "PLA",
-        colours: palette,
+        colours: padPalette(palette, extruders),
       }),
       "utf8",
     );
     // The user's own settings stay; only the multi-extruder keys are imposed.
     configText = configText ? mergeIni(configText, multi) : multi;
+  }
+
+  if (input.emitConfigTo && configText) {
+    writeFileSync(input.emitConfigTo, configText, "utf8");
   }
 
   writeThreeMf(
@@ -291,9 +317,15 @@ export async function writeEditorProject(
   return input.destPath;
 }
 
-/** The filament colours the imported files name, one per extruder. A gap is a
- *  spool the model never referred to, not a colour we are choosing for it. */
-async function importedPalette(paths: string[], extruders: number): Promise<string[]> {
+/** Fill a palette out to one entry per extruder. A gap is a spool the model
+ *  never referred to, not a colour we are choosing for it — but a per-extruder
+ *  config has to state a value for every extruder it declares. */
+function padPalette(palette: string[], extruders: number): string[] {
+  return Array.from({ length: extruders }, (_, i) => palette[i] ?? "#FFFFFF");
+}
+
+/** The filament colours the imported files name, in extruder order. */
+async function importedPalette(paths: string[]): Promise<string[]> {
   const palette: string[] = [];
   for (const path of paths) {
     if (extname(path).toLowerCase() !== ".3mf") continue;
@@ -305,5 +337,5 @@ async function importedPalette(paths: string[], extruders: number): Promise<stri
       if (object.extruder && object.colourHex) palette[object.extruder - 1] ??= object.colourHex;
     }
   }
-  return Array.from({ length: extruders }, (_, i) => palette[i] ?? "#FFFFFF");
+  return palette;
 }

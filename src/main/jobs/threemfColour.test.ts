@@ -148,3 +148,37 @@ test("an unreadable file comes back empty instead of throwing", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a palette with no per-object assignments is still the model's own colours", async () => {
+  // A Bambu file can name its filaments without assigning any object to them —
+  // the colours live in the painting instead. Requiring the assignments to be
+  // present threw the palette away, and the model opened with a placeholder
+  // white on every extruder.
+  const fixture = makeThreeMf({
+    "3D/3dmodel.model": modelDoc([{ id: "1" }]),
+    "Metadata/project_settings.config": JSON.stringify({
+      filament_colour: ["#000000", "#0086D6"],
+    }),
+  });
+  try {
+    const found = await readThreeMfColours(fixture.path);
+    assert.deepEqual(found.palette, ["#000000", "#0086d6"]);
+    assert.equal(found.source, "bambu");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the same holds for a PrusaSlicer file that names filaments but assigns none", async () => {
+  const fixture = makeThreeMf({
+    "3D/3dmodel.model": modelDoc([{ id: "1" }]),
+    "Metadata/Slic3r_PE.config": `; generated\n; filament_colour = #C81E1E;#1E6FC8\n`,
+  });
+  try {
+    const found = await readThreeMfColours(fixture.path);
+    assert.deepEqual(found.palette, ["#c81e1e", "#1e6fc8"]);
+    assert.equal(found.source, "prusaslicer");
+  } finally {
+    fixture.cleanup();
+  }
+});

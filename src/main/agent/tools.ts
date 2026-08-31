@@ -895,6 +895,63 @@ interface SliceRun {
  * Shaped as a PlateSliceResult so the caller's reporting is unchanged.
  */
 /**
+ * Drop the settings PrusaSlicer reads as PER-EXTRUDER VECTORS.
+ *
+ * Its precedence is overrides > --load, and an override is a single value: it
+ * does not fill one slot of a vector, it REPLACES the vector. So passing
+ * `--nozzle-diameter 0.4` to a two-extruder config leaves a printer with one
+ * extruder, and the painting that referred to the second silently prints in
+ * one colour. Verified against 2.9.5 on a real MakerWorld model, which sliced
+ * to 32 tool changes without these and 0 with them.
+ *
+ * Only these three are vectors among the settings Slicely sends; layer height,
+ * infill and the rest are scalars and pass through untouched.
+ */
+export function withoutPerExtruderOverrides(params: SliceParams): SliceParams {
+  const { nozzleDiameterMm: _n, filamentColour: _c, ...rest } = params;
+  return rest;
+}
+
+/**
+ * Build a sliceable project for a model whose colours are PAINTED on.
+ *
+ * Returns undefined for anything else — the ordinary paths handle those, and
+ * this one costs a mesh rebuild that a plain model gains nothing from.
+ */
+async function paintedProject(
+  paths: string[],
+  colour: ColourRequest,
+): Promise<{ projectPath: string; configIni: string } | undefined> {
+  // An explicit colour request is the user overriding the file; honour that
+  // rather than the painting.
+  if (paths.length !== 1 || colour.isMultiColour || colour.filamentColour) return undefined;
+  if (extLower(paths[0]) !== ".3mf") return undefined;
+  try {
+    const { parse3mfObjects } = await import("../jobs/mesh");
+    const objects = await parse3mfObjects(paths[0]);
+    if (!objects.some((o) => o.paint)) return undefined;
+
+    const { writeEditorProject } = await import("../jobs/editorProject");
+    const { sessionSlicesDir } = await import("../session-context");
+    const projectPath = join(sessionSlicesDir(), "painted-slice.3mf");
+    const configIni = join(sessionSlicesDir(), "painted-slice.ini");
+    const bedDim =
+      resolveSliceConfig(sessionState.printerKey, sessionState.material, customGeometry())
+        .printer?.bed ?? { x: 250, y: 210, z: 210 };
+    const written = await writeEditorProject({
+      paths,
+      bed: bedDim,
+      destPath: projectPath,
+      emitConfigTo: configIni,
+    });
+    return written ? { projectPath, configIni } : undefined;
+  } catch {
+    // A model we can't rebuild still slices the ordinary way, in one colour.
+    return undefined;
+  }
+}
+
+/**
  * Turn a colour request into the heights this particular model changes at.
  *
  * Resolved against the real model rather than a nominal height, because a
@@ -1069,8 +1126,24 @@ async function runSlice(
   // The job pipeline writes a 3MF holding every object, so the whole plate
   // slices together — and it also orients each part and packs the plates,
   // which is what the user wanted from "slice all of these" anyway.
+  // A PAINTED model is one mesh whose colours are regions inside it. There is
+  // nothing to split and no band to insert: it slices correctly only if it
+  // reaches PrusaSlicer as a project carrying its paint AND a config with the
+  // extruders that paint refers to. Verified against 2.9.5 on a real MakerWorld
+  // model: 32 tool changes that way, and none when the same paint is sliced
+  // under a single-extruder config.
+  const painted = await paintedProject(allParts, colour);
+
   let job: PlateSliceResult;
-  if (isMultiPart || colour.isMultiColour) {
+  if (painted) {
+    job = await slicePlates(
+      [painted.projectPath],
+      withoutPerExtruderOverrides(params),
+      bed,
+      painted.configIni,
+      baseStem(allParts[0]),
+    );
+  } else if (isMultiPart || colour.isMultiColour) {
     // A single part with several colours goes through the job pipeline too:
     // the filament swaps live there, and slicePlates has no way to express
     // them. Routing on part count alone is what left a two-colour request
@@ -1102,7 +1175,9 @@ async function runSlice(
       ? ` Set to ${params.filamentColour} — load that filament to print it.`
       : importedParts.length > 1
         ? ` Kept the model's own ${new Set(importedParts.map((p) => p.colourHex).filter(Boolean)).size} colours.`
-        : "";
+        : painted
+          ? ` Kept the model's own painted colours — it prints as its author coloured it.`
+          : "";
   const configNote =
     resolved.source !== "user-config"
       ? " (Estimates use a generic profile — for best accuracy, export your PrusaSlicer config and set PRUSASLICER_CONFIG_INI.)"

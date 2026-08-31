@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeEditorProject } from "./editorProject";
@@ -210,6 +210,100 @@ test("colour changes asked for at open time are in the project, ready to see", a
     assert.match(xml, /print_z="10"/);
     assert.match(xml, /color="#1E6FC8"/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("a PAINTED model opens with enough extruders for its painting to mean anything", async () => {
+  // Carrying the paint codes is only half of it. A model painted in two
+  // filaments is ONE object assigned to extruder 1 — the second colour lives
+  // entirely in the painting — so counting extruders from the object
+  // assignments alone gives 1, the project opens as a single-extruder printer,
+  // and PrusaSlicer has no second filament to paint with. Verified against
+  // PrusaSlicer 2.9.5: the same painted model produces 22 tool changes with a
+  // two-extruder config and 0 with a one-extruder config.
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources><object id="1" type="model"><mesh><vertices>` +
+      `<vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>` +
+      `<vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/>` +
+      `</vertices><triangles>` +
+      `<triangle v1="0" v2="2" v3="1" paint_color="4"/>` +
+      `<triangle v1="0" v2="1" v3="3"/>` +
+      `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+      `</triangles></mesh></object></resources>` +
+      `<build><item objectid="1"/></build></model>`,
+    "Metadata/model_settings.config":
+      `<config><object id="1"><metadata key="extruder" value="1"/></object></config>`,
+    "Metadata/project_settings.config": JSON.stringify({
+      filament_colour: ["#000000", "#0086D6"],
+    }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-painted-"));
+  try {
+    const out = join(dir, "open.3mf");
+    await writeEditorProject({
+      paths: [fixture.path],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: out,
+    });
+    const cfg = execFileSync("unzip", ["-p", out, "Metadata/Slic3r_PE.config"], {
+      encoding: "utf8",
+    });
+    assert.match(
+      cfg,
+      /nozzle_diameter = 0\.4,0\.4/,
+      "the printer must have a second extruder for the painting to use",
+    );
+    assert.match(cfg, /filament_colour = #000000;#0086D6/i, "in the model's own colours");
+  } finally {
+    fixture.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the merged config can be written out, so a slice can be told to USE it", async () => {
+  // PrusaSlicer's priority is overrides > --load > the project's own settings,
+  // so slicing a painted project while passing a single-extruder --load
+  // silently overrides the two extruders the painting needs and produces a
+  // one-colour print. The slice has to be handed the SAME merged config the
+  // project carries. (Verified against 2.9.5: the real MakerWorld keycard
+  // slices to 32 tool changes on its own config and 0 under a --load of a
+  // single-extruder one.)
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources><object id="1" type="model"><mesh><vertices>` +
+      `<vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>` +
+      `<vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/>` +
+      `</vertices><triangles>` +
+      `<triangle v1="0" v2="2" v3="1" paint_color="4"/>` +
+      `<triangle v1="0" v2="1" v3="3"/>` +
+      `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+      `</triangles></mesh></object></resources>` +
+      `<build><item objectid="1"/></build></model>`,
+    "Metadata/project_settings.config": JSON.stringify({
+      filament_colour: ["#000000", "#0086D6"],
+    }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-emit-"));
+  try {
+    const emitted = join(dir, "effective.ini");
+    await writeEditorProject({
+      paths: [fixture.path],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: join(dir, "open.3mf"),
+      emitConfigTo: emitted,
+    });
+    const ini = readFileSync(emitted, "utf8");
+    assert.match(ini, /nozzle_diameter = 0\.4,0\.4/, "the slice must see both extruders");
+    assert.match(ini, /filament_colour = #000000;#0086D6/i);
+  } finally {
+    fixture.cleanup();
     rmSync(dir, { recursive: true, force: true });
   }
 });
