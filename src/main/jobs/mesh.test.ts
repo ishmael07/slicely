@@ -221,3 +221,106 @@ test("parseMesh still returns ONE merged mesh, so measuring a model is unchanged
     fixture.cleanup();
   }
 });
+
+// ── The production extension ───────────────────────────────────────────────
+// Bambu Studio (and so every MakerWorld download) writes its geometry into
+// SEPARATE part files: 3D/3dmodel.model holds objects made of <component>
+// references into 3D/Objects/object_N.model, and the build item scales and
+// places the wrapper. A parser that reads only 3dmodel.model finds no
+// triangles at all in the exact files multi-colour models come from.
+
+/** A 3MF in Bambu's layout: a wrapper object referencing an external mesh. */
+function productionModel(componentTransform: string, itemTransform: string) {
+  return writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" ` +
+      `xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">` +
+      `<resources><object id="2" type="model"><components>` +
+      `<component p:path="/3D/Objects/object_1.model" objectid="1" transform="${componentTransform}"/>` +
+      `</components></object></resources>` +
+      `<build><item objectid="2" transform="${itemTransform}"/></build></model>`,
+    "3D/_rels/3dmodel.model.rels":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Target="/3D/Objects/object_1.model" Id="rel-1" ` +
+      `Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`,
+    "3D/Objects/object_1.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources><object id="1" type="model"><mesh><vertices>` +
+      `<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/>` +
+      `<vertex x="0" y="1" z="0"/><vertex x="0" y="0" z="1"/>` +
+      `</vertices><triangles>` +
+      `<triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/>` +
+      `<triangle v1="1" v2="2" v3="3"/><triangle v1="0" v2="3" v3="2"/>` +
+      `</triangles></mesh></object></resources></model>`,
+  });
+}
+
+const IDENTITY = "1 0 0 0 1 0 0 0 1 0 0 0";
+
+test("geometry in a separate part file is found, not reported as an empty model", async () => {
+  const fixture = productionModel(IDENTITY, IDENTITY);
+  try {
+    const objects = await parse3mfObjects(fixture.path);
+    assert.equal(objects.length, 1);
+    assert.equal(objects[0].triangles.length, 4, "the component's mesh must be resolved");
+    assert.equal(
+      objects[0].objectId,
+      "2",
+      "the id must be the one the colour metadata uses — the root object's",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the component's transform and the build item's are BOTH applied", async () => {
+  // Bambu puts the model's scale on the build item. Applying only one of the
+  // two transforms gives a part of the wrong size in the wrong place, which
+  // then fails to pack or silently prints at the wrong scale.
+  const fixture = productionModel(
+    "1 0 0 0 1 0 0 0 1 0 0 5", // component: lift 5mm
+    "2 0 0 0 2 0 0 0 2 10 0 0", // item: double, then shift 10mm in X
+  );
+  try {
+    const objects = await parse3mfObjects(fixture.path);
+    const verts = objects[0].triangles.flatMap((t) => [t.a, t.b, t.c]);
+    // (0,0,0) -> component +5z -> (0,0,5) -> item x2 (0,0,10) -> +10x (10,0,10)
+    assert.ok(
+      verts.some((v) => Math.abs(v.x - 10) < 1e-6 && Math.abs(v.z - 10) < 1e-6),
+      `both transforms must compose; got ${JSON.stringify(verts.slice(0, 4))}`,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("parseMesh reads a production-extension 3MF instead of throwing", async () => {
+  const fixture = productionModel(IDENTITY, IDENTITY);
+  try {
+    const mesh = await parseMesh(fixture.path);
+    assert.equal(mesh.triangles.length, 4);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a component cycle terminates instead of hanging", async () => {
+  // A malformed or hostile file must not be able to spin the parser forever.
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources>` +
+      `<object id="1" type="model"><components><component objectid="2"/></components></object>` +
+      `<object id="2" type="model"><components><component objectid="1"/></components></object>` +
+      `</resources><build><item objectid="1"/></build></model>`,
+  });
+  try {
+    await assert.rejects(() => parse3mfObjects(fixture.path), /no mesh triangles/);
+  } finally {
+    fixture.cleanup();
+  }
+});

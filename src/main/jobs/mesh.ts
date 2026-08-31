@@ -11,13 +11,13 @@
 // invariant (header 84 bytes + 50 bytes/triangle == file size) and only fall
 // back to ASCII parsing when that arithmetic doesn't check out.
 //
-// 3MF is best-effort: it's a zip containing an XML mesh at
-// 3D/3dmodel.model. `parse3mfObjects` reads every <object><mesh> as its own
-// object and places it by its <build> item's transform; `parseMesh` then
-// merges them, because measuring a model wants one mesh while colouring one
-// needs the objects kept apart. <component> references — an object built out
-// of other objects — are still not resolved; such an object comes back with
-// its own mesh only. A file we can't make sense of throws a clear Error
+// 3MF is a zip of XML model documents. `parse3mfObjects` reads every
+// <object> as its own object, resolves <component> references (including
+// into the SEPARATE part files the production extension allows — which is how
+// Bambu Studio, and therefore every MakerWorld download, stores its geometry),
+// and places each by its <build> item's transform. `parseMesh` then merges
+// them, because measuring a model wants one mesh while colouring one needs the
+// objects kept apart. A file we can't make sense of throws a clear Error
 // rather than crashing the caller.
 //
 // Large files are read via a Node stream so the raw bytes are processed in
@@ -438,25 +438,121 @@ async function parse3mf(filePath: string): Promise<Triangle[]> {
  * transform graph; such an object comes back with its own mesh only.
  */
 export async function parse3mfObjects(filePath: string): Promise<ThreeMfObject[]> {
-  let xml: string;
+  let documents: Map<string, string>;
   try {
-    const directory = await unzipper.Open.file(filePath);
-    const entry = directory.files.find((f) => f.path === "3D/3dmodel.model");
-    if (!entry) {
-      throw new Error('no "3D/3dmodel.model" entry found in the archive');
-    }
-    xml = (await entry.buffer()).toString("utf8");
+    documents = await readModelDocuments(filePath);
   } catch (err) {
     throw new Error(
       `Couldn't read 3MF "${filePath}": ${err instanceof Error ? err.message : String(err)} (Slicely's 3MF support is best-effort).`,
     );
   }
+  const root = documents.get(ROOT_MODEL);
+  if (root === undefined) {
+    throw new Error(
+      `Couldn't read 3MF "${filePath}": no "3D/3dmodel.model" entry found in the archive (Slicely's 3MF support is best-effort).`,
+    );
+  }
 
+  // Every object in every part file, keyed by document then id. Ids are only
+  // unique WITHIN a document, so the document has to be part of the key.
+  const parsed = new Map<string, Map<string, ParsedObject>>();
+  for (const [path, xml] of documents) parsed.set(path, parseObjects(xml));
+
+  const resolve = (path: string, id: string, depth: number): Triangle[] => {
+    // A file that references itself, directly or round a longer loop, would
+    // otherwise spin here forever.
+    if (depth > 8) return [];
+    const object = parsed.get(path)?.get(id);
+    if (!object) return [];
+    if (object.triangles.length > 0) return object.triangles;
+    const out: Triangle[] = [];
+    for (const component of object.components) {
+      const target = component.path ? normalizeModelPath(component.path) : path;
+      out.push(
+        ...applyThreeMfTransform(
+          resolve(target, component.objectid, depth + 1),
+          component.transform,
+        ),
+      );
+    }
+    return out;
+  };
+
+  // Place each build item. Its transform composes on top of whatever the
+  // components already applied — Bambu puts the model's SCALE here, so
+  // applying only one of the two gives a part of the wrong size.
+  const placed: ThreeMfObject[] = [];
+  const built = new Set<string>();
+  const rootDoc = cheerio.load(root, { xmlMode: true });
+  rootDoc("build > item").each((_i, itemEl) => {
+    const attribs = (itemEl as { attribs?: Record<string, string> }).attribs ?? {};
+    const objectId = attribs.objectid;
+    if (!objectId) return;
+    const triangles = applyThreeMfTransform(
+      resolve(ROOT_MODEL, objectId, 0),
+      attribs.transform,
+    );
+    if (triangles.length === 0) return;
+    built.add(objectId);
+    placed.push({ objectId, triangles });
+  });
+
+  // An object nobody built is still geometry the user downloaded. Include it
+  // untransformed rather than silently dropping part of their model.
+  for (const objectId of (parsed.get(ROOT_MODEL) ?? new Map()).keys()) {
+    if (built.has(objectId)) continue;
+    const triangles = resolve(ROOT_MODEL, objectId, 0);
+    if (triangles.length > 0) placed.push({ objectId, triangles });
+  }
+
+  if (placed.length === 0) {
+    throw new Error(
+      `Couldn't parse 3MF "${filePath}": no mesh triangles found in 3D/3dmodel.model (Slicely's 3MF support is best-effort).`,
+    );
+  }
+  return placed;
+}
+
+/** The root model document's path, normalised. */
+const ROOT_MODEL = "/3d/3dmodel.model";
+
+/** One object as the file describes it: its own mesh, or references to others. */
+interface ParsedObject {
+  triangles: Triangle[];
+  components: Array<{ path?: string; objectid: string; transform?: string }>;
+}
+
+/** Lowercased, leading-slash form, so a reference and an archive entry compare
+ *  equal however each spelled the path. */
+function normalizeModelPath(path: string): string {
+  const clean = path.replace(/\\/g, "/").toLowerCase();
+  return clean.startsWith("/") ? clean : `/${clean}`;
+}
+
+/**
+ * Every model document in the archive.
+ *
+ * Not just 3D/3dmodel.model: the 3MF production extension lets an object live
+ * in its own part file, referenced by `<component p:path=...>`. Bambu Studio
+ * writes every file this way, so every MakerWorld download does too — and a
+ * parser reading only the root document finds no triangles at all in exactly
+ * the files multi-colour models come from.
+ */
+async function readModelDocuments(filePath: string): Promise<Map<string, string>> {
+  const directory = await unzipper.Open.file(filePath);
+  const out = new Map<string, string>();
+  for (const file of directory.files) {
+    if (!file.path.toLowerCase().endsWith(".model")) continue;
+    out.set(normalizeModelPath(file.path), (await file.buffer()).toString("utf8"));
+  }
+  return out;
+}
+
+/** The objects one model document declares, by id. */
+function parseObjects(xml: string): Map<string, ParsedObject> {
   const $ = cheerio.load(xml, { xmlMode: true });
+  const out = new Map<string, ParsedObject>();
 
-  // Geometry per object id, in document order.
-  const meshes = new Map<string, Triangle[]>();
-  const order: string[] = [];
   $("object").each((i, objEl) => {
     const objectId = (objEl as { attribs?: Record<string, string> }).attribs?.id ?? String(i + 1);
     const vertices: Vec3[] = [];
@@ -480,37 +576,27 @@ export async function parse3mfObjects(filePath: string): Promise<ThreeMfObject[]
         const c = vertices[Number(attribs.v3)];
         if (a && b && c) triangles.push({ a, b, c, normal: faceNormal(a, b, c) });
       });
-    if (triangles.length === 0) return;
-    meshes.set(objectId, triangles);
-    order.push(objectId);
+
+    const components: ParsedObject["components"] = [];
+    $(objEl)
+      .find("components > component")
+      .each((_j, cEl) => {
+        const attribs = (cEl as { attribs?: Record<string, string> }).attribs ?? {};
+        // The path attribute is namespaced (p:path) in real files; cheerio in
+        // XML mode keeps the prefix, so both spellings are accepted.
+        const objectid = attribs.objectid;
+        if (!objectid) return;
+        components.push({
+          path: attribs["p:path"] ?? attribs.path,
+          objectid,
+          transform: attribs.transform,
+        });
+      });
+
+    out.set(objectId, { triangles, components });
   });
 
-  // Place them. One entry per build item, so an object used twice is two
-  // instances rather than one that silently loses a copy.
-  const placed: ThreeMfObject[] = [];
-  const seen = new Set<string>();
-  $("build > item").each((_i, itemEl) => {
-    const attribs = (itemEl as { attribs?: Record<string, string> }).attribs ?? {};
-    const objectId = attribs.objectid;
-    const triangles = objectId ? meshes.get(objectId) : undefined;
-    if (!objectId || !triangles) return;
-    seen.add(objectId);
-    placed.push({ objectId, triangles: applyThreeMfTransform(triangles, attribs.transform) });
-  });
-
-  // An object nobody built is still geometry the user downloaded. Include it
-  // untransformed rather than silently dropping part of their model.
-  for (const objectId of order) {
-    if (seen.has(objectId)) continue;
-    placed.push({ objectId, triangles: meshes.get(objectId)! });
-  }
-
-  if (placed.length === 0) {
-    throw new Error(
-      `Couldn't parse 3MF "${filePath}": no mesh triangles found in 3D/3dmodel.model (Slicely's 3MF support is best-effort).`,
-    );
-  }
-  return placed;
+  return out;
 }
 
 /**
