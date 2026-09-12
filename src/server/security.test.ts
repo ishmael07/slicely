@@ -238,3 +238,38 @@ test("a 429 carries Retry-After and the rate_limited wire code", async () => {
     cleanup();
   }
 });
+
+test("the chat and heavy tiers are mounted on their routes, with separate budgets", async () => {
+  // One token each, no refill: the second request of a kind is refused, and
+  // spending `chat` must not spend `heavy`.
+  const { app, cleanup } = testApp({
+    api: { capacity: 50 },
+    chat: { capacity: 1, refillPerSec: 0 },
+    heavy: { capacity: 1, refillPerSec: 0 },
+  });
+  const { base, close } = await listen(app);
+  try {
+    const mint = await fetch(`${base}/api/config`);
+    const cookie = mint.headers.get("set-cookie")!.split(";")[0];
+    const post = async (path: string, body: unknown): Promise<number> => {
+      const resp = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      await resp.text(); // never leave a response body unread
+      return resp.status;
+    };
+
+    // The first of each is answered by the route (any status but 429 — with no
+    // key and no model these are rejections, which is fine: the point is that
+    // the LIMITER let them through).
+    assert.notEqual(await post("/api/chat", { message: "hello" }), 429);
+    assert.equal(await post("/api/chat", { message: "hello again" }), 429, "chat tier should be spent");
+    assert.notEqual(await post("/api/slice", {}), 429, "the heavy tier has its own budget");
+    assert.equal(await post("/api/slice", {}), 429, "heavy tier should be spent");
+  } finally {
+    await close();
+    cleanup();
+  }
+});
