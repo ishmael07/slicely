@@ -33,7 +33,7 @@ let cached: SlicelyConfig | null = null;
 export function getConfig(): SlicelyConfig {
   if (cached) return cached;
 
-  const workdirRaw = envStr("SLICELY_WORKDIR", join(homedir(), "Slicely"));
+  const workdirRaw = envStr("SLICELY_WORKDIR", join(homedir(), "Slicely-data"));
   const workdir = isAbsolute(workdirRaw)
     ? workdirRaw
     : join(homedir(), workdirRaw);
@@ -62,6 +62,11 @@ export function getConfig(): SlicelyConfig {
     slicesDir,
   };
   return cached;
+}
+
+/** Tests only: forget the cached config so env changes are re-read. */
+export function resetConfigForTests(): void {
+  cached = null;
 }
 
 export function configState(): ConfigState {

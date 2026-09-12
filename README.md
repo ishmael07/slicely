@@ -104,7 +104,7 @@ Type what you want, or paste a link:
 | `SLICELY_PORT` | | `3000` | Web server port. |
 | `SLICELY_ENABLE_SCRAPERS` | | off | Re-enable Thangs / Yeggi / STLFinder. They are bot-blocked in practice and added ~8s to every search, so they are off by default. |
 | `SLICELY_MULTI_USER` | | off | Set for a **public** deployment: disables LAN discovery and LAN-only transports, because the server's network is not the visitor's. |
-| `SLICELY_WORKDIR` | | `~/Slicely` | Downloads, slices, and per-visitor session workspaces. |
+| `SLICELY_WORKDIR` | | `~/Slicely-data` | Downloads, slices, and per-visitor session workspaces. |
 | `THINGIVERSE_APP_TOKEN` | | — | Thingiverse search + download. |
 | `GITHUB_TOKEN` | | — | GitHub repository search for engineering and open-hardware parts (its API needs a token even for public repos). |
 | `MYMINIFACTORY_API_KEY` | | — | MyMiniFactory search. |
