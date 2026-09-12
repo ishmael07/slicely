@@ -283,6 +283,71 @@ h1 {
 
 .demo-sent { margin-top: auto; }
 
+/* ---------- hero demo timeline ----------
+   One ~9 s loop telling the whole story: a prompt is typed, Slicely shows what it
+   found, the slice metrics fill in, the file goes to the printer. Every element runs
+   its own 9 s animation with percentage keyframes rather than a chain of delays, so
+   the stages stay in lockstep no matter when the page loaded.
+
+     0.0 – 2.2 s   the prompt types itself, one character per step
+     2.2 – 4.5 s   the model card rises in
+     4.5 – 7.0 s   the metrics panel rises in and its three bars fill
+     7.0 – 8.6 s   "Sent to Ender 3 ✓" pops
+     8.6 – 9.0 s   the stage fades out and the loop restarts
+
+   Only opacity and transform move, apart from four short width animations on very
+   small elements (the typed span and the three 6 px bars), so nothing here costs a
+   layout pass on anything but the frame itself — and the frame has a fixed height.
+
+   The base rules above are the FINAL frame, not the first: if animations never run,
+   the reader still sees a complete, sensible screenshot rather than an empty box. */
+
+@keyframes demo-cycle {
+  0%, 95.6% { opacity: 1; }
+  100%      { opacity: 0; }
+}
+
+@keyframes demo-type {
+  0%    { width: 0; animation-timing-function: steps(1, end); }
+  1.7%  { width: 0; animation-timing-function: steps(30, end); }
+  24.4% { width: 30ch; animation-timing-function: steps(1, end); }
+  100%  { width: 30ch; }
+}
+
+@keyframes demo-caret {
+  0%, 49%    { border-right-color: var(--accent); }
+  50%, 100%  { border-right-color: transparent; }
+}
+
+@keyframes demo-rise-model {
+  0%, 24.4%   { opacity: 0; transform: translateY(10px); }
+  32.2%, 100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes demo-rise-metrics {
+  0%, 50%     { opacity: 0; transform: translateY(10px); }
+  56.7%, 100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes demo-fill-1 { 0%, 51.1% { width: 0; } 68.9%, 100% { width: 78%; } }
+@keyframes demo-fill-2 { 0%, 53.3% { width: 0; } 71.1%, 100% { width: 46%; } }
+@keyframes demo-fill-3 { 0%, 55.6% { width: 0; } 73.3%, 100% { width: 62%; } }
+
+@keyframes demo-pop {
+  0%, 77.8%   { opacity: 0; transform: scale(0.82); }
+  81.1%       { opacity: 1; transform: scale(1.06); }
+  83.3%, 100% { opacity: 1; transform: scale(1); }
+}
+
+.demo-stage   { animation: demo-cycle 9s linear infinite; }
+.demo-typed   { animation: demo-type 9s linear infinite, demo-caret 1s linear infinite; }
+.demo-model   { animation: demo-rise-model 9s var(--ease) infinite; }
+.demo-metrics { animation: demo-rise-metrics 9s var(--ease) infinite; }
+.demo-fill.f1 { animation: demo-fill-1 9s var(--ease) infinite; }
+.demo-fill.f2 { animation: demo-fill-2 9s var(--ease) infinite; }
+.demo-fill.f3 { animation: demo-fill-3 9s var(--ease) infinite; }
+.demo-sent    { animation: demo-pop 9s var(--ease) infinite; }
+
 /* ---------- sections ---------- */
 section { position: relative; }
 .section-title {
@@ -465,4 +530,19 @@ section { position: relative; }
     scroll-behavior: auto !important;
   }
   .reveal { opacity: 1; transform: none; }
+
+  /* The hero demo is the one thing the blanket rule above must not simply erase:
+     flattened to 0.001 ms it would freeze on its FIRST frame — an empty app window
+     — and the reader would lose the whole story rather than just the motion.
+     A negative delay of -8.5 s seeks the paused animation to 94% of its cycle
+     instead, which is the finished frame: prompt typed, model found, metrics
+     filled, print sent. Still, and complete. */
+  .demo-stage   { animation: demo-cycle 9s linear -8.5s infinite paused !important; }
+  .demo-typed   { animation: demo-type 9s linear -8.5s infinite paused !important; border-right-color: var(--accent); }
+  .demo-model   { animation: demo-rise-model 9s linear -8.5s infinite paused !important; }
+  .demo-metrics { animation: demo-rise-metrics 9s linear -8.5s infinite paused !important; }
+  .demo-fill.f1 { animation: demo-fill-1 9s linear -8.5s infinite paused !important; }
+  .demo-fill.f2 { animation: demo-fill-2 9s linear -8.5s infinite paused !important; }
+  .demo-fill.f3 { animation: demo-fill-3 9s linear -8.5s infinite paused !important; }
+  .demo-sent    { animation: demo-pop 9s linear -8.5s infinite paused !important; }
 }
