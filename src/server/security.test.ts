@@ -1,4 +1,4 @@
-// Tests for security.ts's rate limiter and the SLICELY_MULTI_USER LAN guard.
+// Tests for security.ts's rate limiter and the SLICELY_MODE LAN guard.
 // The LAN-guard test stubs the printers façade entirely (its discoverPrinters
 // throws if called at all) so it proves the guard short-circuits BEFORE ever
 // reaching real mDNS/network code — not just that the façade happens to
@@ -57,7 +57,7 @@ function unusedPrinterApi(): PrintersApi {
     sendToPrinter: fail("sendToPrinter") as unknown as PrintersApi["sendToPrinter"],
     controlPrinter: fail("controlPrinter") as unknown as PrintersApi["controlPrinter"],
     discoverPrinters: async () => {
-      throw new Error("discoverPrinters must never be invoked while SLICELY_MULTI_USER=true");
+      throw new Error("discoverPrinters must never be invoked in hosted mode");
     },
     setActivePrinter: async () => undefined,
     setAutoStart: async () => undefined,
@@ -65,42 +65,42 @@ function unusedPrinterApi(): PrintersApi {
   };
 }
 
-test("SLICELY_MULTI_USER=true disables LAN discovery without ever calling the façade", async () => {
+test("SLICELY_MODE=hosted disables LAN discovery without ever calling the façade", async () => {
   const app = express();
   app.use(express.json());
   app.use("/api", createPrintersRouter(unusedPrinterApi()));
   const { base, close } = await listen(app);
-  const prev = process.env.SLICELY_MULTI_USER;
+  const prev = process.env.SLICELY_MODE;
   try {
-    process.env.SLICELY_MULTI_USER = "true";
+    process.env.SLICELY_MODE = "hosted";
     const resp = await fetch(`${base}/api/printers/discover`);
     const data = (await resp.json()) as { error: string };
     assert.equal(resp.status, 403);
     assert.match(data.error, /disabled/i);
   } finally {
-    if (prev === undefined) delete process.env.SLICELY_MULTI_USER;
-    else process.env.SLICELY_MULTI_USER = prev;
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
     await close();
   }
 });
 
-test("SLICELY_MULTI_USER unset (single-user) allows LAN discovery through to the façade", async () => {
+test("SLICELY_MODE=desktop allows LAN discovery through to the façade", async () => {
   const app = express();
   app.use(express.json());
   const stub = unusedPrinterApi();
-  // Override just for this test — single-user mode SHOULD reach the façade.
+  // Override just for this test — desktop mode SHOULD reach the façade.
   (stub as { discoverPrinters: PrintersApi["discoverPrinters"] }).discoverPrinters = async () => [];
   app.use("/api", createPrintersRouter(stub));
   const { base, close } = await listen(app);
-  const prev = process.env.SLICELY_MULTI_USER;
+  const prev = process.env.SLICELY_MODE;
   try {
-    delete process.env.SLICELY_MULTI_USER;
+    process.env.SLICELY_MODE = "desktop";
     const resp = await fetch(`${base}/api/printers/discover`);
     assert.equal(resp.status, 200);
     assert.deepEqual(await resp.json(), []);
   } finally {
-    if (prev === undefined) delete process.env.SLICELY_MULTI_USER;
-    else process.env.SLICELY_MULTI_USER = prev;
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
     await close();
   }
 });

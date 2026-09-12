@@ -8,11 +8,12 @@
 import type { Request, RequestHandler } from "express";
 import type { PrinterTransport } from "../shared/printers";
 import { CLOUD_TRANSPORTS } from "../shared/printers";
+import { isHosted } from "../main/mode";
 
 /**
  * True when Slicely is running as a SHARED, hosted, multi-tenant server
- * rather than on a single user's own machine. Flip with `SLICELY_MULTI_USER=
- * true`.
+ * rather than on a single user's own machine. Delegates to the `SLICELY_MODE`
+ * switch (see mode.ts): hosted is the default, desktop is opt-in.
  *
  * WHY THIS DISTINCTION MATTERS: LAN mDNS/SSDP discovery and the LAN-only
  * printer transports (OctoPrint, Moonraker, PrusaLink, Bambu-LAN, and the
@@ -28,7 +29,7 @@ import { CLOUD_TRANSPORTS } from "../shared/printers";
  * runs, so those are the only transports multi-user mode allows.
  */
 export function isMultiUser(): boolean {
-  return process.env.SLICELY_MULTI_USER === "true";
+  return isHosted();
 }
 
 /** True when `transport` requires being on the same physical network as the
