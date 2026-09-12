@@ -69,6 +69,14 @@ export function resetConfigForTests(): void {
   cached = null;
 }
 
+/** Raw `SLICELY_MASTER_KEY` (base64), read fresh on every call. Deliberately
+ *  NOT part of the cached SlicelyConfig above: keyvault.ts caches the
+ *  decoded key itself (see `resetKeyVaultForTests`), and its own tests flip
+ *  this env var without going through `resetConfigForTests()`. */
+export function masterKeyEnv(): string {
+  return envStr("SLICELY_MASTER_KEY");
+}
+
 export function configState(): ConfigState {
   const c = getConfig();
   return {
