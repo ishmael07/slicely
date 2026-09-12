@@ -295,6 +295,11 @@ export interface ConfirmOptions {
 }
 
 let dialogSeq = 0;
+/** How many confirmation dialogs are open. A dialog opened on top of a sheet is
+ *  the only thing the keyboard should be able to reach, so the sheet's own Tab
+ *  trap stands down while one is up — otherwise the two traps fight and focus
+ *  can never leave the dialog's first button. */
+let openDialogs = 0;
 
 /**
  * Ask before something irreversible or hazardous.
@@ -331,6 +336,7 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     host.appendChild(box);
 
     function settle(answer: boolean): void {
+      openDialogs -= 1;
       document.removeEventListener("keydown", onKey, true);
       host.remove();
       returnFocus?.focus();
@@ -352,6 +358,7 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
     host.addEventListener("pointerdown", (e) => {
       if (e.target === host) settle(false);
     });
+    openDialogs += 1;
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(host);
     cancel.focus();
@@ -409,7 +416,7 @@ export function initUi(): void {
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Tab" || openSheetId === null) return;
+      if (e.key !== "Tab" || openSheetId === null || openDialogs > 0) return;
       trapTab(byId<HTMLElement>(SHEET_ELEMENT[openSheetId]), e);
     },
     true,
