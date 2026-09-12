@@ -9,7 +9,7 @@
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability } from "../shared/sourcing";
 import { del, getJson, patchJson } from "./api.js";
-import { byId, confirmDialog, make, toast } from "./ui.js";
+import { byId, confirmDialog, make, menu, toast } from "./ui.js";
 import { renderAboutSection, renderAiSection } from "./onboarding.js";
 
 export interface SettingsDeps {
@@ -27,10 +27,8 @@ let settings: SettingsState | null = null;
 // Model + effort composer dropdowns
 let modelTriggerBtn: HTMLButtonElement;
 let modelTriggerLabel: HTMLElement;
-let modelMenuEl: HTMLElement;
 let effortTriggerBtn: HTMLButtonElement;
 let effortTriggerLabel: HTMLElement;
-let effortMenuEl: HTMLElement;
 
 // Slice-defaults sheet
 let ssPrinter: HTMLSelectElement;
@@ -86,24 +84,10 @@ function resolveBed(): { x: number; y: number; z: number } {
 }
 
 // ── model + effort dropdowns ─────────────────────────────────────────────────
-
-function toggleMenu(which: "model" | "effort"): void {
-  const menuEl = which === "model" ? modelMenuEl : effortMenuEl;
-  const trigger = which === "model" ? modelTriggerBtn : effortTriggerBtn;
-  const willOpen = menuEl.classList.contains("hidden");
-  closeMenus();
-  if (willOpen) {
-    menuEl.classList.remove("hidden");
-    trigger.classList.add("open");
-  }
-}
-
-export function closeMenus(): void {
-  modelMenuEl.classList.add("hidden");
-  effortMenuEl.classList.add("hidden");
-  modelTriggerBtn.classList.remove("open");
-  effortTriggerBtn.classList.remove("open");
-}
+// Both are real menus now: ui.ts's menu() builds `role="menuitem"` buttons,
+// wires the arrow keys and Escape, and hands focus back to the trigger. The
+// items are built at open time from the settings just fetched, so the menu can
+// never show a stale model list.
 
 function effortDisabled(lvl: EffortLevel, m: SettingsState["models"][number] | undefined): boolean {
   if (!m) return false;
@@ -113,48 +97,37 @@ function effortDisabled(lvl: EffortLevel, m: SettingsState["models"][number] | u
   return false;
 }
 
-function renderModelEffort(): void {
+function openModelMenu(): void {
+  if (!settings) return;
+  const { current, models } = settings;
+  menu(
+    modelTriggerBtn,
+    models.map((m) => ({ id: m.id, label: m.label, hint: m.blurb, active: m.id === current.model })),
+    (id) => void changeSettings({ model: id }),
+  );
+}
+
+function openEffortMenu(): void {
   if (!settings) return;
   const { current, models, efforts } = settings;
   const chosen = models.find((m) => m.id === current.model);
+  menu(
+    effortTriggerBtn,
+    efforts.map((lvl) => {
+      const disabled = effortDisabled(lvl, chosen);
+      return { id: lvl, label: cap(lvl), disabled, active: lvl === current.effort && !disabled };
+    }),
+    (id) => void changeSettings({ effort: id as EffortLevel }),
+  );
+}
 
+function renderModelEffort(): void {
+  if (!settings) return;
+  const { current, models } = settings;
+  const chosen = models.find((m) => m.id === current.model);
   modelTriggerLabel.textContent = chosen?.label ?? current.model;
-  const supportsEffort = chosen?.supportsEffort ?? false;
-  effortTriggerBtn.classList.toggle("hidden", !supportsEffort);
+  effortTriggerBtn.classList.toggle("hidden", !(chosen?.supportsEffort ?? false));
   effortTriggerLabel.textContent = current.effort;
-
-  modelMenuEl.replaceChildren();
-  for (const m of models) {
-    const active = m.id === current.model;
-    const item = make("div", `menu-item${active ? " active" : ""}`);
-    const text = make("div", "mtext");
-    text.appendChild(make("div", "mname", m.label));
-    text.appendChild(make("div", "mblurb", m.blurb));
-    item.appendChild(text);
-    item.appendChild(make("span", "check", "✓"));
-    item.onclick = () => {
-      closeMenus();
-      void changeSettings({ model: m.id });
-    };
-    modelMenuEl.appendChild(item);
-  }
-
-  effortMenuEl.replaceChildren();
-  for (const lvl of efforts) {
-    const disabled = effortDisabled(lvl, chosen);
-    const active = lvl === current.effort && !disabled;
-    const item = make("div", `menu-item effort${active ? " active" : ""}${disabled ? " disabled" : ""}`);
-    const text = make("div", "mtext");
-    text.appendChild(make("div", "mname", lvl));
-    item.appendChild(text);
-    item.appendChild(make("span", "check", "✓"));
-    item.onclick = () => {
-      if (disabled) return;
-      closeMenus();
-      void changeSettings({ effort: lvl });
-    };
-    effortMenuEl.appendChild(item);
-  }
 }
 
 async function changeSettings(patch: Partial<{ model: string; effort: EffortLevel }>): Promise<void> {
@@ -350,10 +323,8 @@ export function initSettings(d: SettingsDeps): SettingsApi {
   deps = d;
   modelTriggerBtn = byId<HTMLButtonElement>("modelTrigger");
   modelTriggerLabel = byId<HTMLElement>("modelTriggerLabel");
-  modelMenuEl = byId<HTMLElement>("modelMenu");
   effortTriggerBtn = byId<HTMLButtonElement>("effortTrigger");
   effortTriggerLabel = byId<HTMLElement>("effortTriggerLabel");
-  effortMenuEl = byId<HTMLElement>("effortMenu");
 
   ssPrinter = byId<HTMLSelectElement>("ssPrinter");
   ssCustom = byId<HTMLElement>("ssCustom");
@@ -375,28 +346,15 @@ export function initSettings(d: SettingsDeps): SettingsApi {
   dataBody = byId<HTMLElement>("dataBody");
   aboutBody = byId<HTMLElement>("aboutBody");
 
-  // Model + effort dropdowns: each trigger toggles its own menu; both close on
-  // outside-click or Escape.
+  // Each trigger opens its own menu; ui.ts's menu() owns closing it (outside
+  // click, Escape, Tab) and returning focus.
   modelTriggerBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleMenu("model");
+    openModelMenu();
   });
   effortTriggerBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleMenu("effort");
-  });
-  document.addEventListener("pointerdown", (e) => {
-    const t = e.target as HTMLElement | null;
-    if (!t) {
-      closeMenus();
-      return;
-    }
-    if (modelMenuEl.contains(t) || modelTriggerBtn.contains(t)) return;
-    if (effortMenuEl.contains(t) || effortTriggerBtn.contains(t)) return;
-    closeMenus();
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeMenus();
+    openEffortMenu();
   });
 
   ssPrinter.addEventListener("change", () => {

@@ -5,8 +5,9 @@
 //
 // Nothing here knows about chat, jobs, printers or settings. Everything here is
 // keyboard-reachable and screen-reader-labelled: menus are real `role="menu"`
-// lists of `role="menuitem"` buttons, and the confirmation dialog is a real
-// `role="alertdialog"` with a focus trap ported from site/main.js.
+// lists of `role="menuitem"` buttons; sheets and the confirmation dialog are
+// modal, with the focus trap ported from site/main.js and focus restored to
+// whatever opened them; and the toast region is a polite live region.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────
@@ -107,6 +108,8 @@ const SHEET_ELEMENT: Record<SheetId, string> = {
 };
 
 let openSheetId: SheetId | null = null;
+/** Whatever had focus before a sheet opened, so closing puts it back. */
+let sheetReturnFocus: HTMLElement | null = null;
 const sheetListeners = new Set<(open: SheetId | null) => void>();
 
 /** Notified whenever a sheet opens or closes — the printer poll uses this to
@@ -121,21 +124,37 @@ export function isSheetOpen(id?: SheetId): boolean {
 
 function applySheets(): void {
   for (const id of Object.keys(SHEET_ELEMENT) as SheetId[]) {
-    byId<HTMLElement>(SHEET_ELEMENT[id]).classList.toggle("hidden", openSheetId !== id);
+    const el = byId<HTMLElement>(SHEET_ELEMENT[id]);
+    const shown = openSheetId === id;
+    el.classList.toggle("hidden", !shown);
+    // A hidden sheet is still in the document, so say so: without this a screen
+    // reader walks straight through the closed Settings sheet on its way down
+    // the page.
+    el.setAttribute("aria-hidden", shown ? "false" : "true");
   }
   byId<HTMLElement>("scrim").classList.toggle("hidden", openSheetId === null);
   for (const fn of sheetListeners) fn(openSheetId);
 }
 
 export function openSheet(id: SheetId): void {
+  const active = document.activeElement;
+  if (openSheetId === null && active instanceof HTMLElement) sheetReturnFocus = active;
   openSheetId = id;
   applySheets();
+  const sheet = byId<HTMLElement>(SHEET_ELEMENT[id]);
+  // The close button is the safest landing spot: it always exists, and it is
+  // where someone who opened this by keyboard expects to start.
+  const first = sheet.querySelector<HTMLElement>(".sheet-close") ?? focusable(sheet)[0];
+  first?.focus();
 }
 
 export function closeSheets(): void {
   if (openSheetId === null) return;
   openSheetId = null;
   applySheets();
+  const restore = sheetReturnFocus;
+  sheetReturnFocus = null;
+  restore?.focus();
 }
 
 /** Toggle a sheet from its header button. Returns true if it is now open. */
@@ -377,6 +396,7 @@ export function skeleton(rows: number): HTMLElement {
  *  from app.ts's boot. */
 export function initUi(): void {
   byId<HTMLElement>("scrim").addEventListener("click", () => closeSheets());
+  byId<HTMLElement>("toasts").setAttribute("aria-live", "polite");
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (currentMenu) {
@@ -385,4 +405,13 @@ export function initUi(): void {
     }
     closeSheets();
   });
+  // Keep the keyboard inside an open sheet, the same way the dialog does.
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Tab" || openSheetId === null) return;
+      trapTab(byId<HTMLElement>(SHEET_ELEMENT[openSheetId]), e);
+    },
+    true,
+  );
 }

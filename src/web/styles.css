@@ -2330,3 +2330,19 @@ button.menu-item:disabled {
   flex-wrap: wrap;
   font-size: 12.5px;
 }
+
+/* ── Keyboard focus ─────────────────────────────────────────────────────────
+   Every control here is reachable by Tab, which is only useful if you can see
+   where you are. :focus-visible keeps this off mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.menu-item:focus-visible {
+  background: var(--panel-2);
+  outline-offset: -2px;
+}
+.sheet:focus {
+  outline: none;
+}

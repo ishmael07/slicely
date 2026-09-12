@@ -14,7 +14,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
 import { getJson } from "./api.js";
-import { byId, closeSheets, initUi, isSheetOpen, make, toggleSheet } from "./ui.js";
+import type { SheetId } from "./ui.js";
+import { byId, closeSheets, initUi, isSheetOpen, make, onSheetChange, toggleSheet } from "./ui.js";
 import {
   clearTranscript,
   initChat,
@@ -140,6 +141,19 @@ byId<HTMLButtonElement>("jobsBtn").addEventListener("click", () => {
 for (const id of ["settingsClose", "chatsClose", "jobsClose"]) {
   byId<HTMLButtonElement>(id).addEventListener("click", () => closeSheets());
 }
+
+// Keep each header trigger's aria-expanded honest, whichever way its sheet was
+// opened or closed (button, scrim, Escape, or a row inside it).
+const SHEET_TRIGGERS: Array<[SheetId, string]> = [
+  ["settings", "settingsBtn"],
+  ["chats", "chatsBtn"],
+  ["jobs", "jobsBtn"],
+];
+onSheetChange((open) => {
+  for (const [sheet, trigger] of SHEET_TRIGGERS) {
+    byId<HTMLButtonElement>(trigger).setAttribute("aria-expanded", open === sheet ? "true" : "false");
+  }
+});
 
 /** True while the transcript is still showing its first screen — the only time
  *  it is safe to redraw it out from under the user. */

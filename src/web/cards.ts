@@ -36,7 +36,9 @@ export type SendMount = (container: HTMLElement, gcodeId: string, size?: "small"
 
 export function panelHead(glyph: string, label: string): HTMLElement {
   const head = make("div", "panel-head");
-  head.appendChild(make("span", "", glyph));
+  const ico = make("span", "", glyph);
+  ico.setAttribute("aria-hidden", "true");
+  head.appendChild(ico);
   head.appendChild(make("span", "", label));
   return head;
 }
@@ -113,8 +115,12 @@ export function errorBlock(raw: string): HTMLElement {
 
 // ── model result cards ───────────────────────────────────────────────────────
 
-export function placeholderThumb(): HTMLElement {
-  return make("div", "thumb placeholder", "◆");
+export function placeholderThumb(alt?: string): HTMLElement {
+  const el = make("div", "thumb placeholder", "◆");
+  if (alt) el.setAttribute("aria-label", alt);
+  else el.setAttribute("aria-hidden", "true");
+  el.setAttribute("role", alt ? "img" : "presentation");
+  return el;
 }
 
 /**
@@ -152,12 +158,15 @@ export function buildCard(m: CardLike, onImport: (m: CardLike) => void): HTMLEle
     // browser refuses to paint their images in our page and every card would
     // fall back to a grey placeholder.
     img.src = `/api/thumb?url=${encodeURIComponent(m.thumbnail)}`;
+    // The model's own title: a card whose picture is its whole identity is
+    // useless to a screen reader without it.
+    img.alt = m.title;
     img.loading = "lazy";
     img.referrerPolicy = "no-referrer";
-    img.onerror = () => img.replaceWith(placeholderThumb());
+    img.onerror = () => img.replaceWith(placeholderThumb(m.title));
     card.appendChild(img);
   } else {
-    card.appendChild(placeholderThumb());
+    card.appendChild(placeholderThumb(m.title));
   }
 
   const meta = make("div", "meta");
@@ -182,11 +191,15 @@ export function buildCard(m: CardLike, onImport: (m: CardLike) => void): HTMLEle
   if (m.downloadable) {
     const importBtn = make("button", "btn primary small", "Import");
     importBtn.type = "button";
+    // "Import" nine times in a row tells a screen-reader user nothing about
+    // which model each button belongs to.
+    importBtn.setAttribute("aria-label", `Import ${m.title}`);
     importBtn.onclick = () => onImport(m);
     actions.appendChild(importBtn);
   }
   const openBtn = make("button", "btn small", m.downloadable ? "View" : "Open in browser");
   openBtn.type = "button";
+  openBtn.setAttribute("aria-label", `${m.downloadable ? "View" : "Open"} ${m.title} on ${m.source}`);
   openBtn.onclick = () => window.open(m.webUrl, "_blank", "noopener,noreferrer");
   actions.appendChild(openBtn);
   meta.appendChild(actions);
@@ -278,6 +291,8 @@ export function renderInfo(info: ModelInfo): HTMLElement | null {
 export function attachViewer(panel: HTMLElement, filePath?: string, url?: string): void {
   const holder = make("div", "viewer");
   const canvas = make("canvas");
+  canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", "Rotating 3D preview of the model");
   holder.appendChild(canvas);
   const note = make("div", "viewer-note", "Loading preview…");
   holder.appendChild(note);
