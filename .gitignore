@@ -23,3 +23,9 @@ sessions/
 printers.json
 printer-secrets.json
 jobs.json
+
+# Secrets & per-machine state (never commit)
+.session-secret
+master.key
+printer-secrets.json
+secrets.json
