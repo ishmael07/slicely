@@ -26,7 +26,7 @@ import {
   type CardLike,
   type SendMount,
 } from "./cards.js";
-import { byId, closeSheets, externalLink, make } from "./ui.js";
+import { byId, closeSheets, confirmDialog, externalLink, make, toast } from "./ui.js";
 import { renderMarkdownLite } from "./markdown.js";
 
 export interface ChatDeps {
@@ -781,9 +781,10 @@ export async function refreshChats(): Promise<void> {
       const delBtn = make("button", "chat-del", "×");
       delBtn.type = "button";
       delBtn.title = "Delete this chat";
+      delBtn.setAttribute("aria-label", `Delete the chat "${c.title}"`);
       delBtn.onclick = (e) => {
         e.stopPropagation();
-        void deleteChat(c.id);
+        void deleteChat(c);
       };
       row.appendChild(delBtn);
       row.onclick = () => void openChat(c.id);
@@ -794,11 +795,18 @@ export async function refreshChats(): Promise<void> {
   }
 }
 
-async function deleteChat(id: string): Promise<void> {
+async function deleteChat(chat: ChatSummary): Promise<void> {
+  const ok = await confirmDialog({
+    title: "Delete this chat?",
+    body: `"${chat.title}" and everything in it is removed from this session. This cannot be undone.`,
+    confirmLabel: "Delete chat",
+    danger: true,
+  });
+  if (!ok) return;
   try {
-    await del(`/api/chats/${encodeURIComponent(id)}`);
-  } catch {
-    /* the refresh below shows whether it actually went */
+    await del(`/api/chats/${encodeURIComponent(chat.id)}`);
+  } catch (err) {
+    toast((err as Error).message || "Couldn't delete that chat.", "error");
   }
   await refreshChats();
 }

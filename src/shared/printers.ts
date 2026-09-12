@@ -58,6 +58,13 @@ export interface PrinterConnection {
 
   /** Set false to keep a printer configured but hidden from the picker. */
   enabled?: boolean;
+  /** True when the user has explicitly armed this printer for unattended
+   *  auto-start. The UI must read the armed state from here rather than
+   *  remembering its own toggles: a browser's local mirror is wrong the moment
+   *  the page is reloaded or another tab changes it, and being wrong about this
+   *  particular flag means printing onto an uncleared bed. Absent means NOT
+   *  armed — never default it on. */
+  autoStart?: boolean;
   /** ISO timestamp of the last successful contact. */
   lastSeenAt?: string;
 }

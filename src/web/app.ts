@@ -15,7 +15,7 @@
 import type { SlicerStatus } from "../shared/types";
 import { getJson } from "./api.js";
 import type { SheetId } from "./ui.js";
-import { byId, closeSheets, initUi, isSheetOpen, make, onSheetChange, toggleSheet } from "./ui.js";
+import { byId, closeSheets, initUi, make, onSheetChange, toggleSheet } from "./ui.js";
 import {
   clearTranscript,
   initChat,
@@ -195,8 +195,5 @@ void settings.load();
 void refreshPrinters();
 
 setInterval(() => void loadStatus(), 15000);
-setInterval(() => {
-  // Poll faster while the printer list is on screen, but keep the header honest
-  // either way.
-  void refreshPrinters();
-}, isSheetOpen("settings") ? 6000 : 15000);
+// The printer poll schedules itself from inside printers.ts, so that it can pick
+// its interval per tick from whether the settings sheet is actually open.

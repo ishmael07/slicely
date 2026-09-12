@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { PrinterConnection, PrinterStatus } from "../shared/printers";
 import { del, getJson, postJson } from "./api.js";
-import { byId, make, toast } from "./ui.js";
+import { byId, confirmDialog, isSheetOpen, make, toast } from "./ui.js";
 
 export interface PrintersDeps {
   /** True on a shared server, where LAN discovery is refused outright. */
@@ -47,10 +47,16 @@ try {
   selectedPrinterId = undefined;
 }
 
-/** Printers the user has armed for unattended auto-start, mirrored locally from
- *  this browser's own toggle actions (there is no GET for arm state yet).
- *  Never assume armed by default. */
-const armedPrinters = new Set<string>();
+/** Is this printer armed for unattended auto-start?
+ *
+ *  Read from the server's own record every time, never from a local mirror: a
+ *  browser's memory of its own toggles is wrong after a reload, wrong in a
+ *  second tab, and wrong after the server refuses the change — and being wrong
+ *  about THIS flag means starting a print onto a bed nobody cleared. Absent
+ *  means not armed. */
+function isArmed(p: PrinterConnection): boolean {
+  return p.autoStart === true;
+}
 
 type Listener = () => void;
 const printerListeners = new Set<Listener>();
@@ -109,7 +115,7 @@ function activeSendTarget(): PrinterConnection | undefined {
 function buildSendButton(gcodeId: string, size?: "small"): HTMLButtonElement | null {
   const p = activeSendTarget();
   if (!p) return null;
-  const willStart = armedPrinters.has(p.id);
+  const willStart = isArmed(p);
   const cls = size ? `btn primary ${size}` : "btn primary";
   const btn = make("button", cls, willStart ? `Send & start → ${p.label}` : `Send to ${p.label}`);
   btn.type = "button";
@@ -136,6 +142,11 @@ async function sendGcode(printerId: string, gcodeId: string, start: boolean, btn
     toast((err as Error).message || "Couldn't send to the printer.", "error");
   } finally {
     setTimeout(() => {
+      // The panel this button lives in can be replaced while the send is in
+      // flight (a job re-render, a new turn). Restoring a detached button is
+      // harmless but pointless, and reaching for it by selector would restore
+      // the WRONG button — so hold the reference and check it is still on screen.
+      if (!btn.isConnected) return;
       btn.disabled = false;
       btn.textContent = original;
     }, 2500);
@@ -212,20 +223,14 @@ function renderPrinterList(printers: PrinterConnection[], statuses: PrinterStatu
     );
     row.appendChild(head);
 
-    // Auto-start arming: off by default, deliberately worded as a hazard — see
-    // buildSendButton() for how this changes the Send button's wording.
+    // Auto-start arming: off unless the SERVER says otherwise, deliberately
+    // worded as a hazard, and confirmed before arming — see buildSendButton()
+    // for how this changes the Send button's wording.
     const armRow = make("label", "printer-arm");
     const cb = make("input");
     cb.type = "checkbox";
-    cb.checked = armedPrinters.has(p.id);
-    cb.onchange = () => {
-      if (cb.checked) armedPrinters.add(p.id);
-      else armedPrinters.delete(p.id);
-      emitPrintersChanged();
-      void postJson(`/api/printers/${encodeURIComponent(p.id)}/autostart`, { armed: cb.checked }).catch(
-        () => undefined,
-      );
-    };
+    cb.checked = isArmed(p);
+    cb.onchange = () => void setArmed(p, cb);
     armRow.appendChild(cb);
     armRow.appendChild(
       document.createTextNode("Start prints automatically. Only enable this if you check the bed is clear first."),
@@ -255,12 +260,42 @@ function renderPrinterList(printers: PrinterConnection[], statuses: PrinterStatu
     }
     const rmBtn = make("button", "btn ghost small danger", "Remove");
     rmBtn.type = "button";
-    rmBtn.onclick = () => void removePrinterAction(p.id);
+    rmBtn.onclick = () => void removePrinterAction(p);
     btns.appendChild(rmBtn);
     row.appendChild(btns);
 
     printerListEl.appendChild(row);
   }
+}
+
+/**
+ * Arm or disarm unattended auto-start.
+ *
+ * Arming is the one switch in Slicely that can start a machine moving while
+ * nobody is looking, so it asks first and says what it means in plain words.
+ * Either way the answer comes back from the server — the checkbox is re-read
+ * from /api/printers rather than left showing what was clicked.
+ */
+async function setArmed(printer: PrinterConnection, cb: HTMLInputElement): Promise<void> {
+  const armed = cb.checked;
+  if (armed) {
+    const ok = await confirmDialog({
+      title: "Start prints automatically?",
+      body: `Prints will start the moment they're sent to ${printer.label}. Only arm this if you always clear the bed. You can disarm at any time.`,
+      confirmLabel: "Arm auto-start",
+      danger: true,
+    });
+    if (!ok) {
+      cb.checked = false;
+      return;
+    }
+  }
+  try {
+    await postJson(`/api/printers/${encodeURIComponent(printer.id)}/autostart`, { armed });
+  } catch (err) {
+    toast((err as Error).message || "Couldn't change auto-start.", "error");
+  }
+  await refreshPrinters();
 }
 
 async function selectPrinter(id: string): Promise<void> {
@@ -302,10 +337,17 @@ async function controlPrinterAction(id: string, action: "pause" | "resume" | "ca
   await refreshPrinters();
 }
 
-async function removePrinterAction(id: string): Promise<void> {
+async function removePrinterAction(printer: PrinterConnection): Promise<void> {
+  const ok = await confirmDialog({
+    title: `Remove ${printer.label}?`,
+    body: "Its saved credentials are deleted.",
+    confirmLabel: "Remove",
+    danger: true,
+  });
+  if (!ok) return;
   try {
-    await del(`/api/printers/${encodeURIComponent(id)}`);
-    if (selectedPrinterId === id) {
+    await del(`/api/printers/${encodeURIComponent(printer.id)}`);
+    if (selectedPrinterId === printer.id) {
       selectedPrinterId = undefined;
       try {
         localStorage.removeItem("slicely:selectedPrinter");
@@ -313,7 +355,6 @@ async function removePrinterAction(id: string): Promise<void> {
         /* ignore */
       }
     }
-    armedPrinters.delete(id);
   } catch (err) {
     toast((err as Error).message || "Couldn't remove printer.", "error");
   }
@@ -580,5 +621,23 @@ export function initPrinters(d: PrintersDeps): PrintersApi {
   discoverBtn.addEventListener("click", () => void discoverPrintersAction());
 
   void loadDrivers();
+  startPolling();
   return { refresh: refreshPrinters };
+}
+
+/**
+ * Keep the printer list and the header pill current.
+ *
+ * The interval is decided INSIDE each tick, not once at boot: opening the
+ * settings sheet has to speed the polling up from the next tick onwards, and the
+ * old `setInterval(fn, sheetOpen ? 6000 : 15000)` read that condition exactly
+ * once — when the sheet was, necessarily, still closed.
+ */
+function startPolling(): void {
+  const next = (): void => {
+    setTimeout(() => {
+      void refreshPrinters().finally(next);
+    }, isSheetOpen("settings") ? 4000 : 15000);
+  };
+  next();
 }
