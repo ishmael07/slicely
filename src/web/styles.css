@@ -1261,11 +1261,11 @@ details.thinking summary::-webkit-details-marker {
   opacity: 1;
   transform: translateY(0);
 }
-.toast.err {
+.toast.error {
   border-color: rgba(248, 113, 113, 0.4);
   color: #fecaca;
 }
-.toast.ok {
+.toast.success {
   border-color: rgba(74, 222, 128, 0.35);
 }
 
@@ -2023,4 +2023,127 @@ a.link:hover {
 a.btn,
 a.btn:hover {
   text-decoration: none;
+}
+
+/* ── One error component, one loading component ─────────────────────────────
+   A list that failed to load and a list that is genuinely empty are different
+   facts, and a coloured sentence cannot be retried. .error-card says what went
+   wrong and puts the one useful action beside it; .skeleton stands in while a
+   list is still on its way, so nothing reads as "you have nothing" too early. */
+.error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  align-self: flex-start;
+  max-width: min(100%, 560px);
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.07);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.error-card .error-ico {
+  color: #fca5a5;
+  flex: 0 0 auto;
+  line-height: 1.45;
+}
+.error-card .error-text {
+  flex: 1 1 auto;
+  color: #fecaca;
+  overflow-wrap: anywhere;
+}
+.error-card .btn {
+  flex: 0 0 auto;
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.skeleton-row {
+  height: 38px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
+  background-size: 260% 100%;
+  animation: skeleton-sweep 1.4s var(--ease) infinite;
+}
+@keyframes skeleton-sweep {
+  from {
+    background-position: 130% 0;
+  }
+  to {
+    background-position: -130% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+    background: var(--panel);
+  }
+}
+
+/* ── Confirmation dialog ───────────────────────────────────────────────────
+   Removing a printer, arming auto-start and deleting data are irreversible or
+   hazardous, so each one asks first. Escape and the scrim both cancel: the safe
+   answer is always the easy one. */
+.dialog-host {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(6, 6, 8, 0.62);
+  backdrop-filter: blur(3px);
+}
+.dialog {
+  width: min(100%, 380px);
+  background: var(--panel);
+  border: 0.5px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+.dialog-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 650;
+}
+.dialog-body {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.btn.danger-solid {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fecaca;
+}
+.btn.danger-solid:hover {
+  background: rgba(248, 113, 113, 0.24);
+}
+
+/* A menu item is a real <button role="menuitem"> now, so it needs the reset a
+   button doesn't get for free. */
+button.menu-item {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+}
+button.menu-item:disabled {
+  cursor: default;
 }
