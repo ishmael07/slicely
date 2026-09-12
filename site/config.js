@@ -1,11 +1,13 @@
-/* Slicely landing page — the only place URLs live.
+/* Slicely landing page — the URLs the owner edits.
  *
- * Every link in the page carries a data-href="<KEY>" attribute; main.js reads
- * this object on load and fills the real href in. Change a URL here and it
- * changes everywhere, including terms.html / privacy.html footers.
+ * Every CTA in index.html carries BOTH a real href in the markup and a
+ * data-href="<KEY>"; main.js reads this object on load and applies it over the
+ * top. The href is what makes the link work, focusable and keyboard-reachable
+ * with no JavaScript at all; this file is what you edit. Keep the two in step —
+ * main.js warns in the console when they disagree, naming both values.
  *
  * Before launch, the owner fills APP_URL in — it is a placeholder until the Fly
- * app exists.
+ * app exists. Change it here AND in the href attributes in index.html.
  *
  * CONTACT_EMAIL has no consumer on this page and is not meant to grow one: the
  * only place the site names an address is terms.html and privacy.html, and those

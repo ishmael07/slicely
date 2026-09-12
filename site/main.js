@@ -4,21 +4,32 @@
   'use strict';
 
   // ---- links -----------------------------------------------------------------
-  // Every CTA carries data-href="APP_URL" (or DOWNLOAD_URL / REPO_URL) instead of a
-  // literal URL, so config.js is the single place a URL is written down. A key with
-  // no value in config.js leaves the element inert and says so in the console, which
-  // is louder than a link that silently goes nowhere.
+  // Every CTA ships a real href in the HTML and ALSO carries data-href="APP_URL"
+  // (or DOWNLOAD_URL / REPO_URL). The href is what makes the link work, focusable
+  // and keyboard-reachable with no JavaScript at all; config.js is what the owner
+  // edits, and this loop applies it over the top.
+  //
+  // Two copies of a URL can disagree. Silently preferring config.js would leave a
+  // stale URL sitting in the markup for the next reader to take as truth, so a
+  // divergence is reported rather than quietly papered over.
   const cfg = window.SLICELY_SITE || {};
 
   document.querySelectorAll('[data-href]').forEach((el) => {
     const key = el.getAttribute('data-href');
     const url = cfg[key];
-    if (typeof url === 'string' && url) {
-      el.setAttribute('href', url);
-    } else {
-      el.setAttribute('aria-disabled', 'true');
-      console.warn(`[Slicely site] config.js has no ${key} — this link is inert.`);
+    const inMarkup = el.getAttribute('href');
+
+    if (typeof url !== 'string' || !url) {
+      console.warn(`[Slicely site] config.js has no ${key} — keeping the href in the HTML (${inMarkup}).`);
+      return;
     }
+    if (inMarkup && inMarkup !== url) {
+      console.warn(
+        `[Slicely site] ${key} is "${url}" in config.js but "${inMarkup}" in the HTML — ` +
+          'using config.js. Update the markup to match.'
+      );
+    }
+    el.setAttribute('href', url);
   });
 
   // ---- scroll reveal ---------------------------------------------------------

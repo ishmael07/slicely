@@ -34,14 +34,17 @@ pages' relative links behave more like production over HTTP.
 
 ## Before you deploy — the checklist
 
-1. **`config.js`** — fill in `APP_URL` (the deployed web app; it ships as the placeholder
-   `https://app.slicely.example`) and `CONTACT_EMAIL`. Every CTA and footer link in
-   `index.html` carries `data-href="APP_URL"` rather than a literal URL, and `main.js`
-   fills the real `href` in on load, so this file is the only place `index.html` writes a
-   URL down. A key with no value leaves its link inert and logs a warning — visible, not
-   silent. The two legal pages deliberately run no JavaScript at all (see below), so their
-   footers carry the repository URL literally; `{{CONTACT_EMAIL}}` inside them is a
-   placeholder the lawyer review replaces, not something `config.js` fills in.
+1. **`APP_URL`** — the deployed web app, which ships as the placeholder
+   `https://app.slicely.example`. It lives in **two** places and both must change:
+   `config.js`, and the `href` attributes in `index.html`. Every CTA carries both, on
+   purpose: the `href` is what makes the link work and be keyboard-focusable with no
+   JavaScript, and `config.js` is what `main.js` applies over the top at runtime. If the
+   two ever disagree, `main.js` warns in the console naming both values, so a half-done
+   edit is loud rather than silent — but do the edit properly rather than relying on that.
+
+   The two legal pages deliberately run no JavaScript at all (see below), so their footers
+   carry the repository URL literally, and `{{CONTACT_EMAIL}}` inside them is a placeholder
+   the lawyer review replaces rather than something `config.js` fills in.
 2. **The domain.** The canonical URL is `https://slicely.app` and, because crawlers must
    see it in the served HTML rather than after JavaScript runs, it is written out in five
    places. Change all five together:
@@ -91,15 +94,14 @@ pyftsubset web/Inter-Regular.woff2 --flavor=woff2 \
 
 ## With JavaScript off
 
-The page is fully readable: an inline script in `<head>` marks the document as scripted,
-and the scroll reveal's hidden state is gated on that, so without JavaScript nothing starts
-hidden. Everything renders — copy, comparison table, Terms, Privacy, the source link.
+The page works completely. An inline script in `<head>` marks the document as scripted and
+the scroll reveal's hidden state is gated on that, so without JavaScript nothing starts
+hidden and everything renders. Every link — the CTAs included — ships a real `href` in the
+markup, so they are clickable, keyboard-focusable and in the tab order whether or not
+`main.js` ever runs; `data-href` only overrides them at runtime.
 
-The one thing that does not work is the two CTAs. "Open the web app" and "Download for Mac"
-get their `href` from `config.js` via `main.js`, so with no JavaScript they are visible but
-inert. That is the deliberate cost of keeping every URL in one file; if it ever matters
-more than the duplication does, put the real `href` in the HTML and let `data-href`
-override it.
+The cost of that is one duplicated URL, `APP_URL`, which is why it is item 1 of the deploy
+checklist above and why `main.js` warns when the two copies disagree.
 
 ## Motion
 
