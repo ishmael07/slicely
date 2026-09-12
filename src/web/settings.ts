@@ -8,8 +8,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability } from "../shared/sourcing";
-import { getJson, patchJson } from "./api.js";
-import { byId, make } from "./ui.js";
+import { del, getJson, patchJson } from "./api.js";
+import { byId, confirmDialog, make, toast } from "./ui.js";
+import { renderAboutSection, renderAiSection } from "./onboarding.js";
 
 export interface SettingsDeps {
   /** Report a failed change where the user will see it. */
@@ -49,6 +50,9 @@ let ssBrim: HTMLElement;
 let ssBrimWidth: HTMLInputElement;
 
 let sourcesListEl: HTMLElement;
+let aiBody: HTMLElement;
+let dataBody: HTMLElement;
+let aboutBody: HTMLElement;
 
 // ── loading ──────────────────────────────────────────────────────────────────
 
@@ -293,6 +297,53 @@ function renderSources(sources: SourceAvailability[]): void {
   }
 }
 
+// ── AI / Data / About ────────────────────────────────────────────────────────
+
+/**
+ * Settings → Data.
+ *
+ * One button, because there is exactly one thing to delete: the session holding
+ * the key, the chats, the printers and the workspace files. It asks first and
+ * then reloads into a clean one.
+ */
+function renderDataSection(): void {
+  dataBody.replaceChildren();
+  dataBody.appendChild(
+    make(
+      "p",
+      "sheet-hint",
+      "Deletes your session: the connected key, saved chats, printer connections and every file in your workspace.",
+    ),
+  );
+  const btn = make("button", "btn ghost small danger", "Delete my data");
+  btn.type = "button";
+  btn.addEventListener("click", () => {
+    void (async () => {
+      const ok = await confirmDialog({
+        title: "Delete everything?",
+        body: "Your key, chats, printer connections and workspace files are deleted from the server. This cannot be undone.",
+        confirmLabel: "Delete my data",
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await del("/api/session");
+        location.reload();
+      } catch (err) {
+        toast((err as Error).message || "Couldn't delete your data.", "error");
+      }
+    })();
+  });
+  dataBody.appendChild(btn);
+}
+
+/** Redraw the three sections that describe the account rather than a slice. */
+export function renderAccount(): void {
+  renderAiSection(aiBody);
+  renderDataSection();
+  renderAboutSection(aboutBody);
+}
+
 // ── wiring ───────────────────────────────────────────────────────────────────
 
 export function initSettings(d: SettingsDeps): SettingsApi {
@@ -320,6 +371,9 @@ export function initSettings(d: SettingsDeps): SettingsApi {
   ssBrim = byId<HTMLElement>("ssBrim");
   ssBrimWidth = byId<HTMLInputElement>("ssBrimWidth");
   sourcesListEl = byId<HTMLElement>("sourcesList");
+  aiBody = byId<HTMLElement>("aiBody");
+  dataBody = byId<HTMLElement>("dataBody");
+  aboutBody = byId<HTMLElement>("aboutBody");
 
   // Model + effort dropdowns: each trigger toggles its own menu; both close on
   // outside-click or Escape.

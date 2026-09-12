@@ -16,47 +16,32 @@ import type { SlicerStatus } from "../shared/types";
 import { getJson } from "./api.js";
 import { byId, closeSheets, initUi, isSheetOpen, make, toggleSheet } from "./ui.js";
 import {
+  clearTranscript,
   initChat,
   refreshChats,
   renderError,
   sendInstruction,
   showEmptyState,
+  updateSendEnabled,
 } from "./chat.js";
 import { getJobPanel, initJobs, loadJobs, planStagedJob } from "./jobs.js";
 import { applyMode, attachSendSlot, initPrinters, refreshPrinters } from "./printers.js";
-import { initSettings, loadSources, planOptions, renderPreferences } from "./settings.js";
+import { initSettings, loadSources, planOptions, renderAccount, renderPreferences } from "./settings.js";
+import {
+  buildEmptyState,
+  buildKeyPrompt,
+  config,
+  hasKey,
+  initConsent,
+  loadConfig,
+  onConfigChange,
+} from "./onboarding.js";
 
 // ── shell elements ───────────────────────────────────────────────────────────
 
 const bannerEl = byId<HTMLElement>("banner");
 const statusDot = byId<HTMLElement>("statusDot");
 const statusText = byId<HTMLElement>("statusText");
-
-// ── the transcript's empty state ─────────────────────────────────────────────
-
-function buildEmptyState(): HTMLElement {
-  const empty = make("div", "empty");
-  empty.appendChild(make("span", "big", "◆"));
-  const p = make("p");
-  p.appendChild(document.createTextNode("Find a "));
-  p.appendChild(make("b", "", "free 3D model"));
-  p.appendChild(document.createTextNode(", slice it, and print. Right from your phone."));
-  empty.appendChild(p);
-  const examples = make("div", "examples");
-  const prompts = [
-    "Find me a phone stand I can print today",
-    "Slice this for strength, PETG, my Ender 3",
-    "Show me a cable clip for a desk",
-  ];
-  for (const ex of prompts) {
-    const b = make("button", "ex", ex);
-    b.type = "button";
-    b.onclick = () => void sendInstruction(ex, ex);
-    examples.appendChild(b);
-  }
-  empty.appendChild(examples);
-  return empty;
-}
 
 // ── PrusaSlicer status + the banner ──────────────────────────────────────────
 
@@ -116,41 +101,27 @@ async function loadStatus(): Promise<void> {
   }
 }
 
-// ── hosted vs desktop ────────────────────────────────────────────────────────
-
-let multiUser = false;
-
-async function checkMultiUser(): Promise<void> {
-  // /api/printers/discover answers 403 in multi-user mode; probing it (a
-  // harmless GET) is the simplest way for the client to learn the mode without a
-  // dedicated config endpoint.
-  try {
-    const resp = await fetch("/api/printers/discover");
-    multiUser = resp.status === 403;
-  } catch {
-    multiUser = false;
-  }
-  applyMode();
-}
-
 // ── boot ─────────────────────────────────────────────────────────────────────
 
 initUi();
 
 const settings = initSettings({ onError: renderError });
-initPrinters({ multiUser: () => multiUser });
+initPrinters({ multiUser: () => config().multiUser });
 initJobs({ mountSend: attachSendSlot, planOptions });
 initChat({
   jobPanel: getJobPanel,
   planStagedJob,
   mountSend: attachSendSlot,
   onStatus: applyStatus,
-  buildEmptyState,
+  buildEmptyState: () => buildEmptyState((prompt) => void sendInstruction(prompt, prompt)),
+  canChat: hasKey,
+  buildKeyPrompt,
 });
 
 // Sheets: one header button each, one close button each.
 byId<HTMLButtonElement>("settingsBtn").addEventListener("click", () => {
   if (!toggleSheet("settings")) return;
+  renderAccount();
   renderPreferences();
   void refreshPrinters();
   void loadSources();
@@ -170,9 +141,38 @@ for (const id of ["settingsClose", "chatsClose", "jobsClose"]) {
   byId<HTMLButtonElement>(id).addEventListener("click", () => closeSheets());
 }
 
-showEmptyState();
+/** True while the transcript is still showing its first screen — the only time
+ *  it is safe to redraw it out from under the user. */
+function isEmptyStateShowing(): boolean {
+  const messages = byId<HTMLElement>("messages");
+  return messages.children.length === 0 || messages.querySelector(".empty") !== null;
+}
+
+// /api/config decides what the first screen says — three onboarding steps with
+// the key card, or the plain invitation to type — so it is fetched before the
+// empty state is drawn. Everything else loads in parallel behind it.
+void (async () => {
+  await loadConfig();
+  showEmptyState();
+  initConsent(byId<HTMLElement>("consent"));
+  renderAccount();
+  updateSendEnabled();
+  applyMode();
+
+  // Connecting or removing a key changes what the first screen should say and
+  // what the send button promises, so both are redrawn rather than left stale.
+  onConfigChange(() => {
+    applyMode();
+    renderAccount();
+    updateSendEnabled();
+    if (isEmptyStateShowing()) {
+      clearTranscript();
+      showEmptyState();
+    }
+  });
+})();
+
 void loadStatus();
-void checkMultiUser();
 void settings.load();
 // The header pill must know about a connected printer on load. Previously
 // printers were only fetched while the settings sheet was OPEN, so the header

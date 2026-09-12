@@ -242,7 +242,10 @@ export type AgentEvent =
       /** One short line under the button, when the button alone isn't obvious. */
       hint?: string;
     }
-  | { type: "error"; message: string }
+  /** A turn failed. `code` carries the stable machine-readable reason where
+   *  there is one (`no_key`, `key_rejected`, `rate_limited`, …) so the client can
+   *  do something specific about it rather than only printing the message. */
+  | { type: "error"; message: string; code?: string }
   | { type: "done" };
 
 /** Channel names used across the preload bridge. */
