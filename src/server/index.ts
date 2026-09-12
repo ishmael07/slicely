@@ -56,6 +56,8 @@ export interface CreateAppOptions {
     api?: Partial<BucketOverride>;
     chat?: Partial<BucketOverride>;
     heavy?: Partial<BucketOverride>;
+    /** Per-IP cap on minting brand-new sessions (default 20/hour). */
+    mintPerHour?: number;
   };
 }
 
@@ -112,7 +114,7 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   //      never on an attacker-supplied cookie string.
   // Sessions are minted here and nowhere else: static files, /healthz and the
   // legal pages never touch the store.
-  api.use(sessionMiddleware(store));
+  api.use(sessionMiddleware(store, { mintPerHour: opts.limits?.mintPerHour }));
   api.use(tier(LIMITS.api, opts.limits?.api));
   // /api/config and /api/key first: they are what the client calls before it
   // can render anything, and they must keep answering even when a later
