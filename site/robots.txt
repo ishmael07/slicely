@@ -1,0 +1,5 @@
+# Slicely — nothing here is private, so nothing is disallowed.
+User-agent: *
+Allow: /
+
+Sitemap: https://slicely.app/sitemap.xml

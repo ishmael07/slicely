@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Slicely — share card source</title>
+  <!--
+    The source for og.png, rendered to a 1200x630 PNG by scripts/make-og.mjs.
+    Deliberately self-contained: no styles.css, no config.js, no JavaScript, so
+    what the renderer screenshots cannot drift with the rest of the site. The
+    palette is copied from styles.css; if that changes, change it here too and
+    re-run `node scripts/make-og.mjs`.
+  -->
+  <style>
+    @font-face {
+      font-family: 'Inter'; font-style: normal; font-weight: 400;
+      src: url('fonts/inter-latin-400.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Inter'; font-style: normal; font-weight: 600;
+      src: url('fonts/inter-latin-600.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Inter'; font-style: normal; font-weight: 700;
+      src: url('fonts/inter-latin-700.woff2') format('woff2');
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { width: 1200px; height: 630px; overflow: hidden; }
+
+    body {
+      position: relative;
+      background: #0a0a0b;
+      color: #f4f4f7;
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: 68px 72px;
+    }
+
+    /* the same aurora and grid the site opens with */
+    .aurora {
+      position: absolute; top: -46%; left: 50%;
+      width: 1150px; height: 1150px; transform: translateX(-42%);
+      background:
+        radial-gradient(closest-side, rgba(255, 122, 69, 0.34), transparent 70%),
+        radial-gradient(closest-side, rgba(255, 177, 92, 0.20), transparent 70%);
+      filter: blur(46px);
+    }
+    .grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 25%, transparent 80%);
+      -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 25%, transparent 80%);
+    }
+
+    .layer { position: relative; }
+
+    .brand { display: flex; align-items: center; gap: 14px; font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+    .brand .mark { color: #ff7a45; font-size: 30px; }
+
+    h1 {
+      font-size: 86px; line-height: 1.02; letter-spacing: -0.04em; font-weight: 700;
+      max-width: 15ch; margin-bottom: 26px;
+    }
+    .grad {
+      background: linear-gradient(110deg, #ff7a45, #ffb15c 60%, #ffd9a8);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .lead { font-size: 30px; line-height: 1.4; color: #a2a2ae; max-width: 26ch; }
+
+    .foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .chip {
+      font-size: 21px; font-weight: 600; color: #a2a2ae;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 999px; padding: 10px 22px;
+    }
+    .chip.hot { color: #2a1206; background: linear-gradient(135deg, #ff7a45, #ffb15c); border-color: transparent; }
+  </style>
+</head>
+<body>
+  <div class="aurora"></div>
+  <div class="grid"></div>
+
+  <div class="layer brand"><span class="mark">◆</span> Slicely</div>
+
+  <div class="layer">
+    <h1>Type what you want to <span class="grad">print.</span></h1>
+    <p class="lead">It finds the model, slices it for your printer, and sends it over.</p>
+  </div>
+
+  <div class="layer foot">
+    <span class="chip hot">find → slice → print</span>
+    <span class="chip">11 model sources</span>
+    <span class="chip">6 ways to reach a printer</span>
+    <span class="chip">web + macOS</span>
+  </div>
+</body>
+</html>
