@@ -10,10 +10,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApp } from "../index";
 import { SessionStore, type ChatAgent } from "../session";
+
+// Chat now requires the visitor's own Anthropic key (see main/userkey.ts), so
+// each test connects one first — with an injected validator, so nothing here
+// touches the network. Hosted mode + a master key: the key is encrypted at rest.
+process.env.SLICELY_MODE = "hosted";
+process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
+const TEST_KEY = "sk-ant-api03-" + "c".repeat(40);
 
 /** An agent that takes a beat before replying, and records cancellation. */
 function slowAgent(): { agent: ChatAgent; cancelled: () => boolean } {
@@ -36,9 +44,22 @@ function slowAgent(): { agent: ChatAgent; cancelled: () => boolean } {
   return { agent, cancelled: () => cancelled };
 }
 
+/** Connect a key to a fresh session and return its cookie. */
+async function connectKey(base: string): Promise<string> {
+  const resp = await fetch(`${base}/api/key`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey: TEST_KEY }),
+  });
+  assert.equal(resp.status, 200);
+  const raw = resp.headers.get("set-cookie");
+  assert.ok(raw, "connecting a key should mint a session cookie");
+  return raw.split(";")[0];
+}
+
 async function withServer(
   makeAgent: () => ChatAgent,
-  fn: (base: string) => Promise<void>,
+  fn: (base: string, cookie: string) => Promise<void>,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "slicely-chat-"));
   const store = new SessionStore({
@@ -46,12 +67,17 @@ async function withServer(
     secretDir: root,
     sweepIntervalMs: 0,
   });
-  const app = createApp({ sessionStore: store, chatAgentFactory: makeAgent });
+  const app = createApp({
+    sessionStore: store,
+    chatAgentFactory: makeAgent,
+    keyValidator: async () => "ok",
+  });
   const server: Server = createServer(app);
   await new Promise<void>((r) => server.listen(0, r));
   const { port } = server.address() as AddressInfo;
   try {
-    await fn(`http://127.0.0.1:${port}`);
+    const base = `http://127.0.0.1:${port}`;
+    await fn(base, await connectKey(base));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     store.stopSweep();
@@ -63,10 +89,10 @@ test("a normal chat POST is NOT cancelled by the request body being consumed", a
   const { agent, cancelled } = slowAgent();
   await withServer(
     () => agent,
-    async (base) => {
+    async (base, cookie) => {
       const res = await fetch(`${base}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", cookie },
         body: JSON.stringify({ message: "hi" }),
       });
       const body = await res.text();
@@ -88,11 +114,11 @@ test("a real client disconnect DOES cancel the in-flight turn", async () => {
   const { agent, cancelled } = slowAgent();
   await withServer(
     () => agent,
-    async (base) => {
+    async (base, cookie) => {
       const ac = new AbortController();
       const pending = fetch(`${base}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", cookie },
         body: JSON.stringify({ message: "hi" }),
         signal: ac.signal,
       }).catch(() => undefined);

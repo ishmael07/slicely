@@ -1,0 +1,155 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// One funnel for every error that reaches a browser.
+//
+// Two rules, both learned from the way this server used to answer:
+//
+//  1. THE CLIENT GETS A CODE, NOT PROSE. `{ error, code }` with a stable code
+//     (`no_key`, `key_rejected`, `rate_limited`, …) lets the UI do the right
+//     thing — show the "connect your key" card, offer a retry — instead of
+//     painting an arbitrary sentence red and leaving the user to guess.
+//
+//  2. THE CLIENT LEARNS NOTHING ELSE. Routes used to relay `err.message`
+//     straight out, which meant absolute server paths
+//     (`/data/sessions/<id>/uploads/…`), upstream provider bodies, and internal
+//     invariants all shipped to anyone who could provoke a failure. Anything
+//     not explicitly mapped below becomes "Something went wrong." and the real
+//     error is logged server-side instead.
+// ─────────────────────────────────────────────────────────────────────────────
+import type { Response } from "express";
+import Anthropic from "@anthropic-ai/sdk";
+import { getConfig } from "../main/config";
+import { currentSessionId } from "../main/session-context";
+import { NoApiKeyError, KeyFormatError } from "../main/userkey";
+
+/** An error a route RAISES on purpose, already carrying what the client should
+ *  be told. Anything else reaching `toWire` is treated as a bug and generalised. */
+export class WireError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface WirePayload {
+  error: string;
+  code?: string;
+}
+
+const GENERIC = "Something went wrong.";
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Absolute-path prefixes worth scrubbing: the configured workdir (wherever the
+ *  operator put it) plus the usual roots a server's files live under, so a path
+ *  is caught even when it never passed through `getConfig()`. */
+function pathPrefixes(): string[] {
+  const roots = ["/Users", "/home", "/private", "/var", "/tmp", "/data", "/app", "/root"];
+  try {
+    const { workdir } = getConfig();
+    if (workdir && workdir.startsWith("/")) roots.unshift(workdir);
+  } catch {
+    /* config unavailable — the generic roots still apply */
+  }
+  // Longest first so `<workdir>/sessions/x` isn't half-matched by `/Users`.
+  return [...new Set(roots)].sort((a, b) => b.length - a.length).map(escapeRe);
+}
+
+/**
+ * Replace absolute server filesystem paths with `<file>`.
+ *
+ * Deliberately greedy: a path fragment tells an attacker the deployment layout
+ * and tells a user nothing they can act on (their files live in a browser, not
+ * on our disk). Over-scrubbing a message is cheap; leaking a path is not.
+ */
+export function stripPaths(text: string): string {
+  if (!text) return text;
+  // At least one segment must follow the root, so ordinary prose that merely
+  // starts like a path ("/variable", "/apps") is left alone.
+  const re = new RegExp(`(?:${pathPrefixes().join("|")})(?:/[^\\s"'\`,;)\\]}]+)+`, "g");
+  return text.replace(re, "<file>");
+}
+
+/** True when an Anthropic 400/403 is really "this account can't pay for that". */
+function mentionsBilling(err: Error): boolean {
+  return /credit|billing|quota|insufficient[_ ]funds|payment/i.test(err.message ?? "");
+}
+
+/**
+ * Map any thrown value to the status + body a client should receive.
+ *
+ * Anthropic's own failures are mapped to the USER'S NEXT ACTION rather than
+ * relayed or swallowed as a 500: a rejected key means "update it in Settings",
+ * a 429 means "wait a moment", no credit means "top up your Anthropic account".
+ * Those are the three things that will actually go wrong for a bring-your-own-key
+ * user, and each has a different fix.
+ */
+export function toWire(err: unknown): { status: number; body: WirePayload } {
+  if (err instanceof WireError) {
+    return { status: err.status, body: withCode(stripPaths(err.message) || GENERIC, err.code) };
+  }
+  if (err instanceof NoApiKeyError) {
+    return {
+      status: 409,
+      body: withCode(err.message || "Connect your Anthropic API key in Settings to chat.", err.code),
+    };
+  }
+  if (err instanceof KeyFormatError) {
+    return { status: 400, body: withCode(err.message, err.code) };
+  }
+  if (err instanceof Anthropic.AuthenticationError) {
+    return {
+      status: 401,
+      body: withCode("Your Anthropic key was rejected. Update it in Settings.", "key_rejected"),
+    };
+  }
+  if (err instanceof Anthropic.RateLimitError) {
+    return {
+      status: 429,
+      body: withCode("Your Anthropic account is being rate-limited. Try again in a moment.", "rate_limited"),
+    };
+  }
+  if (
+    err instanceof Anthropic.PermissionDeniedError ||
+    (err instanceof Anthropic.BadRequestError && mentionsBilling(err))
+  ) {
+    return { status: 402, body: withCode("Your Anthropic account has no available credit.", "billing") };
+  }
+
+  // Unmapped: a bug, an upstream oddity, or something hostile. Log it where the
+  // operator can see it (with the session id, so it can be correlated with a
+  // report) and tell the client nothing.
+  logInternal(err);
+  return { status: 500, body: { error: GENERIC } };
+}
+
+function withCode(error: string, code?: string): WirePayload {
+  return code ? { error, code } : { error };
+}
+
+function logInternal(err: unknown): void {
+  // The user's API key is never part of an Anthropic SDK error (it lives in a
+  // request header the SDK does not echo) and never part of a WireError, so
+  // this cannot log a secret. Keep it that way if you add fields here.
+  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  let session = "-";
+  try {
+    session = currentSessionId();
+  } catch {
+    /* outside a request */
+  }
+  console.error(`[server] unmapped error (session ${session}): ${detail}`);
+}
+
+/** Send `err` to the client through `toWire`. A no-op once the response has
+ *  already begun (e.g. a failure mid-SSE-stream), where the caller must emit an
+ *  in-band error event instead. */
+export function sendError(res: Response, err: unknown): void {
+  const { status, body } = toWire(err);
+  if (res.headersSent) return;
+  res.status(status).json(body);
+}

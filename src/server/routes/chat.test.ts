@@ -1,14 +1,13 @@
 // Tests for POST /api/chat's SSE wire format and /api/chat/cancel — using an
 // injected stub ChatAgent (see session.ts's ChatAgent + index.ts's
 // chatAgentFactory option) so this never constructs a real SlicelyAgent,
-// never touches the Anthropic SDK, and makes no network call regardless of
-// whether a real ANTHROPIC_API_KEY happens to be configured in the
-// environment this test runs in.
+// never touches the Anthropic SDK, and makes no network call.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -16,8 +15,28 @@ import type { Express } from "express";
 import { createApp } from "../index";
 import { SessionStore, type ChatAgent } from "../session";
 
+// Chat requires the visitor's own Anthropic key (main/userkey.ts), so every
+// test here connects one first through PUT /api/key with an INJECTED validator:
+// still no network, no real key, and now the same path a real browser takes.
+process.env.SLICELY_MODE = "hosted";
+process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
+const TEST_KEY = "sk-ant-api03-" + "c".repeat(40);
+
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "slicely-test-"));
+}
+
+/** Connect a key to a fresh session and return its cookie. */
+async function connectKey(base: string): Promise<string> {
+  const resp = await fetch(`${base}/api/key`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey: TEST_KEY }),
+  });
+  assert.equal(resp.status, 200);
+  const raw = resp.headers.get("set-cookie");
+  assert.ok(raw, "connecting a key should mint a session cookie");
+  return raw.split(";")[0];
 }
 
 async function listen(app: Express): Promise<{ base: string; close: () => Promise<void> }> {
@@ -44,11 +63,14 @@ test("POST /api/chat streams well-formed SSE `data:` frames, in order, from the 
       /* not exercised in this test */
     },
   });
-  const { base, close } = await listen(createApp({ sessionStore: store, chatAgentFactory: stub }));
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stub, keyValidator: async () => "ok" }),
+  );
   try {
+    const cookie = await connectKey(base);
     const resp = await fetch(`${base}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ message: "hello" }),
     });
     assert.equal(resp.status, 200);
@@ -87,20 +109,21 @@ test("POST /api/chat/cancel reaches this session's own agent instance", async ()
       cancelled = true;
     },
   });
-  const { base, close } = await listen(createApp({ sessionStore: store, chatAgentFactory: stub }));
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stub, keyValidator: async () => "ok" }),
+  );
   try {
+    const cookie = await connectKey(base);
     const first = await fetch(`${base}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ message: "hi" }),
     });
     await first.text(); // drain the SSE stream before reusing the connection
-    const cookie = first.headers.get("set-cookie")?.split(";")[0];
-    assert.ok(cookie, "the chat turn should have minted a session cookie");
 
     const cancelResp = await fetch(`${base}/api/chat/cancel`, {
       method: "POST",
-      headers: { cookie: cookie! },
+      headers: { cookie },
     });
     assert.equal(cancelResp.status, 200);
     assert.equal(cancelled, true);
@@ -137,11 +160,14 @@ test("an action's server-side file becomes a download token, never a raw path", 
     },
   });
 
-  const { base, close } = await listen(createApp({ sessionStore: store, chatAgentFactory: stub }));
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stub, keyValidator: async () => "ok" }),
+  );
   try {
+    const cookie = await connectKey(base);
     const resp = await fetch(`${base}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ message: "open it" }),
     });
     const body = await resp.text();

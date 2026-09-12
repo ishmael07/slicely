@@ -26,6 +26,9 @@ import { createChatsRouter } from "./routes/chats";
 import { createThumbsRouter } from "./routes/thumbs";
 import { createPrintersRouter } from "./routes/printers";
 import { createJobsRouter } from "./routes/jobs";
+import { createConfigRouter } from "./routes/config";
+import { createKeyRouter, type KeyValidator } from "./routes/key";
+import { createSessionRouter } from "./routes/session";
 
 export interface CreateAppOptions {
   /** Inject a session store (tests use a temp-dir-backed one with a short
@@ -35,6 +38,10 @@ export interface CreateAppOptions {
    *  without it, /api/chat constructs a real SlicelyAgent (Anthropic client +
    *  live network calls) on first use, which is never appropriate in a test. */
   chatAgentFactory?: () => ChatAgent;
+  /** Inject the "is this Anthropic key real?" check that PUT /api/key makes.
+   *  Tests MUST override it — the default makes a live `models.list` call with
+   *  the pasted key. */
+  keyValidator?: KeyValidator;
 }
 
 /** Repo root, resolved relative to THIS file's own location, so it's correct
@@ -71,6 +78,12 @@ export function createApp(opts: CreateAppOptions = {}): Express {
 
   const api = express.Router();
   api.use(rateLimiter());
+  // /api/config and /api/key first: they are what the client calls before it
+  // can render anything, and they must keep answering even when a later
+  // router's dependency (the sourcing façade, say) is missing.
+  api.use(createConfigRouter());
+  api.use(createKeyRouter({ validate: opts.keyValidator }));
+  api.use(createSessionRouter(store));
   api.use(createChatRouter(opts.chatAgentFactory));
   api.use(createModelsRouter());
   api.use(createUploadRouter());

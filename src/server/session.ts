@@ -37,6 +37,9 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AgentEvent } from "../shared/types";
 import { getConfig } from "../main/config";
 import { runInSession, sessionContext } from "../main/session-context";
+import { disposeSessionState } from "../main/agent/state";
+import { disposeSessionSettings } from "../main/settings";
+import { disposeSessionUserKey } from "../main/userkey";
 
 // Augment Express's Request with the session this middleware attaches. Scoped
 // to this codebase only — harmless if another module never imports it.
@@ -280,6 +283,7 @@ export class SessionStore {
     const toEvict = [...this.sessions.values()].filter((s) => s.lastActiveAt < cutoff);
     for (const s of toEvict) {
       this.sessions.delete(s.id);
+      forgetSession(s);
       await rm(s.dir, { recursive: true, force: true }).catch(() => undefined);
     }
     return toEvict.length;
@@ -291,12 +295,35 @@ export class SessionStore {
     const s = this.sessions.get(id);
     if (!s) return;
     this.sessions.delete(id);
+    forgetSession(s);
     await rm(s.dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
   stopSweep(): void {
     if (this.timer) clearInterval(this.timer);
   }
+}
+
+/**
+ * Drop every IN-MEMORY trace of a session.
+ *
+ * Deleting the directory is not enough: the ambient-session caches
+ * (main/agent/state.ts, main/settings.ts, main/userkey.ts) are process-global
+ * Maps keyed by session id. Left alone they grow without bound on a busy
+ * server, and — worse — the visitor's decrypted API key would sit in memory
+ * long after they pressed "Delete my data".
+ */
+function forgetSession(session: SessionRecord): void {
+  session.agent?.cancel();
+  disposeSessionState(session.id);
+  disposeSessionSettings(session.id);
+  disposeSessionUserKey(session.id);
+}
+
+/** Expire the session cookie in the browser (DELETE /api/session). Lives here
+ *  so the cookie's name and attributes are defined in exactly one place. */
+export function clearSessionCookie(res: Response): void {
+  res.setHeader("Set-Cookie", `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 export function sessionMiddleware(store: SessionStore): RequestHandler {

@@ -13,6 +13,8 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
+import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
+import { sendError, toWire } from "../errors";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
@@ -89,6 +91,14 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
       res.status(409).json({ error: "This tab is still waiting on a previous reply." });
       return;
     }
+    // No key, no turn — and answered as plain JSON BEFORE the SSE headers go
+    // out. An error delivered inside an already-open stream is far harder for
+    // the client to act on (EventSource has read a 200 by then), and the one
+    // thing the UI must do here is show the "connect your key" card.
+    if (!getUserApiKey()) {
+      sendError(res, new NoApiKeyError("Connect your Anthropic API key in Settings to chat."));
+      return;
+    }
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -160,7 +170,12 @@ export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyA
         session.activeModelPaths = [sessionState.lastModelPath];
       }
     } catch (err) {
-      emit({ type: "error", message: (err as Error).message ?? String(err) });
+      // The stream is already open, so this cannot become an HTTP status —
+      // it goes out as an in-band error event carrying the same mapped message
+      // and stable code a JSON response would have had (a rejected key, a
+      // rate-limited account, no credit), never the raw error text.
+      const { body } = toWire(err);
+      emit({ type: "error", message: body.error, code: body.code });
       emit({ type: "done" });
     } finally {
       clearInterval(keepAlive);
