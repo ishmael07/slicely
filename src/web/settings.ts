@@ -10,7 +10,7 @@ import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "
 import type { SourceAvailability } from "../shared/sourcing";
 import { del, getJson, patchJson } from "./api.js";
 import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
-import { renderAboutSection, renderAiSection } from "./onboarding.js";
+import { configLoaded, renderAboutSection, renderAiSection } from "./onboarding.js";
 
 export interface SettingsDeps {
   /** Report a failed change where the user will see it. */
@@ -311,9 +311,13 @@ function renderDataSection(): void {
   dataBody.appendChild(btn);
 }
 
-/** Redraw the three sections that describe the account rather than a slice. */
+/** Redraw the three sections that describe the account rather than a slice.
+ *
+ *  With no /api/config there is nothing truthful to say about a key, so the AI
+ *  section stays hidden rather than claiming one is connected. */
 export function renderAccount(): void {
-  renderAiSection(aiBody);
+  byId<HTMLElement>("aiGroup").classList.toggle("hidden", !configLoaded());
+  if (configLoaded()) renderAiSection(aiBody);
   renderDataSection();
   renderAboutSection(aboutBody);
 }

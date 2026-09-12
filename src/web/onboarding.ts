@@ -48,6 +48,7 @@ const ASSUMED: AppConfig = {
 };
 
 let current: AppConfig = ASSUMED;
+let loaded = false;
 const listeners = new Set<() => void>();
 
 /** Notified whenever the config changes — a key connected or removed. */
@@ -67,11 +68,20 @@ export function hasKey(): boolean {
   return current.hasKey;
 }
 
+/** False when /api/config could not be reached, so the client is working from
+ *  assumptions. Anything that would state a fact about the account — "your key
+ *  is connected" — should stay quiet rather than make one up. */
+export function configLoaded(): boolean {
+  return loaded;
+}
+
 export async function loadConfig(): Promise<AppConfig> {
   try {
     current = await getJson<AppConfig>("/api/config");
+    loaded = true;
   } catch {
     current = ASSUMED;
+    loaded = false;
   }
   emit();
   return current;
