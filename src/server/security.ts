@@ -107,64 +107,152 @@ interface Bucket {
   last: number;
 }
 
-export interface RateLimitOptions {
-  /** Burst size — max requests answered back-to-back. Default 30. */
-  capacity?: number;
-  /** Sustained refill rate, tokens/second. Default 2 (≈ 1 request/500ms). */
-  refillPerSec?: number;
-  /** How a request is attributed to a bucket. Default: session cookie, else
-   *  remote IP, so one browser tab can't starve another and a single bad
-   *  actor can't exhaust every other visitor's budget. */
-  keyFn?: (req: Request) => string;
+export interface BucketSpec {
+  /** Burst size — max requests answered back-to-back. */
+  capacity: number;
+  /** Sustained refill rate, tokens/second. */
+  refillPerSec: number;
 }
 
-/** A tiny in-memory token-bucket limiter (no new dependency). Returns 429
- *  with a `Retry-After` header once a key's bucket is empty. Buckets for keys
- *  that haven't been seen in a while are swept out so long-running processes
- *  don't accumulate one entry per visitor forever. */
-export function rateLimiter(opts: RateLimitOptions = {}): RequestHandler {
-  const capacity = opts.capacity ?? 30;
-  const refillPerSec = opts.refillPerSec ?? 2;
-  const keyFn = opts.keyFn ?? defaultRateLimitKey;
-  const buckets = new Map<string, Bucket>();
-  const staleAfterMs = 30 * 60 * 1000;
-  let lastSweep = Date.now();
+/**
+ * A keyed set of token buckets with no dependency and no unbounded growth:
+ * buckets whose key hasn't been seen for a while are dropped, so a long-lived
+ * process doesn't keep one entry per visitor forever.
+ *
+ * Shared by `rateLimiter` (per request, per tier) and by session.ts's per-IP
+ * session-mint cap, which has to run BEFORE a session exists and so can't be
+ * expressed as one more `rateLimiter` in the middleware chain.
+ */
+export class TokenBuckets {
+  private readonly buckets = new Map<string, Bucket>();
+  private readonly staleAfterMs = 30 * 60 * 1000;
+  private lastSweep = Date.now();
 
-  return (req, res, next) => {
-    const now = Date.now();
-    if (now - lastSweep > staleAfterMs) {
-      lastSweep = now;
-      for (const [key, b] of buckets) {
-        if (now - b.last > staleAfterMs) buckets.delete(key);
+  constructor(private readonly spec: BucketSpec) {}
+
+  /** Spend one token for `key`. Returns `undefined` when the request is
+   *  allowed, or the number of whole seconds until the next token is
+   *  available (at least 1) when it is not. */
+  take(key: string, now = Date.now()): number | undefined {
+    if (now - this.lastSweep > this.staleAfterMs) {
+      this.lastSweep = now;
+      for (const [k, b] of this.buckets) {
+        if (now - b.last > this.staleAfterMs) this.buckets.delete(k);
       }
     }
 
-    const key = keyFn(req);
-    let b = buckets.get(key);
+    let b = this.buckets.get(key);
     if (!b) {
-      b = { tokens: capacity - 1, last: now };
-      buckets.set(key, b);
+      b = { tokens: this.spec.capacity, last: now };
+      this.buckets.set(key, b);
+    } else {
+      const elapsedSec = Math.max(0, (now - b.last) / 1000);
+      b.tokens = Math.min(this.spec.capacity, b.tokens + elapsedSec * this.spec.refillPerSec);
+      b.last = now;
+    }
+
+    if (b.tokens < 1) return retryAfterSeconds(1 - b.tokens, this.spec.refillPerSec);
+    b.tokens -= 1;
+    return undefined;
+  }
+}
+
+/** How long until `deficit` tokens have refilled, in whole seconds, never
+ *  below 1 and never an absurd (or infinite, when refill is 0) wait. */
+function retryAfterSeconds(deficit: number, refillPerSec: number): number {
+  if (refillPerSec <= 0) return 60;
+  return Math.max(1, Math.min(3600, Math.ceil(deficit / refillPerSec)));
+}
+
+export interface RateLimitOptions extends BucketSpec {
+  /** Which tier this is — reported in the bucket key so a debugger dump says
+   *  what a key belongs to. */
+  name: string;
+  /** How a request is attributed to a bucket. Default: the VERIFIED session
+   *  id, else the caller's IP — see `defaultRateLimitKey`. Returning
+   *  `undefined` falls back to that default. */
+  keyFn?: (req: Request) => string | undefined;
+}
+
+/** The tiers from spec §2. `api` is the whole-surface budget; `chat` and
+ *  `heavy` sit on top of it for the endpoints that cost real money (an
+ *  Anthropic turn) or real CPU (a PrusaSlicer run). */
+export const LIMITS = {
+  api: { name: "api", capacity: 60, refillPerSec: 5 },
+  chat: { name: "chat", capacity: 6, refillPerSec: 1 / 20 },
+  heavy: { name: "heavy", capacity: 10, refillPerSec: 1 / 10 },
+} as const;
+
+/**
+ * The caller's address, as an identity worth rate-limiting on.
+ *
+ * `req.ip` is only the real client when Express has been told to trust the
+ * proxy in front of it — otherwise it is whatever the caller wrote in
+ * `X-Forwarded-For`, which would let anyone mint an unlimited number of
+ * distinct rate-limit keys. So the forwarded chain is consulted ONLY when the
+ * operator has explicitly opted in with `SLICELY_TRUST_PROXY=1` (which
+ * index.ts passes to `app.set("trust proxy", …)` as well, from this same
+ * variable). Otherwise: the socket's peer address, which nobody can forge.
+ */
+export function clientIp(req: Request): string {
+  if (process.env.SLICELY_TRUST_PROXY === "1") {
+    return req.ip ?? req.socket.remoteAddress ?? "unknown";
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+/** A tiny in-memory token-bucket limiter (no new dependency). Returns 429
+ *  with a `Retry-After` header once a key's bucket is empty. */
+export function rateLimiter(opts: RateLimitOptions): RequestHandler {
+  const keyFn = opts.keyFn ?? defaultRateLimitKey;
+  const buckets = new TokenBuckets(opts);
+
+  return (req, res, next) => {
+    const key = keyFn(req) ?? defaultRateLimitKey(req);
+    const retryAfter = buckets.take(`${opts.name}:${key}`);
+    if (retryAfter === undefined) {
       next();
       return;
     }
-
-    const elapsedSec = Math.max(0, (now - b.last) / 1000);
-    b.tokens = Math.min(capacity, b.tokens + elapsedSec * refillPerSec);
-    b.last = now;
-
-    if (b.tokens < 1) {
-      res.setHeader("Retry-After", "1");
-      res.status(429).json({ error: "Too many requests — slow down a little." });
-      return;
-    }
-    b.tokens -= 1;
-    next();
+    res.setHeader("Retry-After", String(retryAfter));
+    res.status(429).json({ error: "Too many requests — slow down a little.", code: "rate_limited" });
   };
 }
 
+/**
+ * What a router factory accepts so index.ts can decide which tier its
+ * expensive routes belong to. The handler is INJECTED rather than built inside
+ * the factory for two reasons: the tiers are defined in exactly one place
+ * (index.ts, from `LIMITS`), and a test that drives one router directly can
+ * hand it `noLimit` instead of tripping over a budget it doesn't care about.
+ */
+export interface RouteLimitOptions {
+  limit?: RequestHandler;
+}
+
+/** The "no tier applied" middleware — the default when a factory is called
+ *  without a limiter (tests, and the Electron desktop app's single user). */
+export const noLimit: RequestHandler = (_req, _res, next) => next();
+
+/**
+ * The bucket a request belongs to: its session if — and only if — the client
+ * PROVED it holds a cookie this server issued, otherwise its IP address.
+ *
+ * This used to read the raw `slicely_sid` cookie string straight off the
+ * header, which made the limiter worthless: any client could write itself a
+ * fresh random cookie value before every request and get a fresh, full bucket
+ * each time. `sessionMiddleware` (mounted immediately before this, on the
+ * `/api` router) verifies the cookie's HMAC and hangs the record on
+ * `req.session`, so this only has to read that.
+ *
+ * A request that arrives with no valid cookie has a session MINTED for it on
+ * the way in. That brand-new id must not be used as the key either — it is
+ * just as attacker-controlled as a forged cookie was, since dropping the
+ * cookie is enough to get a new one. `req.sessionMinted` marks those, and they
+ * are charged to the caller's IP instead.
+ */
 function defaultRateLimitKey(req: Request): string {
-  const cookie = req.headers.cookie ?? "";
-  const m = /(?:^|;\s*)slicely_sid=([^;]+)/.exec(cookie);
-  if (m) return `sid:${m[1]}`;
-  return `ip:${req.ip ?? req.socket.remoteAddress ?? "unknown"}`;
+  const verifiedId = req.sessionMinted ? undefined : req.session?.id;
+  if (verifiedId) return `sid:${verifiedId}`;
+  return `ip:${clientIp(req)}`;
 }

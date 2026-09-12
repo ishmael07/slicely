@@ -10,12 +10,18 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { loadJobsApi } from "../facades";
+import { noLimit, type RouteLimitOptions } from "../security";
 import type { JobsApi, PlanJobPartInput } from "../facades";
 import type { JobEvent, JobPlanOptions } from "../../shared/jobs";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "../session";
 
-export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Router {
+export function createJobsRouter(
+  api: JobsApi | undefined = loadJobsApi(),
+  opts: RouteLimitOptions = {},
+): Router {
   const router = Router();
+  // Running a job spawns PrusaSlicer once per plate — the `heavy` tier.
+  const heavy = opts.limit ?? noLimit;
 
   if (!api) {
     router.use((_req, res) => {
@@ -62,7 +68,7 @@ export function createJobsRouter(api: JobsApi | undefined = loadJobsApi()): Rout
     }
   });
 
-  router.post("/jobs/:id/run", async (req: Request, res: Response) => {
+  router.post("/jobs/:id/run", heavy, async (req: Request, res: Response) => {
     const session = req.session!;
     // Only the session that planned a job may run it.
     if (!session.jobIds.has(req.params.id)) {

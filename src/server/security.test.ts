@@ -9,7 +9,13 @@ import express from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { rateLimiter } from "./security";
+import { createApp, type CreateAppOptions } from "./index";
+import { SessionStore } from "./session";
 import { createPrintersRouter } from "./routes/printers";
 import type { PrintersApi } from "./facades";
 
@@ -23,10 +29,40 @@ async function listen(app: express.Express): Promise<{ base: string; close: () =
   };
 }
 
+/** A real app (so the session middleware, the /api mount order and the tiers
+ *  are all exercised as shipped) on a throwaway sessions directory, with the
+ *  rate-limit tiers narrowed so a test doesn't have to fire 60 requests. */
+function testApp(limits: CreateAppOptions["limits"]): {
+  app: express.Express;
+  store: SessionStore;
+  cleanup: () => void;
+} {
+  const root = mkdtempSync(join(tmpdir(), "slicely-ratelimit-"));
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({ sessionStore: store, limits });
+  return {
+    app,
+    store,
+    cleanup: () => {
+      store.stopSweep();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A syntactically plausible but unsigned cookie — what an attacker who wants
+ *  a fresh bucket per request would send. Sent under BOTH spellings of the
+ *  cookie name (the hosted `__Host-` prefix and the bare desktop one) so the
+ *  test keeps pinning the bug whichever name the server is issuing. */
+function forgedCookie(): Record<string, string> {
+  const value = `${randomBytes(16).toString("hex")}.${randomBytes(32).toString("hex")}`;
+  return { cookie: `slicely_sid=${value}; __Host-slicely_sid=${value}` };
+}
+
 test("rateLimiter answers 429 once a key's burst budget is spent", async () => {
   const app = express();
   // capacity 2, zero refill: exactly two requests ever succeed from one key.
-  app.use(rateLimiter({ capacity: 2, refillPerSec: 0 }));
+  app.use(rateLimiter({ name: "test", capacity: 2, refillPerSec: 0 }));
   app.get("/ping", (_req, res) => res.json({ ok: true }));
   const { base, close } = await listen(app);
   try {
@@ -102,5 +138,103 @@ test("SLICELY_MODE=desktop allows LAN discovery through to the façade", async (
     if (prev === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prev;
     await close();
+  }
+});
+
+// ── The verified-session rate-limit key (spec §2) ────────────────────────────
+// The bug these four tests pin down: the limiter used to key on the RAW
+// `slicely_sid` cookie string, so anyone could hand themselves an unlimited
+// budget by writing a new random cookie value before every request.
+
+test("rotating a FORGED session cookie does not reset the bucket", async () => {
+  const { app, cleanup } = testApp({ api: { capacity: 2, refillPerSec: 0 } });
+  const { base, close } = await listen(app);
+  try {
+    const r1 = await fetch(`${base}/api/config`, { headers: forgedCookie() });
+    const r2 = await fetch(`${base}/api/config`, { headers: forgedCookie() });
+    const r3 = await fetch(`${base}/api/config`, { headers: forgedCookie() });
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.equal(r3.status, 429, "an unverifiable cookie must fall back to the caller's IP bucket");
+  } finally {
+    await close();
+    cleanup();
+  }
+});
+
+test("X-Forwarded-For is ignored unless SLICELY_TRUST_PROXY=1", async () => {
+  const prev = process.env.SLICELY_TRUST_PROXY;
+  delete process.env.SLICELY_TRUST_PROXY;
+  const { app, cleanup } = testApp({ api: { capacity: 2, refillPerSec: 0 } });
+  const { base, close } = await listen(app);
+  try {
+    const spoof = (n: number) => ({ "x-forwarded-for": `203.0.113.${n}` });
+    const r1 = await fetch(`${base}/api/config`, { headers: spoof(1) });
+    const r2 = await fetch(`${base}/api/config`, { headers: spoof(2) });
+    const r3 = await fetch(`${base}/api/config`, { headers: spoof(3) });
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.equal(r3.status, 429, "a header anyone can set must not choose the bucket");
+  } finally {
+    await close();
+    cleanup();
+    if (prev === undefined) delete process.env.SLICELY_TRUST_PROXY;
+    else process.env.SLICELY_TRUST_PROXY = prev;
+  }
+});
+
+test("two genuine sessions from one address get independent buckets", async () => {
+  // capacity 2 with no refill: the two cookie-less mint requests spend the
+  // shared IP bucket exactly, and each minted session then starts fresh.
+  const { app, cleanup } = testApp({ api: { capacity: 2, refillPerSec: 0 } });
+  const { base, close } = await listen(app);
+  try {
+    const mint = async (): Promise<string> => {
+      const resp = await fetch(`${base}/api/config`);
+      assert.equal(resp.status, 200);
+      const raw = resp.headers.get("set-cookie");
+      assert.ok(raw, "a cookie-less /api request should mint a session");
+      return raw!.split(";")[0];
+    };
+    const a = await mint();
+    const b = await mint();
+    assert.notEqual(a, b);
+
+    assert.equal((await fetch(`${base}/api/config`, { headers: { cookie: a } })).status, 200);
+    assert.equal((await fetch(`${base}/api/config`, { headers: { cookie: a } })).status, 200);
+    assert.equal(
+      (await fetch(`${base}/api/config`, { headers: { cookie: a } })).status,
+      429,
+      "session A spends only its own budget",
+    );
+    assert.equal(
+      (await fetch(`${base}/api/config`, { headers: { cookie: b } })).status,
+      200,
+      "session B must not be starved by session A",
+    );
+  } finally {
+    await close();
+    cleanup();
+  }
+});
+
+test("a 429 carries Retry-After and the rate_limited wire code", async () => {
+  // 1 token, refilling at 1 per 10s: the deficit is a full token, so the
+  // advertised wait is 10 seconds.
+  const { app, cleanup } = testApp({ api: { capacity: 1, refillPerSec: 1 / 10 } });
+  const { base, close } = await listen(app);
+  try {
+    const cookie = forgedCookie();
+    assert.equal((await fetch(`${base}/api/config`, { headers: cookie })).status, 200);
+    const resp = await fetch(`${base}/api/config`, { headers: cookie });
+    assert.equal(resp.status, 429);
+    const retryAfter = Number(resp.headers.get("retry-after"));
+    assert.ok(Number.isFinite(retryAfter) && retryAfter >= 1, `Retry-After should be >= 1, got ${retryAfter}`);
+    const body = (await resp.json()) as { error: string; code: string };
+    assert.equal(body.code, "rate_limited");
+    assert.match(body.error, /slow down/i);
+  } finally {
+    await close();
+    cleanup();
   }
 });

@@ -18,6 +18,7 @@ import type { Request, Response } from "express";
 import Anthropic from "@anthropic-ai/sdk";
 import { ANTHROPIC_KEY_RE, clearUserApiKey, setUserApiKey, userKeyHint } from "../../main/userkey";
 import { sendError, WireError } from "../errors";
+import { noLimit, type RouteLimitOptions } from "../security";
 
 /** What one validation attempt concluded. "unreachable" is deliberately NOT
  *  "rejected": refusing a good key because our own egress was down would send
@@ -54,11 +55,14 @@ export const validateWithAnthropic: KeyValidator = async (apiKey: string): Promi
   }
 };
 
-export function createKeyRouter(opts: { validate?: KeyValidator } = {}): Router {
+export function createKeyRouter(opts: { validate?: KeyValidator } & RouteLimitOptions = {}): Router {
   const validate = opts.validate ?? validateWithAnthropic;
   const router = Router();
+  // Each PUT validates the pasted key against Anthropic — the `heavy` tier,
+  // so a stolen session can't be used to hammer the provider through us.
+  const heavy = opts.limit ?? noLimit;
 
-  router.put("/key", async (req: Request, res: Response) => {
+  router.put("/key", heavy, async (req: Request, res: Response) => {
     const raw = (req.body ?? {}) as { apiKey?: unknown };
     const apiKey = typeof raw.apiKey === "string" ? raw.apiKey.trim() : "";
 

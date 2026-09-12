@@ -21,7 +21,7 @@ import { basename, extname, join } from "node:path";
 import { ACCEPTED_UPLOAD_EXTS } from "../../shared/types";
 import type { UploadResult } from "../../shared/types";
 import { acceptUploads } from "../../main/uploads";
-import { MAX_UPLOAD_BYTES } from "../security";
+import { MAX_UPLOAD_BYTES, noLimit, type RouteLimitOptions } from "../security";
 
 /** Track per-request extension rejections through multer's fileFilter, which
  *  otherwise drops a disallowed file silently (no error, no trace of its
@@ -74,10 +74,12 @@ function dedupeName(taken: Set<string>, name: string): string {
   }
 }
 
-export function createUploadRouter(): Router {
+export function createUploadRouter(opts: RouteLimitOptions = {}): Router {
   const router = Router();
+  // Up to 12 files of up to 200 MB each — the `heavy` tier.
+  const heavy = opts.limit ?? noLimit;
 
-  router.post("/upload", (req: Request, res: Response) => {
+  router.post("/upload", heavy, (req: Request, res: Response) => {
     upload.array("files", 12)(req, res, async (err: unknown) => {
       if (err) {
         const code = (err as { code?: string }).code;

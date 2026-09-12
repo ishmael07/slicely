@@ -48,6 +48,12 @@ declare global {
   namespace Express {
     interface Request {
       session?: SessionRecord;
+      /** True when `session` was created FOR THIS REQUEST because it arrived
+       *  without a valid cookie — i.e. the client has not yet proved it holds
+       *  a session this server issued. security.ts's rate-limit key treats
+       *  those as anonymous and charges them to the caller's IP, so dropping
+       *  the cookie can't buy a fresh budget. */
+      sessionMinted?: boolean;
     }
   }
 }
@@ -224,22 +230,25 @@ export class SessionStore {
 
   /** Read the session cookie off `req`, verify it, and return the matching
    *  record — or mint a fresh one and set its cookie on `res`. Always
-   *  returns a usable record; never throws. */
-  getOrCreate(req: Request, res: Response): SessionRecord {
+   *  returns a usable record; never throws. `minted` says which of the two
+   *  happened, because a caller that hasn't proved it holds a server-issued
+   *  cookie is still anonymous as far as rate limiting goes (see
+   *  security.ts's `defaultRateLimitKey`). */
+  getOrCreate(req: Request, res: Response): { session: SessionRecord; minted: boolean } {
     const cookies = parseCookies(req.headers.cookie);
     const raw = cookies[COOKIE_NAME];
     const id = raw ? verify(raw, this.secret) : undefined;
     const existing = id ? this.sessions.get(id) : undefined;
     if (existing) {
       existing.lastActiveAt = Date.now();
-      return existing;
+      return { session: existing, minted: false };
     }
 
     const record = this.create();
     const cookieValue = `${record.id}.${sign(record.id, this.secret)}`;
     const secure = (req.headers["x-forwarded-proto"] ?? req.protocol) === "https";
     res.setHeader("Set-Cookie", serializeCookie(COOKIE_NAME, cookieValue, { maxAgeMs: this.idleMs, secure }));
-    return record;
+    return { session: record, minted: true };
   }
 
   get(id: string): SessionRecord | undefined {
@@ -328,8 +337,9 @@ export function clearSessionCookie(res: Response): void {
 
 export function sessionMiddleware(store: SessionStore): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
-    const session = store.getOrCreate(req, res);
+    const { session, minted } = store.getOrCreate(req, res);
     req.session = session;
+    req.sessionMinted = minted;
     // Run the ENTIRE request inside this session's ambient context. Everything
     // downstream — routes, the agent loop, tool execution, settings reads —
     // then resolves to this visitor's own state with no per-route plumbing,

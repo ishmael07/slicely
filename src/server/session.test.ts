@@ -60,14 +60,15 @@ test("an anonymous request mints a session cookie; replaying it reuses the same 
   const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
   const { base, close } = await listen(app);
   try {
-    const r1 = await fetch(`${base}/healthz`);
+    // /api/config, not /healthz: sessions are minted on the /api router only.
+    const r1 = await fetch(`${base}/api/config`);
     const cookie1 = setCookieValue(r1);
     assert.ok(cookie1, "first request should mint a session cookie");
 
-    const r2 = await fetch(`${base}/healthz`, { headers: { cookie: cookie1! } });
+    const r2 = await fetch(`${base}/api/config`, { headers: { cookie: cookie1! } });
     assert.equal(setCookieValue(r2), undefined, "replaying the same cookie should not mint a new one");
 
-    const r3 = await fetch(`${base}/healthz`); // no cookie at all — a different visitor
+    const r3 = await fetch(`${base}/api/config`); // no cookie at all — a different visitor
     const cookie3 = setCookieValue(r3);
     assert.ok(cookie3 && cookie3 !== cookie1, "a request with no cookie gets its OWN new session");
   } finally {

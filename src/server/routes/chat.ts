@@ -19,6 +19,7 @@ import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
 import { loadChats, saveChats, newChat, appendTurn } from "../chats";
+import { noLimit, type RouteLimitOptions } from "../security";
 
 /** How often to poke a silent stream. Comfortably under the ~30s idle timeout
  *  common in browsers and reverse proxies. */
@@ -77,10 +78,15 @@ function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentE
  * see routes/chat.test.ts — so exercising the SSE wire format never depends
  * on an API key or makes a live network call.
  */
-export function createChatRouter(makeAgent: () => ChatAgent = () => new SlicelyAgent()): Router {
+export function createChatRouter(
+  makeAgent: () => ChatAgent = () => new SlicelyAgent(),
+  opts: RouteLimitOptions = {},
+): Router {
   const router = Router();
+  // Every turn is an Anthropic call the user pays for — the `chat` tier.
+  const chatLimit = opts.limit ?? noLimit;
 
-  router.post("/chat", async (req: Request, res: Response) => {
+  router.post("/chat", chatLimit, async (req: Request, res: Response) => {
     const session = req.session!;
     const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
     if (!message) {

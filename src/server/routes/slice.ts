@@ -20,19 +20,22 @@ import {
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
 import { adoptGcodeFile, isInsideDir } from "../session";
 import { loadPrintersApi } from "../facades";
+import { noLimit, type RouteLimitOptions } from "../security";
 
 const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
 const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 const DEFAULT_BED = { x: 250, y: 210, z: 210 };
 
-export function createSliceRouter(): Router {
+export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
   const router = Router();
+  // Slicing is a PrusaSlicer subprocess — the `heavy` tier.
+  const heavy = opts.limit ?? noLimit;
 
   router.get("/status", async (_req: Request, res: Response) => {
     res.json(await getStatus());
   });
 
-  router.post("/slice", async (req: Request, res: Response) => {
+  router.post("/slice", heavy, async (req: Request, res: Response) => {
     const session = req.session!;
     const body = (req.body ?? {}) as Record<string, unknown>;
 

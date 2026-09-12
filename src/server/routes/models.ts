@@ -7,11 +7,17 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { loadSourcingApi } from "../facades";
+import { noLimit, type RouteLimitOptions } from "../security";
 import type { SourcingApi } from "../facades";
 import type { SourceId, SearchOptions } from "../../shared/sourcing";
 
-export function createModelsRouter(api: SourcingApi | undefined = loadSourcingApi()): Router {
+export function createModelsRouter(
+  api: SourcingApi | undefined = loadSourcingApi(),
+  opts: RouteLimitOptions = {},
+): Router {
   const router = Router();
+  // POST /api/import downloads a mesh from the internet — the `heavy` tier.
+  const heavy = opts.limit ?? noLimit;
 
   if (!api) {
     router.use((_req, res) => {
@@ -58,7 +64,7 @@ export function createModelsRouter(api: SourcingApi | undefined = loadSourcingAp
     }
   });
 
-  router.post("/import", async (req: Request, res: Response) => {
+  router.post("/import", heavy, async (req: Request, res: Response) => {
     const session = req.session!;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const url = typeof body.url === "string" ? body.url.trim() : "";
