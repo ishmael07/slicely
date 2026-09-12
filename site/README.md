@@ -37,8 +37,11 @@ pages' relative links behave more like production over HTTP.
 1. **`config.js`** — fill in `APP_URL` (the deployed web app; it ships as the placeholder
    `https://app.slicely.example`) and `CONTACT_EMAIL`. Every CTA and footer link in
    `index.html` carries `data-href="APP_URL"` rather than a literal URL, and `main.js`
-   fills the real `href` in on load, so this file is the only place a URL is written down.
-   A key with no value leaves its link inert and logs a warning — visible, not silent.
+   fills the real `href` in on load, so this file is the only place `index.html` writes a
+   URL down. A key with no value leaves its link inert and logs a warning — visible, not
+   silent. The two legal pages deliberately run no JavaScript at all (see below), so their
+   footers carry the repository URL literally; `{{CONTACT_EMAIL}}` inside them is a
+   placeholder the lawyer review replaces, not something `config.js` fills in.
 2. **The domain.** The canonical URL is `https://slicely.app` and, because crawlers must
    see it in the served HTML rather than after JavaScript runs, it is written out in five
    places. Change all five together:

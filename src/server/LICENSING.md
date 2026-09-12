@@ -52,6 +52,41 @@ a formality to wave off. The two safe paths, roughly:
 this implementation. Nothing in `src/server/` has been engineered to route
 around AGPL §13 (there is no attempt to keep the PrusaSlicer CLI invocation
 "secretly" server-side while pretending otherwise) — it is a direct, visible
-reuse of `main/prusaslicer.ts`, exactly as instructed. Whoever operates a
-public instance of this server needs to make the compliance call above
-before doing so.
+reuse of `main/prusaslicer.ts`, exactly as instructed.
+
+---
+
+## The decision: path 1, comply
+
+For the public launch the owner chose **path 1 — comply by publishing**. The
+repository is public and the deployed server tells every user where its own
+source is. Concretely, that obligation is discharged in three places:
+
+- **`GET /api/config`** returns `sourceCommit`, the exact commit the running
+  server was built from. The `Dockerfile` bakes that commit in at build time,
+  so it cannot drift from what is actually deployed.
+- **The app's Settings → About** shows that commit and links to
+  `<REPO_URL>/tree/<sourceCommit>` — a source offer served by the program
+  itself, to the people interacting with it over the network, which is what
+  §13 asks for.
+- **The landing page footer** (`site/index.html`) links to the repository and
+  states the AGPL position in plain words, so the obligation is visible before
+  anyone uses the service rather than only after.
+
+Two things this decision does **not** do, and deliberately:
+
+- It does **not** relicense Slicely. Slicely remains MIT. PrusaSlicer is
+  invoked as a separate CLI process, not linked, and the source offer above is
+  satisfied by publishing this repository in full alongside PrusaSlicer's own
+  published source.
+- It does **not** redistribute the PrusaSlicer binary as part of the macOS
+  app. The desktop app requires a separately installed PrusaSlicer and points
+  the user at Prusa's own download. The server image installs the official
+  AppImage at build time from Prusa's release, which is a redistribution and
+  carries the AGPL's ordinary source-availability obligation for that binary —
+  met by PrusaSlicer's own public source.
+
+If a future change makes any of the three links above stop being true — the
+commit stops being baked in, the About panel loses the link, the repository
+goes private — the compliance argument goes with it. Treat that as a blocking
+regression, not a cosmetic one.

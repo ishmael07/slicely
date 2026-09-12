@@ -21,15 +21,6 @@
     }
   });
 
-  // mailto: links for the contact address, used by the legal pages' footers.
-  document.querySelectorAll('[data-mailto]').forEach((el) => {
-    const email = cfg.CONTACT_EMAIL;
-    if (email && !email.startsWith('{{')) {
-      el.setAttribute('href', `mailto:${email}`);
-      if (!el.textContent.trim()) el.textContent = email;
-    }
-  });
-
   // ---- scroll reveal ---------------------------------------------------------
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const reveals = document.querySelectorAll('.reveal');
