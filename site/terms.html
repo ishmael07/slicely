@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<!--
+  TEMPLATE — NOT LEGAL ADVICE. HAVE A LAWYER REVIEW BEFORE LAUNCH.
+
+  This file was written by an engineer to describe honestly what Slicely does,
+  not by a lawyer to be enforceable where you operate. Before launch:
+    1. have a lawyer review it;
+    2. replace {{ENTITY}}, {{CONTACT_EMAIL}}, {{JURISDICTION}} and
+       {{EFFECTIVE_DATE}} throughout;
+    3. delete the <p class="legal-banner"> element below.
+  Section 4 (3D printing safety) is the one that matters most in practice and
+  should survive review substantially intact.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terms of Service — Slicely</title>
+  <meta name="description" content="The terms you agree to by using Slicely: what the service does, who is responsible for your printer, and how your Anthropic key and uploads are handled." />
+  <link rel="canonical" href="https://slicely.app/terms.html" />
+  <meta name="theme-color" content="#0a0a0b" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="Slicely" />
+  <meta property="og:title" content="Terms of Service — Slicely" />
+  <meta property="og:url" content="https://slicely.app/terms.html" />
+  <link rel="icon" href="favicon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="aurora"></div>
+    <div class="grid"></div>
+  </div>
+
+  <header class="nav">
+    <a class="brand" href="index.html" aria-label="Slicely home">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <span class="brand-name">Slicely</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+    </nav>
+  </header>
+
+  <main class="legal">
+    <!-- Delete this banner once a lawyer has reviewed the page. -->
+    <p class="legal-banner">
+      <span aria-hidden="true">⚠</span>
+      <span>Template — not legal advice. Have a lawyer review before launch.</span>
+    </p>
+
+    <h1>Terms of Service</h1>
+    <p class="legal-meta">Effective <span class="ph">{{EFFECTIVE_DATE}}</span></p>
+    <p class="legal-meta">Slicely is operated by <span class="ph">{{ENTITY}}</span> ("we", "us").</p>
+
+    <p class="legal-intro">
+      Slicely finds 3D models, slices them, and sends the result to a printer you control.
+      These terms are the agreement between you and us about that. The section that matters
+      most is <a href="#s4">section 4</a>: a 3D printer is a hot machine in your room, and
+      you are the one standing next to it.
+    </p>
+
+    <ol class="toc">
+      <li><a href="#s1">Acceptance</a></li>
+      <li><a href="#s2">The service</a></li>
+      <li><a href="#s3">Your Anthropic account and key</a></li>
+      <li><a href="#s4">3D printing safety</a></li>
+      <li><a href="#s5">Third-party models and licences</a></li>
+      <li><a href="#s6">Acceptable use</a></li>
+      <li><a href="#s7">Your content</a></li>
+      <li><a href="#s8">Availability and changes</a></li>
+      <li><a href="#s9">Disclaimer of warranties</a></li>
+      <li><a href="#s10">Limitation of liability</a></li>
+      <li><a href="#s11">Indemnity</a></li>
+      <li><a href="#s12">Termination</a></li>
+      <li><a href="#s13">Governing law</a></li>
+      <li><a href="#s14">Changes to these terms</a></li>
+      <li><a href="#s15">Contact</a></li>
+    </ol>
+
+    <h2 id="s1">1. Acceptance</h2>
+    <p>
+      By opening the Slicely web app, installing the Slicely macOS app, or otherwise using
+      the service, you agree to these terms and to the
+      <a href="privacy.html">Privacy Policy</a>. If you do not agree, do not use Slicely.
+    </p>
+    <p>
+      You must be at least 16 years old to use Slicely. If you are using it on behalf of an
+      organisation, you confirm you are authorised to accept these terms for it.
+    </p>
+
+    <h2 id="s2">2. The service</h2>
+    <p>Slicely does three things:</p>
+    <ul>
+      <li><strong>Finds.</strong> It searches public 3D model sites for a model matching what you asked for, and resolves links and repositories you paste.</li>
+      <li><strong>Slices.</strong> It chooses an orientation and slicing settings from the model's geometry and your stated goal, and runs PrusaSlicer to produce G-code.</li>
+      <li><strong>Sends.</strong> It uploads that G-code to a printer you have connected, or gives you the file.</li>
+    </ul>
+    <p>
+      <strong>Slicely is not a CAD tool and does not create models.</strong> It works only
+      with models that already exist — ones it finds, ones you link to, and ones you upload.
+      Nothing it produces is an original design of ours.
+    </p>
+    <p>
+      The service is provided <strong>as-is</strong>. It is not certified, approved, or
+      warranted for any particular purpose, and in particular it is not suitable for
+      producing medical, structural, load-bearing, safety-critical, aerospace, automotive,
+      or life-support parts.
+    </p>
+
+    <h2 id="s3">3. Your Anthropic account and key</h2>
+    <p>
+      Slicely runs on <strong>your own Anthropic API key</strong>. The Anthropic account is
+      yours: you create it, you control it, you pay Anthropic directly for the usage Slicely
+      causes, and you may revoke or rotate the key at any time from your Anthropic console
+      or delete it from Slicely's settings. We do not resell, mark up, meter, or otherwise
+      take a cut of your Anthropic usage.
+    </p>
+    <p>
+      We store your key encrypted at rest. It is never written to a log, returned in any
+      response, or included in any error message; the app shows you only a hint of its last
+      few characters. We send it to Anthropic and nowhere else.
+    </p>
+    <p>
+      Your use of Anthropic's models is also governed by Anthropic's own terms and usage
+      policies, which are between you and Anthropic. You are responsible for the charges
+      your use of Slicely incurs on your Anthropic account, including charges caused by
+      retries, large jobs, or a key you have shared with someone else. A Claude Pro or Max
+      subscription cannot be used with Slicely; the API is billed separately.
+    </p>
+
+    <h2 id="s4">4. 3D printing safety</h2>
+    <p>
+      <strong>You are solely responsible for your printer and everything it does.</strong>
+      That includes the machine itself, the materials you load, the ventilation of the room,
+      the clearance of the build plate, the condition of the bed surface, the firmware, and
+      the supervision of every print from start to finish.
+    </p>
+    <p>
+      <strong>An FDM printer is a fire risk.</strong> It holds a heater above 200 °C, often
+      unattended, frequently overnight. Heater failures, thermal runaway, loose wiring,
+      failed thermistors, and blobs of molten plastic engulfing a hotend are all documented,
+      ordinary failure modes of consumer printers. Do not run a printer unattended, in a
+      space without a working smoke alarm, near anything flammable, or in a room where
+      people sleep.
+    </p>
+    <p>
+      <strong>Slicely never starts a print on its own.</strong> Sending a file uploads it
+      and queues it. A print begins only if you have separately armed auto-start for that
+      specific printer, in settings, yourself — the AI agent cannot arm it and cannot start
+      a print you have not armed. If you do arm auto-start, you accept that a print may
+      begin on a bed you have not checked, and that starting a print on a plate that still
+      holds the previous part can ruin the print and damage the machine. No consumer FDM
+      printer reliably senses a clear bed. Checking the bed is your job.
+    </p>
+    <p>
+      <strong>Slice settings are suggestions, and they can be wrong.</strong> Orientation
+      scores, support decisions, time and filament estimates, layer heights, and temperature
+      choices are produced by heuristics and by a language model. They are not a simulation
+      and carry no guarantee of correctness, printability, dimensional accuracy, or
+      strength. <strong>Review the preview and the settings before you print</strong>, and
+      do not rely on a Slicely estimate for anything that matters.
+    </p>
+    <p>
+      You are responsible for the legality and safety of what you choose to print, and for
+      complying with the handling and safety instructions of your printer and your filament.
+    </p>
+
+    <h2 id="s5">5. Third-party models and licences</h2>
+    <p>
+      Models found through Slicely belong to their authors, not to us. Each carries its
+      author's own licence — Creative Commons variants, GPL, proprietary, non-commercial,
+      no-derivatives, and others — and Slicely displays the licence it was given by the
+      source alongside the model.
+    </p>
+    <p>
+      <strong>Complying with that licence is your responsibility.</strong> That includes
+      attribution, share-alike obligations, and any restriction on commercial use or on
+      selling prints. The licence metadata a source publishes may be incomplete or wrong,
+      and we do not verify it; when in doubt, check the model's own page before you rely
+      on it.
+    </p>
+    <p>
+      We do not host models. Files are fetched from the source site to your session or your
+      machine at your request. We do not circumvent paywalls, logins, or access controls; a
+      model behind one is handed to your browser instead.
+    </p>
+    <p>
+      If you believe content reached you through Slicely in a way that infringes your
+      rights, contact us at <span class="ph">{{CONTACT_EMAIL}}</span> with enough detail to
+      identify the model and the source, and we will act on it.
+    </p>
+
+    <h2 id="s6">6. Acceptable use</h2>
+    <p>You agree not to use Slicely to:</p>
+    <ul>
+      <li>make anything unlawful where you are, or anything intended to cause harm;</li>
+      <li>make firearms, firearm components, magazines, suppressors, or other weapons or regulated parts, anywhere that doing so is prohibited or requires a licence you do not hold;</li>
+      <li>make keys, lock bypass tools, card skimmers, or devices whose purpose is to defeat a security measure;</li>
+      <li>infringe anyone's intellectual property, or reproduce a model in breach of its licence;</li>
+      <li>circumvent a source site's access controls, bot protections, paywalls, or rate limits, or to scrape a source at a volume it has asked you not to;</li>
+      <li>attack, overload, or probe the service — including automated bulk use, evading rate limits, or running the hosted service as infrastructure for another product;</li>
+      <li>attempt to access another user's session, workspace, chats, printers, or key, or any part of the system you have not been granted access to;</li>
+      <li>upload malware, or files whose purpose is to exploit the slicer or the server.</li>
+    </ul>
+    <p>
+      We may suspend or terminate access that breaches this section, and we may do so
+      without notice where the breach is causing harm.
+    </p>
+
+    <h2 id="s7">7. Your content</h2>
+    <p>
+      Files you upload, links you paste, and the things you type stay yours. We claim no
+      ownership of them.
+    </p>
+    <p>
+      You grant us only the licence we need to run the service for you: to store, transmit,
+      process, convert, and slice your content, and to send the parts of it the agent needs
+      to Anthropic under your own key, for as long as your session lasts. That licence is
+      non-exclusive, worldwide, royalty-free, and exists solely to operate Slicely for you.
+      We do not use your content to train any model, and we do not sell it or share it with
+      anyone beyond the recipients named in the
+      <a href="privacy.html">Privacy Policy</a>.
+    </p>
+    <p>
+      Your content is deleted with your session. You can delete everything immediately with
+      the "Delete my data" control in the app. You confirm you have the right to upload what
+      you upload.
+    </p>
+
+    <h2 id="s8">8. Availability and changes</h2>
+    <p>
+      Slicely is offered without any uptime commitment. We may change, suspend, or withdraw
+      any part of it — including a source, a printer transport, or the hosted service
+      entirely — at any time, and we may impose rate limits and resource caps to keep it
+      usable for everyone. Third-party sources and printer services can change or disappear
+      without notice, and when one does, the feature that depended on it stops working.
+    </p>
+    <p>
+      The macOS app runs on your own machine and does not depend on our hosted service.
+      Slicely's source is public, so you can always run it yourself.
+    </p>
+
+    <h2 id="s9">9. Disclaimer of warranties</h2>
+    <p>
+      To the fullest extent the law allows, Slicely is provided <strong>"as is" and "as
+      available", without warranties of any kind</strong>, whether express, implied, or
+      statutory — including any implied warranty of merchantability, fitness for a
+      particular purpose, title, accuracy, or non-infringement.
+    </p>
+    <p>
+      We do not warrant that the service will be uninterrupted, secure, or error-free; that
+      any model found will be suitable, printable, safe, or correctly licensed; that any
+      slice setting, estimate, or orientation choice will be correct; or that any file sent
+      to a printer will print successfully.
+    </p>
+
+    <h2 id="s10">10. Limitation of liability</h2>
+    <p>
+      To the fullest extent the law allows, we are not liable for any indirect, incidental,
+      special, consequential, exemplary, or punitive damages, nor for lost profits, lost
+      data, wasted filament, wasted machine time, damage to a printer or to property, or
+      personal injury, arising out of or relating to your use of Slicely.
+    </p>
+    <p>
+      Our total aggregate liability for all claims relating to Slicely is capped at
+      <strong>the greater of (a) the total amount you have actually paid us and (b) US
+      $100</strong>. Since Slicely does not currently charge for anything, in practice that
+      cap is US $100.
+    </p>
+    <p>
+      Nothing in these terms excludes or limits liability that cannot lawfully be excluded
+      or limited — including liability for death or personal injury caused by negligence,
+      or for fraud.
+    </p>
+
+    <h2 id="s11">11. Indemnity</h2>
+    <p>
+      You agree to indemnify and hold us harmless from any claim, demand, loss, or expense
+      (including reasonable legal fees) arising from your use of Slicely, from anything you
+      print, from your breach of these terms, or from your infringement of anyone else's
+      rights — including a model author's licence.
+    </p>
+
+    <h2 id="s12">12. Termination</h2>
+    <p>
+      You may stop using Slicely at any time; deleting your data in the app ends the
+      relationship on your side. We may suspend or terminate your access at any time,
+      with or without notice, in particular for a breach of
+      <a href="#s6">section 6</a>.
+    </p>
+    <p>
+      Sections <a href="#s5">5</a>, <a href="#s7">7</a>, <a href="#s9">9</a>,
+      <a href="#s10">10</a>, <a href="#s11">11</a> and <a href="#s13">13</a> survive
+      termination.
+    </p>
+
+    <h2 id="s13">13. Governing law</h2>
+    <p>
+      These terms are governed by the laws of <span class="ph">{{JURISDICTION}}</span>,
+      without regard to its conflict-of-laws rules, and the courts of
+      <span class="ph">{{JURISDICTION}}</span> have exclusive jurisdiction over any dispute
+      arising from them. If you are a consumer, this does not deprive you of the protection
+      of the mandatory law of the country where you live.
+    </p>
+
+    <h2 id="s14">14. Changes to these terms</h2>
+    <p>
+      We may update these terms. The effective date at the top changes when we do, and the
+      full history is public in the Slicely repository. Material changes will be announced
+      in the app. Continuing to use Slicely after a change means you accept the updated
+      terms; if you do not, stop using it and delete your data.
+    </p>
+
+    <h2 id="s15">15. Contact</h2>
+    <p>
+      Questions, takedown requests, and anything else:
+      <span class="ph">{{CONTACT_EMAIL}}</span>.
+    </p>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-top">
+      <span class="brand"><span class="brand-mark" aria-hidden="true">◆</span> Slicely</span>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="index.html">Home</a>
+        <span aria-hidden="true">·</span>
+        <a href="terms.html">Terms</a>
+        <span aria-hidden="true">·</span>
+        <a href="privacy.html">Privacy</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">Source (GitHub)</a>
+        <span aria-hidden="true">·</span>
+        <span>MIT</span>
+      </nav>
+    </div>
+    <p class="footer-fine">
+      PrusaSlicer is a trademark of Prusa Research; Slicely is not affiliated.
+    </p>
+  </footer>
+</body>
+</html>

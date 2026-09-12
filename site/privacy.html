@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<!--
+  TEMPLATE — NOT LEGAL ADVICE. HAVE A LAWYER REVIEW BEFORE LAUNCH.
+
+  This file was written by an engineer to describe honestly what Slicely stores
+  and who it sends things to, not by a lawyer to satisfy any particular
+  regulator. Before launch:
+    1. have a lawyer review it;
+    2. replace {{ENTITY}}, {{CONTACT_EMAIL}} and {{EFFECTIVE_DATE}} throughout;
+    3. delete the <p class="legal-banner"> element below.
+  The retention periods and the list of recipients must be kept in step with
+  what the server actually does — if the code changes, this file changes.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Slicely</title>
+  <meta name="description" content="What Slicely stores, where it lives, who receives it, how long it is kept, and how to delete all of it. No analytics, no ads, no account." />
+  <link rel="canonical" href="https://slicely.app/privacy.html" />
+  <meta name="theme-color" content="#0a0a0b" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="Slicely" />
+  <meta property="og:title" content="Privacy Policy — Slicely" />
+  <meta property="og:url" content="https://slicely.app/privacy.html" />
+  <link rel="icon" href="favicon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="aurora"></div>
+    <div class="grid"></div>
+  </div>
+
+  <header class="nav">
+    <a class="brand" href="index.html" aria-label="Slicely home">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <span class="brand-name">Slicely</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="terms.html">Terms</a>
+    </nav>
+  </header>
+
+  <main class="legal">
+    <!-- Delete this banner once a lawyer has reviewed the page. -->
+    <p class="legal-banner">
+      <span aria-hidden="true">⚠</span>
+      <span>Template — not legal advice. Have a lawyer review before launch.</span>
+    </p>
+
+    <h1>Privacy Policy</h1>
+    <p class="legal-meta">Effective <span class="ph">{{EFFECTIVE_DATE}}</span></p>
+    <p class="legal-meta">Slicely is operated by <span class="ph">{{ENTITY}}</span> ("we", "us").</p>
+
+    <p class="legal-intro">
+      Slicely has no accounts, no analytics and no advertising, so there is not much to say
+      here — but what there is, is said plainly. There are two ways to run Slicely and they
+      differ completely: the <strong>hosted web app</strong>, where your data sits on our
+      server, and the <strong>macOS app</strong>, where it never leaves your Mac. Where the
+      two differ, this policy says so.
+    </p>
+
+    <ol class="toc">
+      <li><a href="#p1">What we collect</a></li>
+      <li><a href="#p2">What we do not collect</a></li>
+      <li><a href="#p3">Where it lives</a></li>
+      <li><a href="#p4">Who receives it</a></li>
+      <li><a href="#p5">How long we keep it</a></li>
+      <li><a href="#p6">Your rights</a></li>
+      <li><a href="#p7">Children</a></li>
+      <li><a href="#p8">Changes</a></li>
+      <li><a href="#p9">Contact</a></li>
+    </ol>
+
+    <h2 id="p1">1. What we collect</h2>
+    <ul>
+      <li><strong>A session cookie.</strong> One functional cookie holding an opaque session id. It is what keeps your chats and settings attached to you. It is not a tracking cookie and is not shared with anyone.</li>
+      <li><strong>Your chats.</strong> What you type and what the agent replies, including the tool calls it made along the way.</li>
+      <li><strong>Files you bring.</strong> Models you upload, models fetched from a link you pasted, and models downloaded from a source site on your behalf.</li>
+      <li><strong>Sliced output.</strong> The G-code and the metrics produced from those files.</li>
+      <li><strong>Printer connection details,</strong> including the address of each printer and the credentials or API keys it needs. Credentials are stored encrypted.</li>
+      <li><strong>Your Anthropic API key,</strong> stored encrypted at rest. It is never logged, never returned in any response, and never included in an error message; the app displays only a hint of its last few characters.</li>
+      <li><strong>Server logs</strong> containing IP addresses, timestamps, and request paths, kept for 14 days to debug failures and to catch abuse.</li>
+    </ul>
+
+    <h2 id="p2">2. What we do not collect</h2>
+    <p>
+      <strong>No analytics.</strong> No Google Analytics, no product analytics, no session
+      recording, no heatmaps, no third-party scripts of any kind. The landing page loads no
+      external resources at all — even the font is served from our own domain.
+    </p>
+    <p>
+      <strong>No advertising and no tracking.</strong> We run no ads, set no advertising or
+      tracking cookies, and share nothing with data brokers or ad networks.
+    </p>
+    <p>
+      <strong>No account.</strong> There is no sign-up, no password, and no email address.
+      We do not ask for your name, and we have no way to connect a session to a real person
+      beyond the IP address in the logs.
+    </p>
+    <p>
+      <strong>No training.</strong> We do not use your chats, files, or prints to train any
+      model.
+    </p>
+
+    <h2 id="p3">3. Where it lives</h2>
+    <p>
+      <strong>Hosted web app:</strong> on our server's encrypted volume, in the region
+      reported by the app's own <code>/api/config</code> endpoint. Your session's files live
+      in a workspace that only your session can address; sliced output is reachable only via
+      an opaque token, never a file path.
+    </p>
+    <p>
+      <strong>macOS app:</strong> entirely on your Mac, under your user account. Nothing is
+      sent to us at all — we do not operate a service the desktop app talks to.
+    </p>
+
+    <h2 id="p4">4. Who receives it</h2>
+    <ul>
+      <li><strong>Anthropic.</strong> Your prompts, and text derived from your files (names, dimensions, geometry summaries, slice metrics), are sent to Anthropic's API to run the agent, using <em>your own key</em> and therefore under your own agreement with Anthropic and their terms and policies.</li>
+      <li><strong>The model sites you search.</strong> A search sends your query to the sources it covers — Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub, MakerWorld and others — and a download fetches from whichever site hosts the file. Those sites see the request and their own privacy policies apply to it.</li>
+      <li><strong>Your printer, or your cloud print service.</strong> Sending a file transmits the G-code, and the credentials you configured, to the printer or service you chose.</li>
+      <li><strong>Our hosting provider,</strong> which operates the server and stores the encrypted volume on our behalf.</li>
+      <li><strong>No one else.</strong> We do not sell, rent, or share your data, and there is no advertising or analytics recipient of any kind. We would disclose data if legally compelled, and would tell you unless prohibited from doing so.</li>
+    </ul>
+
+    <h2 id="p5">5. How long we keep it</h2>
+    <p>In the hosted web app:</p>
+    <ul>
+      <li><strong>Sessions</strong> — including chats, settings, printers, and your encrypted key — expire after <strong>30 days idle</strong>, and everything in them is deleted.</li>
+      <li><strong>Workspace files</strong> — uploads, downloaded models, and sliced output — are swept after <strong>2 hours idle</strong>, well before the session itself expires.</li>
+      <li><strong>Server logs</strong> are kept <strong>14 days</strong>.</li>
+      <li><strong>"Delete my data"</strong> in the app removes your session, your chats, your files, your printer credentials and your key <strong>immediately</strong>, without waiting for any of the above.</li>
+    </ul>
+    <p>In the macOS app, nothing expires and nothing is swept by us; the files are yours to keep or delete.</p>
+
+    <h2 id="p6">6. Your rights</h2>
+    <p>
+      Everything we hold about you is visible in the app and deletable from it. Use "Delete
+      my data" to erase all of it at once, or write to
+      <span class="ph">{{CONTACT_EMAIL}}</span> and we will help. Because there is no
+      account, we may not be able to identify your data from an email alone — tell us from
+      the browser session concerned, or the request may be impossible to fulfil.
+    </p>
+    <p>
+      <strong>GDPR and UK GDPR.</strong> If you are in the EEA or the UK, our lawful basis
+      for processing is the performance of the contract you enter into by using Slicely
+      (Art. 6(1)(b)), and our legitimate interest in keeping the service secure and working
+      for the server logs (Art. 6(1)(f)). You have the right to access, rectify, erase,
+      restrict, and port your data, and to object to processing; the controller is
+      <span class="ph">{{ENTITY}}</span>. You may complain to your local supervisory
+      authority. We do not make automated decisions producing legal effects about you.
+    </p>
+    <p>
+      <strong>CCPA / CPRA.</strong> If you are a California resident: we do not sell or
+      share your personal information as those terms are defined, and we have not done so in
+      the preceding 12 months. You have the right to know, to delete, and to correct, and
+      you will never be discriminated against for exercising them.
+    </p>
+
+    <h2 id="p7">7. Children</h2>
+    <p>
+      Slicely is not intended for anyone under 16, and we do not knowingly collect data from
+      children. If you believe a child has used Slicely, contact
+      <span class="ph">{{CONTACT_EMAIL}}</span> and we will delete the session.
+    </p>
+
+    <h2 id="p8">8. Changes</h2>
+    <p>
+      We will update this policy when what the software actually does changes. The effective
+      date at the top moves with it, and the full history is public in the Slicely
+      repository. Material changes will be announced in the app.
+    </p>
+
+    <h2 id="p9">9. Contact</h2>
+    <p>
+      Privacy questions, access requests, and deletion requests:
+      <span class="ph">{{CONTACT_EMAIL}}</span>.
+    </p>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-top">
+      <span class="brand"><span class="brand-mark" aria-hidden="true">◆</span> Slicely</span>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="index.html">Home</a>
+        <span aria-hidden="true">·</span>
+        <a href="terms.html">Terms</a>
+        <span aria-hidden="true">·</span>
+        <a href="privacy.html">Privacy</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">Source (GitHub)</a>
+        <span aria-hidden="true">·</span>
+        <span>MIT</span>
+      </nav>
+    </div>
+    <p class="footer-fine">
+      PrusaSlicer is a trademark of Prusa Research; Slicely is not affiliated.
+    </p>
+  </footer>
+</body>
+</html>

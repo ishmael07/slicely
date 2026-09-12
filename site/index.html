@@ -3,19 +3,40 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Slicely — AI that finds &amp; slices 3D models for you</title>
-  <meta name="description" content="Slicely is a macOS chat-bar app: tell it what you want to 3D print, and its AI agent finds a free model online, picks smart settings, and slices it with PrusaSlicer — print time, filament, and cost in one conversation." />
+  <title>Slicely — type what you want to print</title>
+  <meta name="description" content="Slicely finds 3D models across eight model sites, works out how to slice them for your printer, and sends them over — web or macOS, on your own Anthropic key." />
+
+  <link rel="canonical" href="https://slicely.app/" />
+  <meta name="theme-color" content="#0a0a0b" />
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Slicely — AI that finds &amp; slices 3D models for you" />
-  <meta property="og:description" content="Tell it what to print. It finds a free model, picks smart settings, and slices it with PrusaSlicer — all in a little chat bar for your Mac." />
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Slicely" />
+  <meta property="og:title" content="Slicely — type what you want to print" />
+  <meta property="og:description" content="Slicely finds 3D models across eight model sites, works out how to slice them for your printer, and sends them over. No CAD, no settings rabbit hole." />
+  <meta property="og:url" content="https://slicely.app/" />
+  <meta property="og:image" content="https://slicely.app/og.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Slicely — type what you want to print. Find, slice, send." />
 
-  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Slicely — type what you want to print" />
+  <meta name="twitter:description" content="Slicely finds 3D models across eight model sites, works out how to slice them for your printer, and sends them over. No CAD, no settings rabbit hole." />
+  <meta name="twitter:image" content="https://slicely.app/og.png" />
+
+  <link rel="icon" href="favicon.svg" />
+  <link rel="preload" href="fonts/inter-latin-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/inter-latin-700.woff2" as="font" type="font/woff2" crossorigin />
+  <!-- Marks the document as scripted BEFORE the stylesheet loads. The scroll
+       reveal starts elements at opacity 0 and main.js fades them in; gating that
+       on .js means a reader with JavaScript off gets the whole page immediately
+       rather than a blank canvas. No flash either way, since the class is set
+       before the first paint. -->
+  <script>document.documentElement.classList.add('js');</script>
   <link rel="stylesheet" href="styles.css" />
+  <script src="config.js"></script>
 </head>
 <body>
   <!-- ambient background -->
@@ -27,206 +48,261 @@
   <!-- nav -->
   <header class="nav">
     <a class="brand" href="#top" aria-label="Slicely home">
-      <span class="brand-mark" aria-hidden="true">🍰</span>
+      <span class="brand-mark" aria-hidden="true">◆</span>
       <span class="brand-name">Slicely</span>
     </a>
-    <nav class="nav-links">
+    <nav class="nav-links" aria-label="Main">
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
-      <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">GitHub</a>
+      <a href="#web-or-mac">Web or Mac</a>
+      <a href="https://github.com/ishmael07/slicely" data-href="REPO_URL" target="_blank" rel="noopener">GitHub</a>
     </nav>
-    <button class="btn btn-primary btn-sm" data-open-waitlist>Get access</button>
+    <a class="btn btn-primary btn-sm" href="https://app.slicely.example" data-href="APP_URL">Open the web app</a>
   </header>
 
   <main id="top">
     <!-- hero -->
     <section class="hero">
-      <div class="hero-copy">
+      <div>
         <div class="eyebrow reveal">
-          <span class="dot"></span> For macOS · powered by Claude + PrusaSlicer
+          <span class="dot"></span> AI for 3D printing · bring your own Claude key
         </div>
         <h1 class="reveal" data-delay="1">
-          Say what you want to print.<br />
-          <span class="grad">Slicely finds it and slices it.</span>
+          Type what you want to <span class="grad">print.</span>
         </h1>
         <p class="lead reveal" data-delay="2">
-          A little chat bar for your Mac. Tell its AI agent
-          <em>“I want to print a model car,”</em> and it searches the open-source
-          libraries, picks optimal settings from the model’s real geometry, and slices it
-          with PrusaSlicer — handing you accurate print time, filament, and cost.
+          Slicely finds it across eight model sites, works out how to slice it for your
+          printer, and sends it over. No CAD, no settings rabbit hole.
         </p>
         <div class="hero-cta reveal" data-delay="3">
-          <button class="btn btn-primary" data-open-waitlist>
-            Get access <span class="arrow">→</span>
-          </button>
-          <a class="btn btn-ghost" href="#how">See how it works</a>
+          <a class="btn btn-primary" href="https://app.slicely.example" data-href="APP_URL">
+            Open the web app <span class="arrow">→</span>
+          </a>
+          <span class="cta-stack">
+            <a class="btn btn-ghost" href="https://github.com/ishmael07/slicely/releases/latest" data-href="DOWNLOAD_URL">Download for Mac</a>
+            <span class="cta-micro">macOS 13+ · Apple silicon &amp; Intel · unsigned build for now: right-click → Open</span>
+          </span>
         </div>
-        <p class="hero-note reveal" data-delay="4">Free · bring your own Claude key · no account required</p>
       </div>
 
-      <!-- animated app mockup -->
-      <div class="hero-app reveal" data-delay="3" aria-hidden="true">
-        <div class="app-window">
-          <div class="app-bar">
-            <span class="tl-dot"></span><span class="tl-dot"></span><span class="tl-dot"></span>
-            <span class="app-title">Slicely</span>
-            <span class="status-pill"><span class="status-dot"></span> PrusaSlicer ready</span>
-          </div>
-          <div class="app-body">
-            <div class="msg user">I want to 3D print a desk cable holder</div>
-            <div class="msg bot">
-              <span class="typing"><i></i><i></i><i></i></span>
-              <div class="bot-text">
-                Found <b>3 free models</b>. I’d go with this one — clean geometry, prints
-                without supports. Recommended: <b>0.2 mm</b> layers, <b>15%</b> gyroid infill.
+      <!-- hero mockup -->
+      <div class="hero-app reveal" data-delay="3">
+        <div class="demo" role="img" aria-label="The Slicely app: a prompt asking for a sturdy phone stand, the model it found on Printables, slice metrics of 1 hour 42 minutes and 18 grams, and a confirmation that the file was sent to an Ender 3.">
+          <div class="demo-frame">
+            <div class="demo-bar">
+              <span class="demo-mark" aria-hidden="true">◆</span>
+              <span class="demo-title">Slicely</span>
+              <span class="status-pill"><span class="status-dot"></span> Ender 3 online</span>
+            </div>
+
+            <div class="demo-stage">
+              <div class="demo-prompt">
+                <span class="demo-typed">print me a phone stand, sturdy</span>
               </div>
+
+              <div class="demo-model">
+                <div class="demo-thumb" aria-hidden="true"></div>
+                <div class="demo-model-text">
+                  <b>Phone Stand (Printables)</b>
+                  <span class="pill">CC BY-SA</span>
+                </div>
+              </div>
+
+              <div class="demo-metrics">
+                <div class="demo-row"><span class="demo-k">Time</span><span class="demo-track"><i class="demo-fill f1"></i></span><span class="demo-v">1h 42m</span></div>
+                <div class="demo-row"><span class="demo-k">Filament</span><span class="demo-track"><i class="demo-fill f2"></i></span><span class="demo-v">18 g</span></div>
+                <div class="demo-row"><span class="demo-k">Layers</span><span class="demo-track"><i class="demo-fill f3"></i></span><span class="demo-v">210</span></div>
+                <p class="demo-note">orientation: flat, no supports</p>
+              </div>
+
+              <div class="demo-sent"><span class="pill pill-ok">Sent to Ender 3 ✓</span></div>
             </div>
-            <div class="metrics">
-              <div class="metric"><span class="m-k">Print time</span><span class="m-v">1h 24m</span></div>
-              <div class="metric"><span class="m-k">Filament</span><span class="m-v">18 g · 6.1 m</span></div>
-              <div class="metric"><span class="m-k">Cost</span><span class="m-v">$0.41</span></div>
-            </div>
-          </div>
-          <div class="app-input">
-            <span class="caret-line">Slice it for strength</span>
-            <span class="send">↑</span>
           </div>
         </div>
-        <div class="app-glow"></div>
       </div>
     </section>
 
     <!-- how it works -->
     <section class="how" id="how">
       <h2 class="section-title reveal">How it works</h2>
-      <p class="section-sub reveal" data-delay="1">From a sentence to print-ready G-code, in one conversation.</p>
+      <p class="section-sub reveal" data-delay="1">Four steps, one conversation.</p>
       <div class="steps">
         <div class="step reveal" data-delay="1">
-          <div class="step-icon">💬</div>
-          <h3>You ask</h3>
-          <p>Tell the chat what you want. It’s powered by <b>Claude</b> — pick Opus, Sonnet, or Haiku in the model menu.</p>
+          <div class="step-n">1</div>
+          <h3>Connect your key</h3>
+          <p>Paste an Anthropic API key once. It is encrypted at rest and only ever sent to Anthropic.</p>
         </div>
         <div class="step reveal" data-delay="2">
-          <div class="step-icon">🔎</div>
-          <h3>It finds (or you upload)</h3>
-          <p>Searches Thingiverse, Printables &amp; MakerWorld — or drag in your own <b>STL · 3MF · OBJ · STEP</b> or a ZIP of parts.</p>
+          <div class="step-n">2</div>
+          <h3>Say what you want</h3>
+          <p>Type it, paste a link to a model page or a repo, or drop in your own <b>STL · 3MF · OBJ · AMF · STEP</b>.</p>
         </div>
         <div class="step reveal" data-delay="3">
-          <div class="step-icon">🧠</div>
-          <h3>It reasons</h3>
-          <p>Reads the model’s real geometry, then dials in layer height, infill, supports &amp; brim for your goal.</p>
+          <div class="step-n">3</div>
+          <h3>Slicely finds, orients, slices</h3>
+          <p>It searches every source, scores the candidate poses, and derives the settings from the model's real geometry.</p>
         </div>
         <div class="step reveal" data-delay="4">
-          <div class="step-icon">🍰</div>
-          <h3>It slices</h3>
-          <p>Hands it to <b>PrusaSlicer</b> and generates clean G-code — with real print time, filament &amp; cost.</p>
-        </div>
-        <div class="step reveal" data-delay="4">
-          <div class="step-icon">🖨️</div>
-          <h3>You print</h3>
-          <p>Open the result in PrusaSlicer or save the G-code straight to your printer’s SD card and go.</p>
+          <div class="step-n">4</div>
+          <h3>Send it to your printer</h3>
+          <p>Upload straight to OctoPrint, Klipper, PrusaLink, Prusa Connect, Bambu over LAN, or a file for the SD card.</p>
         </div>
       </div>
+      <p class="callout reveal" data-delay="4">
+        <span class="callout-mark" aria-hidden="true">◆</span>
+        <span><b>Prints never start on their own.</b> You arm that per printer, and only you can.</span>
+      </p>
     </section>
 
     <!-- features -->
     <section class="features" id="features">
-      <h2 class="section-title reveal">Everything in one conversation</h2>
+      <h2 class="section-title reveal">What it actually does</h2>
+      <p class="section-sub reveal" data-delay="1">Find, slice, send. Slicely is not a CAD tool — it works with models that already exist, plus whatever you bring it.</p>
       <div class="feature-grid">
         <article class="card reveal">
-          <div class="card-icon">🔎</div>
-          <h3>Finds free models</h3>
-          <p>Searches Thingiverse, Printables &amp; MakerWorld at once — thumbnails, creators, licenses.</p>
+          <h3>Eight sources at once</h3>
+          <p>One query across Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub and MakerWorld, ranked together — and one of them being down never blanks your results. Three more (Thangs, Yeggi, STLFinder) sit behind bot protection that blocks honestly-identified requests, so they ship switched off.</p>
         </article>
         <article class="card reveal" data-delay="1">
-          <div class="card-icon">🧠</div>
-          <h3>Reasons about the print</h3>
-          <p>Picks layer height, infill, walls, supports &amp; brim from the model’s geometry and your goal.</p>
+          <h3>Paste any link</h3>
+          <p>A model page, a raw <code>.stl</code>, a <code>.zip</code> of parts or a GitHub repo — Slicely resolves it, finds the meshes and downloads them.</p>
         </article>
         <article class="card reveal" data-delay="2">
-          <div class="card-icon">📐</div>
-          <h3>Inspects real geometry</h3>
-          <p>Reads true dimensions, volume, triangle count &amp; watertightness before it commits.</p>
+          <h3>Upload your own</h3>
+          <p>Drag in STL, 3MF, OBJ, AMF or STEP — or a ZIP of parts that Slicely unpacks for you.</p>
         </article>
         <article class="card reveal">
-          <div class="card-icon">🧩</div>
-          <h3>Multi-part &amp; multi-plate</h3>
-          <p>Auto-arranges parts, splits across plates when they don’t fit, and slices each one.</p>
+          <h3>Smart orientation</h3>
+          <p>Candidate poses scored on overhang area, bed contact and layer count, weighted by your goal — then explained in plain language.</p>
         </article>
         <article class="card reveal" data-delay="1">
-          <div class="card-icon">📤</div>
-          <h3>Your own CAD too</h3>
-          <p>Drag in STL · 3MF · OBJ · AMF · STEP — or a ZIP of parts — and it flows straight to slicing.</p>
+          <h3>Slice for your goal</h3>
+          <p>Layer height, infill, walls, solid layers, supports and brim derived from the real geometry plus fast, detail or strength — override anything and the rest adapts.</p>
         </article>
         <article class="card reveal" data-delay="2">
-          <div class="card-icon">🍰</div>
-          <h3>Real numbers</h3>
-          <p>Estimated print time, filament in grams &amp; metres, cost, and layer count — every slice.</p>
+          <h3>Big multi-part jobs</h3>
+          <p>Dozens of parts planned as one job: oriented, grouped so each plate needs the fewest tool changes, packed across plates and sliced in order — and one plate failing doesn't stop the rest.</p>
+        </article>
+        <article class="card reveal">
+          <h3>Multi-colour</h3>
+          <p>Split one STL into the parts hiding inside it so each gets its own filament, or band it by height with a swap pause — which works on any printer, AMS or not.</p>
+        </article>
+        <article class="card reveal" data-delay="1">
+          <h3>Six ways to reach a printer</h3>
+          <p>OctoPrint, Klipper/Moonraker, PrusaLink, Prusa Connect, Bambu over LAN, or a file for the SD card — with live state, temperatures and pause, resume, cancel.</p>
+        </article>
+        <article class="card reveal" data-delay="2">
+          <h3>Chat history</h3>
+          <p>Streaming replies with a collapsible thought process, model cards and slice-metric panels inline — and conversations you can come back to.</p>
+        </article>
+        <article class="card reveal">
+          <h3>Pick your model &amp; effort</h3>
+          <p>Choose which Claude model runs the agent and how hard it thinks; your choice sticks between sessions.</p>
         </article>
       </div>
     </section>
 
-    <!-- requirements / CTA -->
-    <section class="cta">
-      <div class="cta-inner reveal">
-        <h2>Ready when you are</h2>
-        <p>Slicely runs on <b>macOS</b> and drives your local
-          <a href="https://www.prusa3d.com/page/prusaslicer_424/" target="_blank" rel="noopener">PrusaSlicer</a>.
-          Searching &amp; importing work without it; inspecting &amp; slicing need it installed.</p>
-        <button class="btn btn-primary btn-lg" data-open-waitlist>Get access <span class="arrow">→</span></button>
-        <p class="cta-fine">Bring your own Claude API key · your key stays on your Mac.</p>
+    <!-- web or mac -->
+    <section class="compare" id="web-or-mac">
+      <h2 class="section-title reveal">Web or Mac</h2>
+      <p class="section-sub reveal" data-delay="1">One codebase, two ways to run it. The difference that matters is which printers each one can reach.</p>
+      <div class="table-wrap reveal" data-delay="2">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th scope="col"><span class="vh">Feature</span></th>
+              <th scope="col">Web</th>
+              <th scope="col">macOS app</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Install</th><td>None — open a link</td><td>Download the DMG</td></tr>
+            <tr><th scope="row">Who</th><td>Anyone, many at once</td><td>You</td></tr>
+            <tr><th scope="row">Slicing</th><td>Server-side, headless PrusaSlicer</td><td>Your local PrusaSlicer</td></tr>
+            <tr><th scope="row">Cloud printers <span class="th-note">Bambu, Prusa Connect</span></th><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+            <tr><th scope="row">LAN printers <span class="th-note">OctoPrint, Klipper, PrusaLink</span></th><td>Only when you self-host on the same network</td><td class="yes">Yes</td></tr>
+            <tr><th scope="row">Open in the PrusaSlicer GUI</th><td class="no">No GUI on a server</td><td class="yes">Yes</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="compare-note reveal" data-delay="2">
+        Your printer sits at <code>192.168.x.x</code> behind your router: a hosted server can't route
+        to it, and browsers can't open raw TCP or MQTT. Cloud-connected printers work from anywhere;
+        LAN printers need Slicely running on your own network.
+      </p>
+    </section>
+
+    <!-- bring your own AI -->
+    <section class="byo" id="byo-ai">
+      <div class="byo-inner reveal">
+        <h2>Bring your own AI</h2>
+        <p>
+          Slicely runs on your own Anthropic API key. Create a personal key — give it an expiry —
+          at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>,
+          paste it in once, and you're going. You pay Anthropic directly for what you use; we take
+          no cut and never resell your usage.
+        </p>
+        <p>
+          Your key is encrypted at rest and sent only to Anthropic. It never appears in a page, a
+          log, or an error message — the app only ever shows you the last few characters. Delete it
+          whenever you like, from Settings here or from your Anthropic console.
+        </p>
+        <p>
+          A Claude Pro or Max subscription cannot be used here. Those cover claude.ai; the API is
+          billed separately. There is no Slicely account, no password, and no email to give us.
+        </p>
+      </div>
+    </section>
+
+    <!-- requirements -->
+    <section class="reqs" id="requirements">
+      <h2 class="section-title reveal">What you need</h2>
+      <div class="req-grid">
+        <div class="req reveal" data-delay="1">
+          <h3>On the web</h3>
+          <p>A browser. That's it — no install, and nothing to keep updated.</p>
+        </div>
+        <div class="req reveal" data-delay="2">
+          <h3>On a Mac</h3>
+          <p><a href="https://www.prusa3d.com/page/prusaslicer_424/" target="_blank" rel="noopener">PrusaSlicer</a>
+            installed, for the slicing itself. Searching and importing work without it.</p>
+        </div>
+        <div class="req reveal" data-delay="3">
+          <h3>Either way</h3>
+          <p>An <a href="https://console.anthropic.com" target="_blank" rel="noopener">Anthropic API key</a>
+            of your own — and a printer, when you want to send something to one.</p>
+        </div>
+      </div>
+      <div class="final-cta reveal" data-delay="4">
+        <a class="btn btn-primary btn-lg" href="https://app.slicely.example" data-href="APP_URL">Open the web app <span class="arrow">→</span></a>
+        <a class="btn btn-ghost btn-lg" href="https://github.com/ishmael07/slicely/releases/latest" data-href="DOWNLOAD_URL">Download for Mac</a>
       </div>
     </section>
   </main>
 
   <footer class="footer">
-    <span class="brand"><span class="brand-mark" aria-hidden="true">🍰</span> Slicely</span>
-    <span class="footer-links">
-      <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">GitHub</a>
-      <span>·</span>
-      <span>MIT licensed</span>
-      <span>·</span>
-      <span>Made by ishmael07</span>
-    </span>
-  </footer>
-
-  <!-- waitlist modal -->
-  <div class="modal-root" id="waitlist" hidden>
-    <div class="modal-backdrop" data-close-waitlist></div>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wl-title">
-      <button class="modal-x" data-close-waitlist aria-label="Close">×</button>
-      <div class="modal-body" data-state="form">
-        <h2 id="wl-title">Get early access</h2>
-        <p class="modal-sub">Slicely is rolling out gradually. Drop your details and we’ll email you a download link.</p>
-        <form id="waitlist-form" novalidate>
-          <label>
-            <span>Name</span>
-            <input type="text" name="name" autocomplete="name" placeholder="Ada Lovelace" />
-          </label>
-          <label>
-            <span>Email <i>*</i></span>
-            <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
-          </label>
-          <label>
-            <span>What would you print?</span>
-            <input type="text" name="usage" placeholder="Cosplay props, functional parts, minis…" />
-          </label>
-          <label>
-            <span>Anything else?</span>
-            <textarea name="comments" rows="2" placeholder="Optional — what made you curious?"></textarea>
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Join the list</button>
-          <p class="form-err" hidden></p>
-        </form>
-      </div>
-      <div class="modal-body success" data-state="success" hidden>
-        <div class="success-emoji">🎉</div>
-        <h2>You’re on the list!</h2>
-        <p class="modal-sub">We’ll email you a download link as access opens up. Thanks for the curiosity.</p>
-        <button class="btn btn-ghost btn-block" data-close-waitlist>Done</button>
-      </div>
+    <div class="footer-top">
+      <span class="brand"><span class="brand-mark" aria-hidden="true">◆</span> Slicely</span>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="terms.html">Terms</a>
+        <span aria-hidden="true">·</span>
+        <a href="privacy.html">Privacy</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/ishmael07/slicely" data-href="REPO_URL" target="_blank" rel="noopener">Source (GitHub)</a>
+        <span aria-hidden="true">·</span>
+        <span>MIT</span>
+        <span aria-hidden="true">·</span>
+        <span>Made by ishmael07</span>
+      </nav>
     </div>
-  </div>
+    <p class="footer-fine">
+      Slicely's hosted slicing runs PrusaSlicer, which is AGPLv3: the exact source commit the
+      server is running is linked from the app's own Settings → About, as AGPL §13 requires.
+    </p>
+    <p class="footer-fine">
+      PrusaSlicer is a trademark of Prusa Research; Slicely is not affiliated.
+    </p>
+  </footer>
 
   <script src="main.js"></script>
 </body>
