@@ -9,7 +9,7 @@
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability } from "../shared/sourcing";
 import { del, getJson, patchJson } from "./api.js";
-import { byId, confirmDialog, make, menu, toast } from "./ui.js";
+import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
 import { renderAboutSection, renderAiSection } from "./onboarding.js";
 
 export interface SettingsDeps {
@@ -227,12 +227,13 @@ async function savePref(patch: Partial<PrintPreferences>): Promise<void> {
 // ── model sources panel ──────────────────────────────────────────────────────
 
 export async function loadSources(): Promise<void> {
+  sourcesListEl.replaceChildren(skeleton(3));
   try {
     const sources = await getJson<SourceAvailability[]>("/api/sources");
     renderSources(sources);
-  } catch {
+  } catch (err) {
     sourcesListEl.replaceChildren(
-      make("p", "sheet-hint", "Model sourcing isn't available on this server yet."),
+      errorCard((err as Error).message || "Couldn't load the model sources.", () => void loadSources()),
     );
   }
 }

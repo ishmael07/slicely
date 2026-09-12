@@ -104,6 +104,14 @@ async function loadStatus(): Promise<void> {
 
 // ── boot ─────────────────────────────────────────────────────────────────────
 
+// Inside the Mac app the window has no title bar of its own, so our header
+// becomes one (see styles.css's body.is-desktop). `window.slicely` is the
+// preload bridge and exists nowhere else, which is also how the client decides
+// whether "Open in PrusaSlicer" is a thing it can offer.
+if ((window as unknown as { slicely?: unknown }).slicely) {
+  document.body.classList.add("is-desktop");
+}
+
 initUi();
 
 const settings = initSettings({ onError: renderError });

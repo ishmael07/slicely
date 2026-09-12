@@ -1065,7 +1065,9 @@ details.thinking summary::-webkit-details-marker {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+  /* The home-indicator strip on a modern phone sits over the bottom of the
+     viewport, so the send row needs to clear it. */
+  padding: 8px 10px calc(12px + env(safe-area-inset-bottom));
   border-top: 0.5px solid var(--border);
   background: rgba(10, 10, 11, 0.6);
   backdrop-filter: blur(14px);
@@ -2345,4 +2347,66 @@ button.menu-item:disabled {
 }
 .sheet:focus {
   outline: none;
+}
+
+/* ── Nothing found, as distinct from something broken ─────────────────────── */
+.empty-note {
+  align-self: flex-start;
+  max-width: min(100%, 560px);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+/* ── Narrow phones ─────────────────────────────────────────────────────────
+   Under 480px the two header pills plus three icon buttons don't fit on one
+   line. They used to scroll sideways, which hides them; wrapping shows them. */
+@media (max-width: 479px) {
+  #titlebar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .title-right {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    overflow-x: visible;
+    justify-content: flex-end;
+  }
+  .pill {
+    max-width: 100%;
+  }
+  #printerLabel,
+  #statusText {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* ── Tablet and desktop ────────────────────────────────────────────────────
+   A 720px column is right on a phone and cramped on a laptop, where the result
+   cards and plate rows have room to breathe. */
+@media (min-width: 1024px) {
+  #app {
+    max-width: 860px;
+  }
+  .sheet {
+    max-width: 860px;
+  }
+}
+
+/* ── Running inside the Mac app ────────────────────────────────────────────
+   Electron gives the window no title bar of its own, so the header has to BE
+   the title bar: draggable, except for the controls in it. The class is set by
+   app.ts only when window.slicely exists, so the browser is unaffected. */
+body.is-desktop #titlebar {
+  -webkit-app-region: drag;
+}
+body.is-desktop #titlebar button,
+body.is-desktop #titlebar .pill {
+  -webkit-app-region: no-drag;
 }

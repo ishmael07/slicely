@@ -26,7 +26,7 @@ import {
   type CardLike,
   type SendMount,
 } from "./cards.js";
-import { byId, closeSheets, confirmDialog, externalLink, make, toast } from "./ui.js";
+import { byId, closeSheets, confirmDialog, errorCard, externalLink, make, skeleton, toast } from "./ui.js";
 import { renderMarkdownLite } from "./markdown.js";
 
 export interface ChatDeps {
@@ -74,6 +74,8 @@ let activeBotRaw = "";
 let activeThinkingBody: HTMLElement | null = null;
 let activeThinkingRaw = "";
 let renderFrame = 0;
+/** The last instruction the user sent, so a failure can offer to try it again. */
+let lastInstruction: string | null = null;
 
 export function clearEmptyState(): void {
   messagesEl.querySelector(".empty")?.remove();
@@ -253,12 +255,10 @@ function endToolChip(ok: boolean, summary?: string): void {
   const label = a.current.textContent ?? "";
 
   if (!ok) {
-    // Keep a failure where the user can see it, with the fix beside it.
+    // Keep a failure where the user can see it, with the fix beside it — as the
+    // one error component, not a second differently-coloured chip.
     const friendly = summary ? friendlyError(summary) : { what: "That didn't work.", fix: undefined };
-    const chip = make("div", "tool-chip done err enter");
-    chip.appendChild(make("span", "ico", "✕"));
-    chip.appendChild(make("span", "", friendly.fix ? `${friendly.what} ${friendly.fix}` : friendly.what));
-    messagesEl.appendChild(chip);
+    messagesEl.appendChild(errorCard(friendly.fix ? `${friendly.what} ${friendly.fix}` : friendly.what));
   } else if (label) {
     addActivityStep("✓", label);
   }
@@ -283,15 +283,23 @@ function finishActivity(): void {
 
 // ── failures in the transcript ───────────────────────────────────────────────
 
-export function renderError(message: string): void {
+/**
+ * A failure, as a retryable card rather than a coloured bubble.
+ *
+ * A red bubble reads like something the model said, and it offers no way
+ * forward. This says what broke and puts the one action that might fix it right
+ * next to the words.
+ */
+export function renderError(message: string, retry?: () => void): void {
   endBotBubble();
-  const wrap = make("div", "msg bot enter");
-  const bubble = make("div", "bubble");
-  bubble.style.color = "#fecaca";
-  bubble.textContent = `⚠ ${message}`;
-  wrap.appendChild(bubble);
-  messagesEl.appendChild(wrap);
-  scrollToBottom();
+  mount(errorCard(message, retry));
+}
+
+/** A failed turn: the same card, with Retry wired to re-send the last thing the
+ *  user actually asked for. */
+function renderTurnError(message: string): void {
+  const again = lastInstruction;
+  renderError(message, again === null ? undefined : () => void runTurn(again));
 }
 
 // ── AgentEvent handling ──────────────────────────────────────────────────────
@@ -435,7 +443,7 @@ export function handleAgentEvent(raw: AgentEvent | Record<string, unknown>): voi
       // A key problem is not a message to read and move on from — it is the one
       // thing standing between the user and an answer, so the card comes with it.
       if (event.code === "no_key" || event.code === "key_rejected") promptForKey(event.code, event.message);
-      else renderError(event.message);
+      else renderTurnError(event.message);
       break;
     case "done":
       endBotBubble();
@@ -492,7 +500,7 @@ async function runTurn(instruction: string): Promise<void> {
     } else if (err instanceof ApiError && (err.code === "no_key" || err.code === "key_rejected")) {
       promptForKey(err.code, err.message);
     } else {
-      renderError((err as Error).message || String(err));
+      renderTurnError((err as Error).message || String(err));
     }
   } finally {
     setBusy(false);
@@ -503,6 +511,7 @@ async function runTurn(instruction: string): Promise<void> {
 export async function sendInstruction(displayText: string, instruction: string): Promise<void> {
   if (busy) return;
   addUserMessage(displayText);
+  lastInstruction = instruction;
   await runTurn(instruction);
 }
 
@@ -585,7 +594,7 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
       renderError(`Not accepted: ${data.rejected.join(", ")}`);
     }
   } catch (err) {
-    renderError((err as Error).message || "Upload failed");
+    renderError((err as Error).message || "Upload failed", () => void uploadFiles(list));
   }
 }
 
@@ -637,7 +646,9 @@ function submitComposer(): void {
   inputEl.value = "";
   inputEl.style.height = "auto";
   updateSendEnabled();
-  void runTurn(files.length > 0 ? buildAttachmentInstruction(text, files) : text);
+  const instruction = files.length > 0 ? buildAttachmentInstruction(text, files) : text;
+  lastInstruction = instruction;
+  void runTurn(instruction);
 }
 
 // ── paste-a-link OR search directly ──────────────────────────────────────────
@@ -679,7 +690,7 @@ async function resolveLink(url: string): Promise<void> {
     }
   } catch (err) {
     chip.remove();
-    renderError((err as Error).message || "Couldn't resolve that link.");
+    renderError((err as Error).message || "Couldn't resolve that link.", () => void resolveLink(trimmed));
   }
 }
 
@@ -689,13 +700,17 @@ async function runDirectSearch(query: string): Promise<void> {
   try {
     const outcome = await getJson<SearchOutcome>(`/api/search?q=${encodeURIComponent(query)}`);
     chip.remove();
-    if (outcome.results.length === 0) renderError(`No results for "${query}".`);
-    else showCards(outcome.results as unknown as CardLike[]);
+    // Nothing found is not a failure, and an error card would say it was.
+    if (outcome.results.length === 0) {
+      mount(make("div", "empty-note", `No results for "${query}". Try different words, or paste a link to a model.`));
+    } else {
+      showCards(outcome.results as unknown as CardLike[]);
+    }
     const note = buildSourcesNote(outcome.sources);
     if (note) mount(note);
   } catch (err) {
     chip.remove();
-    renderError((err as Error).message || "Search failed.");
+    renderError((err as Error).message || "Search failed.", () => void runDirectSearch(query));
   }
 }
 
@@ -716,7 +731,7 @@ async function importFromUrl(url: string, label: string): Promise<void> {
       `I imported a model from a link. Its exact path on the server is: ${result.localPath}. Treat it as my active model, inspect it, and recommend slicing settings.`,
     );
   } catch (err) {
-    renderError((err as Error).message || "Import failed.");
+    renderError((err as Error).message || "Import failed.", () => void importFromUrl(url, label));
   }
 }
 
@@ -764,9 +779,10 @@ function whenLabel(ts: number): string {
 }
 
 export async function refreshChats(): Promise<void> {
-  chatsList.replaceChildren();
+  chatsList.replaceChildren(skeleton(3));
   try {
     const data = await getJson<{ chats: ChatSummary[]; activeId?: string }>("/api/chats");
+    chatsList.replaceChildren();
     if (data.chats.length === 0) {
       chatsList.appendChild(
         make("div", "note", "No saved chats yet. This one will appear here once you send a message."),
@@ -790,8 +806,10 @@ export async function refreshChats(): Promise<void> {
       row.onclick = () => void openChat(c.id);
       chatsList.appendChild(row);
     }
-  } catch {
-    chatsList.appendChild(make("div", "note", "Couldn't load your chats."));
+  } catch (err) {
+    chatsList.replaceChildren(
+      errorCard((err as Error).message || "Couldn't load your chats.", () => void refreshChats()),
+    );
   }
 }
 
@@ -817,8 +835,8 @@ async function startNewChat(): Promise<void> {
     clearTranscript();
     showEmptyState();
     closeSheets();
-  } catch {
-    renderError("Couldn't start a new chat.");
+  } catch (err) {
+    renderError((err as Error).message || "Couldn't start a new chat.", () => void startNewChat());
   }
 }
 

@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { PrinterConnection, PrinterStatus } from "../shared/printers";
 import { del, getJson, postJson } from "./api.js";
-import { byId, confirmDialog, isSheetOpen, make, toast } from "./ui.js";
+import { byId, confirmDialog, errorCard, isSheetOpen, make, skeleton, toast } from "./ui.js";
 
 export interface PrintersDeps {
   /** True on a shared server, where LAN discovery is refused outright. */
@@ -177,6 +177,9 @@ export function attachSendSlot(container: HTMLElement, gcodeId: string, size?: "
 // ── the printer list ─────────────────────────────────────────────────────────
 
 export async function refreshPrinters(): Promise<void> {
+  // Only on the first load: this also runs on a timer, and a skeleton flashing
+  // over a list the user is reading every few seconds is worse than no skeleton.
+  if (printerListEl.childElementCount === 0) printerListEl.replaceChildren(skeleton(2));
   try {
     const [printers, statuses] = await Promise.all([
       getJson<PrinterConnection[]>("/api/printers"),
@@ -186,9 +189,9 @@ export async function refreshPrinters(): Promise<void> {
     renderPrinterList(printers, statuses);
     updateHeaderPrinterPill(printers, statuses);
     emitPrintersChanged();
-  } catch {
+  } catch (err) {
     printerListEl.replaceChildren(
-      make("p", "sheet-hint", "Printer connections aren't available on this server yet."),
+      errorCard((err as Error).message || "Couldn't load your printers.", () => void refreshPrinters()),
     );
   }
 }
@@ -568,6 +571,7 @@ async function discoverPrintersAction(): Promise<void> {
   discoverBtn.disabled = true;
   const original = discoverBtn.textContent ?? "Scan LAN";
   discoverBtn.textContent = "Scanning…";
+  discoveredEl.replaceChildren(skeleton(2));
   try {
     const found = await getJson<DiscoveredPrinterLite[]>("/api/printers/discover");
     renderDiscovered(found);
@@ -579,7 +583,9 @@ async function discoverPrintersAction(): Promise<void> {
       toast("No networked printers found. See the note below.", "error");
     }
   } catch (err) {
-    toast((err as Error).message || "Discovery unavailable.", "error");
+    const message = (err as Error).message || "Discovery unavailable.";
+    discoveredEl.replaceChildren(errorCard(message, () => void discoverPrintersAction()));
+    toast(message, "error");
   } finally {
     discoverBtn.textContent = original;
     discoverBtn.disabled = false;

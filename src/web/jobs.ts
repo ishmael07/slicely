@@ -10,7 +10,7 @@ import type { SliceMetrics, UploadResult } from "../shared/types";
 import type { JobPlate, PrintJob } from "../shared/jobs";
 import { getJson, postJson, streamSse } from "./api.js";
 import { addMetric, attachViewer, errorBlock, formatMinutes, panelHead, type SendMount } from "./cards.js";
-import { byId, closeSheets, make } from "./ui.js";
+import { byId, closeSheets, errorCard, make, skeleton } from "./ui.js";
 import { clearEmptyState, endBotBubble, mount, renderError, scrollToBottom } from "./chat.js";
 
 /** Wire-level widening: routes/jobs.ts attaches a `gcodeId` to each plate (on
@@ -296,11 +296,14 @@ export async function planStagedJob(files: UploadResult[]): Promise<boolean> {
 // ── the jobs sheet ───────────────────────────────────────────────────────────
 
 async function refreshJobsList(): Promise<void> {
+  jobsListEl.replaceChildren(skeleton(3));
   try {
     const jobs = await getJson<PrintJob[]>("/api/jobs");
     renderJobsList(jobs);
-  } catch {
-    jobsListEl.replaceChildren(make("p", "sheet-hint", "Job history isn't available on this server yet."));
+  } catch (err) {
+    jobsListEl.replaceChildren(
+      errorCard((err as Error).message || "Couldn't load your print jobs.", () => void refreshJobsList()),
+    );
   }
 }
 
