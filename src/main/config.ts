@@ -4,7 +4,6 @@ import { config as loadDotenv } from "dotenv";
 import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { ConfigState } from "../shared/types";
 
 loadDotenv();
 
@@ -16,8 +15,17 @@ function envStr(name: string, fallback = ""): string {
   return v && v.trim().length > 0 ? v.trim() : fallback;
 }
 
+/**
+ * Owner-supplied, environment-only configuration.
+ *
+ * Deliberately ABSENT: any Anthropic credential. `ANTHROPIC_API_KEY` is no
+ * longer read anywhere in Slicely — AI access is bring-your-own, per session
+ * (see userkey.ts), so chat bills the user who pasted the key rather than
+ * whoever deployed the server. The only Anthropic-shaped env var left is
+ * `SLICELY_DEV_ANTHROPIC_KEY`, a desktop-mode developer convenience read by
+ * userkey.ts.
+ */
 export interface SlicelyConfig {
-  anthropicApiKey: string;
   thingiverseToken: string;
   model: string;
   effort: string;
@@ -51,7 +59,6 @@ export function getConfig(): SlicelyConfig {
   }
 
   cached = {
-    anthropicApiKey: envStr("ANTHROPIC_API_KEY"),
     thingiverseToken: envStr("THINGIVERSE_APP_TOKEN"),
     model: envStr("SLICELY_MODEL", "claude-opus-4-8"),
     effort: envStr("SLICELY_EFFORT", "high"),
@@ -75,14 +82,4 @@ export function resetConfigForTests(): void {
  *  this env var without going through `resetConfigForTests()`. */
 export function masterKeyEnv(): string {
   return envStr("SLICELY_MASTER_KEY");
-}
-
-export function configState(): ConfigState {
-  const c = getConfig();
-  return {
-    hasAnthropicKey: c.anthropicApiKey.length > 0,
-    hasThingiverseToken: c.thingiverseToken.length > 0,
-    model: c.model,
-    workdir: c.workdir,
-  };
 }

@@ -2,7 +2,7 @@
 // history across turns, streams text/thinking/tool events to the renderer, and
 // runs the marketplace + PrusaSlicer tools until the model is done.
 import Anthropic from "@anthropic-ai/sdk";
-import { getConfig } from "../config";
+import { getUserApiKey, NoApiKeyError } from "../userkey";
 import { getSettings, getPreferences, buildModelRequestParams } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
@@ -65,13 +65,17 @@ export class SlicelyAgent {
   private cancelled = false;
 
   constructor() {
-    const cfg = getConfig();
-    if (!cfg.anthropicApiKey) {
-      throw new Error(
-        "ANTHROPIC_API_KEY is missing. Add it to your .env to use Slicely.",
-      );
+    // The key belongs to the USER, not the deployment: it comes from this
+    // session's encrypted secrets (userkey.ts), never from the server's
+    // environment. No key is a normal, expected state for a fresh visitor —
+    // hence a typed error the HTTP layer turns into 409 `no_key` and the UI
+    // turns into the "connect your key" card, rather than a crash or a message
+    // about server-side files the user has no access to.
+    const key = getUserApiKey();
+    if (!key) {
+      throw new NoApiKeyError("Connect your Anthropic API key in Settings to chat.");
     }
-    this.client = new Anthropic({ apiKey: cfg.anthropicApiKey });
+    this.client = new Anthropic({ apiKey: key });
     // Seed the session from the user's saved printer/material so a returning
     // user is never asked to re-state their setup.
     const prefs = getPreferences();

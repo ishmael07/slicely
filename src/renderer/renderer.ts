@@ -177,11 +177,9 @@ async function checkConfig(): Promise<void> {
     return;
   }
   const warnings: string[] = [];
-  if (!cfg.hasAnthropicKey) {
-    warnings.push(
-      "ANTHROPIC_API_KEY is missing — add it to your .env to chat with Slicely.",
-    );
-  }
+  // The Anthropic key is no longer an environment value: each user connects
+  // their own, per session (see main/userkey.ts), so there is nothing to warn
+  // about here.
   if (!cfg.hasThingiverseToken) {
     warnings.push(
       "No Thingiverse token — search still works, but in-app downloads need a free THINGIVERSE_APP_TOKEN.",

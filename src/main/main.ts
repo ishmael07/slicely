@@ -12,7 +12,7 @@ import type {
   PrintMaterial,
   PrintGoal,
 } from "../shared/types";
-import { configState } from "./config";
+import { getConfig } from "./config";
 import { sessionState, seedSessionFromPreferences } from "./agent/state";
 import { SlicelyAgent } from "./agent/agent";
 import {
@@ -176,7 +176,20 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.getStatus, async () => getStatus());
 
-  ipcMain.handle(IPC.getConfigState, async () => configState());
+  // A stub of the old env-derived ConfigState. The Anthropic key is no longer
+  // an environment value (it is per-session and encrypted — see userkey.ts), so
+  // `hasAnthropicKey` is reported false here and the web client's /api/config
+  // is the real source of truth. Task E1 deletes this channel along with the
+  // Electron renderer.
+  ipcMain.handle(IPC.getConfigState, async () => {
+    const cfg = getConfig();
+    return {
+      hasAnthropicKey: false,
+      hasThingiverseToken: cfg.thingiverseToken.length > 0,
+      model: cfg.model,
+      workdir: cfg.workdir,
+    };
+  });
 
   ipcMain.handle(IPC.openExternal, async (_e, url: string) => {
     if (/^https?:\/\//.test(url)) await shell.openExternal(url);

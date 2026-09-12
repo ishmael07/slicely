@@ -242,7 +242,11 @@ export type AgentEvent =
       /** One short line under the button, when the button alone isn't obvious. */
       hint?: string;
     }
-  | { type: "error"; message: string }
+  /** Something failed. `code` is the stable wire code the UI branches on
+   *  (`no_key`, `key_rejected`, `rate_limited`, …) so it can show the right
+   *  affordance — the "connect your key" card rather than a red line of prose.
+   *  Optional: plain tool/agent failures carry a message only. */
+  | { type: "error"; message: string; code?: string }
   | { type: "done" };
 
 /** Channel names used across the preload bridge. */

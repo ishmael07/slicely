@@ -11,7 +11,6 @@ import { thingiverseProvider } from "./thingiverse";
 
 function fakeConfig(token: string) {
   return {
-    anthropicApiKey: "",
     thingiverseToken: token,
     model: "",
     effort: "",
