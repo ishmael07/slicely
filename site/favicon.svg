@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Slicely">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ff7a45"/>
@@ -6,8 +6,6 @@
     </linearGradient>
   </defs>
   <rect width="64" height="64" rx="15" fill="#0a0a0b"/>
-  <!-- a slice of cake / filament wedge -->
-  <path d="M32 14 L50 46 H14 Z" fill="url(#g)"/>
-  <circle cx="32" cy="40" r="3.4" fill="#0a0a0b"/>
-  <rect x="22" y="46" width="20" height="4" rx="2" fill="url(#g)"/>
+  <!-- the ◆ mark, the same glyph the app header uses -->
+  <path d="M32 13 L51 32 L32 51 L13 32 Z" fill="url(#g)"/>
 </svg>
