@@ -89,6 +89,18 @@ pyftsubset web/Inter-Regular.woff2 --flavor=woff2 \
   --output-file=site/fonts/inter-latin-400.woff2
 ```
 
+## With JavaScript off
+
+The page is fully readable: an inline script in `<head>` marks the document as scripted,
+and the scroll reveal's hidden state is gated on that, so without JavaScript nothing starts
+hidden. Everything renders — copy, comparison table, Terms, Privacy, the source link.
+
+The one thing that does not work is the two CTAs. "Open the web app" and "Download for Mac"
+get their `href` from `config.js` via `main.js`, so with no JavaScript they are visible but
+inert. That is the deliberate cost of keeping every URL in one file; if it ever matters
+more than the duplication does, put the real `href` in the HTML and let `data-href`
+override it.
+
 ## Motion
 
 Everything that moves is CSS. The hero demo is a single ~9 s loop (typed prompt → model

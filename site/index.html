@@ -29,6 +29,12 @@
   <link rel="icon" href="favicon.svg" />
   <link rel="preload" href="fonts/inter-latin-400.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="fonts/inter-latin-700.woff2" as="font" type="font/woff2" crossorigin />
+  <!-- Marks the document as scripted BEFORE the stylesheet loads. The scroll
+       reveal starts elements at opacity 0 and main.js fades them in; gating that
+       on .js means a reader with JavaScript off gets the whole page immediately
+       rather than a blank canvas. No flash either way, since the class is set
+       before the first paint. -->
+  <script>document.documentElement.classList.add('js');</script>
   <link rel="stylesheet" href="styles.css" />
   <script src="config.js"></script>
 </head>
