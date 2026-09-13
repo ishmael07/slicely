@@ -22,7 +22,8 @@
 // key, and dropping a session drops its key from memory
 // (`disposeSessionUserKey`).
 // ─────────────────────────────────────────────────────────────────────────────
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { currentSessionId, sessionFile } from "./session-context";
 import { decryptSecret, encryptSecret } from "./keyvault";
 import { isDesktop } from "./mode";
@@ -52,15 +53,31 @@ export class KeyFormatError extends Error {
 interface SecretsFile {
   version: 1;
   anthropicKey?: string;
+  /** Set once the user has explicitly disconnected their key. See `KeyState`. */
+  anthropicKeyCleared?: boolean;
   [other: string]: unknown;
 }
 
 const SECRETS_FILE = () => sessionFile("secrets.json");
 
-/** One entry per session: the decrypted key, or `undefined` meaning "disk has
- *  been read and there is no key". Presence of the entry (not its value) is
- *  what makes this a cache — `has()`, not a truthiness check. */
-const cache = new Map<string, string | undefined>();
+/**
+ * What this session's stored state says, which is NOT simply "a key or not".
+ *
+ * `cleared` is a tombstone: the user pressed Disconnect. It has to be recorded,
+ * because desktop mode falls back to `SLICELY_DEV_ANTHROPIC_KEY` when no key is
+ * stored — so without a tombstone, DELETE /api/key would answer
+ * `{hasKey: false}`, the very next /api/config would answer `{hasKey: true}`
+ * again, and chat would keep spending the developer's key after the user asked
+ * it to stop.
+ */
+interface KeyState {
+  key?: string;
+  cleared?: boolean;
+}
+
+/** One entry per session. Presence of the entry (not its contents) is what
+ *  makes this a cache — an absent entry means "disk not read yet". */
+const cache = new Map<string, KeyState>();
 
 function readSecrets(): SecretsFile {
   try {
@@ -74,11 +91,54 @@ function readSecrets(): SecretsFile {
   return { version: 1 };
 }
 
+/**
+ * Replace `secrets.json` atomically: write a sibling temp file, then rename.
+ *
+ * A plain `writeFileSync` truncates first, so a crash (or a full disk) between
+ * truncate and write leaves a zero-length or half-written file — and the user's
+ * key silently gone. `rename` within a directory is atomic, so a reader sees
+ * either the old file or the new one. Same pattern as printers/registry.ts.
+ *
+ * 0600 throughout: on a hosted box the workspace is shared with nothing, but
+ * the ciphertext still shouldn't be world-readable — defence in depth behind
+ * the encryption itself.
+ */
 function writeSecrets(next: SecretsFile): void {
-  // 0600: on a hosted box the workspace directory is shared with nothing, but
-  // the ciphertext still shouldn't be world-readable — defence in depth behind
-  // the encryption itself.
-  writeFileSync(SECRETS_FILE(), JSON.stringify(next, null, 2), { mode: 0o600 });
+  const path = SECRETS_FILE();
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  try {
+    // writeFileSync's `mode` only applies when it CREATES the file; a leftover
+    // temp from a previous run would keep its old permissions.
+    chmodSync(tmp, 0o600);
+  } catch {
+    /* best-effort on platforms without POSIX permission bits */
+  }
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    // Never leave a stray `.secrets.json.*.tmp` behind in the user's workspace.
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** This session's stored state, read from disk. */
+function readState(): KeyState {
+  const secrets = readSecrets();
+  const blob = secrets.anthropicKey;
+  if (typeof blob === "string" && blob.length > 0) {
+    try {
+      return { key: decryptSecret(blob) };
+    } catch {
+      // Wrong master key or a tampered file. Treated as "no key stored" rather
+      // than an error: the user can simply paste theirs again.
+      return {};
+    }
+  }
+  return secrets.anthropicKeyCleared === true ? { cleared: true } : {};
 }
 
 /**
@@ -96,25 +156,18 @@ function writeSecrets(next: SecretsFile): void {
  */
 export function getUserApiKey(): string | undefined {
   const sid = currentSessionId();
-  if (!cache.has(sid)) {
-    const blob = readSecrets().anthropicKey;
-    let key: string | undefined;
-    if (typeof blob === "string" && blob.length > 0) {
-      try {
-        key = decryptSecret(blob);
-      } catch {
-        key = undefined;
-      }
-    }
-    cache.set(sid, key);
+  let state = cache.get(sid);
+  if (!state) {
+    state = readState();
+    cache.set(sid, state);
   }
-  const stored = cache.get(sid);
-  if (stored) return stored;
+  if (state.key) return state.key;
+  // An explicit disconnect wins over the dev fallback — "no" has to mean no.
+  if (state.cleared) return undefined;
 
   if (isDesktop()) {
+    // Not cached: it's an env var a developer flips between runs.
     const dev = process.env.SLICELY_DEV_ANTHROPIC_KEY?.trim();
-    // Not cached: it's an env var a developer flips between runs, and caching
-    // it would also let it outlive a `clearUserApiKey()`.
     if (dev) return dev;
   }
   return undefined;
@@ -136,20 +189,24 @@ export function setUserApiKey(key: string): void {
   // Encrypt BEFORE writing: if the vault can't produce a blob (no master key),
   // the existing file is left exactly as it was.
   next.anthropicKey = encryptSecret(trimmed);
+  // Connecting a key lifts an earlier disconnect.
+  delete next.anthropicKeyCleared;
   writeSecrets(next);
-  cache.set(currentSessionId(), trimmed);
+  cache.set(currentSessionId(), { key: trimmed });
 }
 
-/** Forget this session's key, on disk and in memory. */
+/** Forget this session's key, on disk and in memory, and record that the user
+ *  asked for that — so no fallback quietly reinstates one. */
 export function clearUserApiKey(): void {
   const next = readSecrets();
   delete next.anthropicKey;
+  next.anthropicKeyCleared = true;
   try {
     writeSecrets(next);
   } catch {
     /* the in-memory drop below still takes effect this run */
   }
-  cache.set(currentSessionId(), undefined);
+  cache.set(currentSessionId(), { cleared: true });
 }
 
 /** The only thing a client is ever told about the key itself: its last four

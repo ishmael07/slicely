@@ -249,6 +249,40 @@ test("changing the key drops the agent built from the old one", async () => {
   }
 });
 
+test("no API response is cacheable — a proxy must never hand one visitor's key state to another", async () => {
+  // /api/config carries THIS session's hasKey/keyHint on a plain GET of a shared
+  // URL. A CDN in front of the hosted deploy would happily cache the first
+  // answer and serve it to the next visitor.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const put = await fetch(`${base}/api/key`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: GOOD_KEY }),
+    });
+    const cookie = cookieOf(put);
+    assert.equal(put.headers.get("cache-control"), "no-store");
+
+    const cfg = await fetch(`${base}/api/config`, { headers: { cookie } });
+    assert.equal(cfg.headers.get("cache-control"), "no-store");
+
+    const del = await fetch(`${base}/api/key`, { method: "DELETE", headers: { cookie } });
+    assert.equal(del.headers.get("cache-control"), "no-store");
+
+    // Not just these three routes: the whole /api surface is per-session.
+    const settings = await fetch(`${base}/api/settings`, { headers: { cookie } });
+    assert.equal(settings.headers.get("cache-control"), "no-store");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("chat with no key is a 409 with code no_key — answered BEFORE any SSE headers", async () => {
   const root = tmpRoot();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });

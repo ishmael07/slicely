@@ -19,6 +19,7 @@ import {
   corsGuard,
   JSON_BODY_LIMIT,
   LIMITS,
+  noStore,
   rateLimiter,
   securityHeaders,
   type RateLimitOptions,
@@ -107,6 +108,9 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   app.use("/web", express.static(join(REPO_ROOT, "dist-web", "web")));
 
   const api = express.Router();
+  // Before anything else, including the limiter's own 429s: no API response is
+  // shareable between visitors (see noStore).
+  api.use(noStore());
   // ORDER MATTERS, and this is the whole point of the arrangement:
   //   1. the session middleware VERIFIES the cookie (and mints one, per-IP
   //      capped, when there isn't a valid one), so that

@@ -67,6 +67,29 @@ export function securityHeaders(): RequestHandler {
 }
 
 /**
+ * `Cache-Control: no-store` on everything under /api.
+ *
+ * NOT a nicety. Every API response is scoped to ONE session: `/api/config`
+ * carries that visitor's `hasKey`/`keyHint`, `/api/chats` their conversations,
+ * `/api/printers` their machines. They are plain GETs on a shared URL, so a CDN
+ * or reverse proxy in front of a hosted deployment is entitled to cache the
+ * first response it sees and hand it to the next visitor — leaking one user's
+ * key state (and worse) to another. The cookie that distinguishes them is
+ * invisible to a cache that hasn't been told to vary on it.
+ *
+ * Applied to the whole router rather than per route, so a new endpoint is
+ * private by default instead of private only if its author remembered.
+ * Streaming routes may still override it: /api/chat's SSE headers pass
+ * `no-cache, no-transform` to `writeHead`, which wins for that response.
+ */
+export function noStore(): RequestHandler {
+  return (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  };
+}
+
+/**
  * A same-origin lock for an app that is meant to be used ONLY from its own
  * page. Browsers already refuse to let cross-site JS *read* a response
  * without a matching Access-Control-Allow-Origin header, and this server

@@ -187,3 +187,46 @@ test("an action's server-side file becomes a download token, never a raw path", 
     await close();
   }
 });
+
+test("a second turn in the same tab is a 409 with code `busy`, distinguishable from no_key", async () => {
+  // Both refusals are 409, so the CODE is the only thing telling the UI whether
+  // to show the key card or simply wait and re-enable the composer.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const stub: () => ChatAgent = () => ({
+    async send(_message, emit) {
+      await new Promise((r) => setTimeout(r, 150));
+      emit({ type: "done" });
+    },
+    cancel() {
+      /* not exercised in this test */
+    },
+  });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stub, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await connectKey(base);
+    const post = () =>
+      fetch(`${base}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", cookie },
+        body: JSON.stringify({ message: "hi" }),
+      });
+
+    const first = post();
+    // Let the first turn reach the handler and mark the session busy.
+    await new Promise((r) => setTimeout(r, 40));
+    const second = await post();
+
+    assert.equal(second.status, 409);
+    const body = (await second.json()) as { error: string; code?: string };
+    assert.equal(body.code, "busy");
+
+    await (await first).text(); // drain the streaming turn
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

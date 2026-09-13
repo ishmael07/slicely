@@ -94,7 +94,10 @@ export function createChatRouter(
       return;
     }
     if (session.busy) {
-      res.status(409).json({ error: "This tab is still waiting on a previous reply." });
+      // Same 409 status as "no key", so the code is what tells them apart: this
+      // one is transient and the UI should re-enable the composer, not offer the
+      // key card.
+      res.status(409).json({ error: "This tab is still waiting on a previous reply.", code: "busy" });
       return;
     }
     // No key, no turn — and answered as plain JSON BEFORE the SSE headers go
