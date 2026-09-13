@@ -16,7 +16,7 @@
 - The user's key: encrypted at rest (AES-256-GCM), never logged, never in any HTTP response body, never in an error string. The client only ever sees `{ hasKey, keyHint }`. (Spec §1.)
 - Owner's sourcing keys (`THINGIVERSE_APP_TOKEN`, `GITHUB_TOKEN`, `MYMINIFACTORY_API_KEY`, `SMITHSONIAN_API_KEY`) stay env-only. (Spec §Goal.)
 - Absolute filesystem paths never reach a client. (Spec §Error handling.)
-- Wire errors are `{ error: string, code?: string }`. Stable codes: `no_key`, `key_rejected`, `key_invalid_format`, `rate_limited`, `slicer_busy`, `not_in_workspace`, `forbidden_in_hosted_mode`, `cross_origin`. (Spec §Error handling.)
+- Wire errors are `{ error: string, code?: string }`. Stable codes: `no_key`, `key_rejected`, `key_invalid_format`, `rate_limited`, `slicer_busy`, `not_in_workspace`, `forbidden_in_hosted_mode`, `cross_origin`, `billing`, `busy`. (Spec §Error handling.)
 - `SLICELY_MODE` ∈ `hosted` | `desktop`. `npm run serve` and Docker default to `hosted`. Electron sets `desktop`. `SLICELY_MULTI_USER` is retired. (Spec §3.)
 - Session cookie is `__Host-slicely_sid` in hosted mode (`Secure; HttpOnly; SameSite=Lax; Path=/`), `slicely_sid` on loopback desktop (no `Secure` — `__Host-` requires it). (Spec §3.)
 - Rate-limit tiers per session: `api` 60 burst / 5 per s; `chat` 6 burst / 0.05 per s; `heavy` 10 burst / 0.1 per s; per-IP session mint 20 per hour. (Spec §2.)
