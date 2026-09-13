@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rateLimiter } from "./security";
+import { rateLimiter, TokenBuckets } from "./security";
 import { createApp, type CreateAppOptions } from "./index";
 import { SessionStore } from "./session";
 import { createPrintersRouter } from "./routes/printers";
@@ -272,4 +272,31 @@ test("the chat and heavy tiers are mounted on their routes, with separate budget
     await close();
     cleanup();
   }
+});
+
+test("a slow-refilling bucket is not reset by being idle — idling never buys tokens", async () => {
+  // Two tokens refilling one per hour: shaped like the per-IP session-mint
+  // budget, whose full recovery (here two hours) is longer than the 30-minute
+  // memory-saving eviction window buckets used to be swept on. Evicting a
+  // bucket resets it to FULL, so that window handed an idling caller a free
+  // second budget.
+  const buckets = new TokenBuckets({ capacity: 2, refillPerSec: 1 / 3600 });
+  const t0 = Date.now();
+  const minute = 60 * 1000;
+
+  assert.equal(buckets.take("mint:203.0.113.7", t0), undefined);
+  assert.equal(buckets.take("mint:203.0.113.7", t0 + 1000), undefined, "both tokens are spendable");
+
+  // 31 minutes later: past the old sweep window, but only half a token has
+  // refilled, so this must still be refused.
+  const denied = buckets.take("mint:203.0.113.7", t0 + 31 * minute);
+  assert.ok(denied !== undefined, "idling past the sweep window must not refill the bucket");
+  assert.ok(denied! >= 1);
+
+  // Two hours in, the bucket really has refilled, and is spendable again.
+  assert.equal(
+    buckets.take("mint:203.0.113.7", t0 + 121 * minute),
+    undefined,
+    "a genuinely refilled bucket still works",
+  );
 });

@@ -148,10 +148,25 @@ export interface BucketSpec {
  */
 export class TokenBuckets {
   private readonly buckets = new Map<string, Bucket>();
-  private readonly staleAfterMs = 30 * 60 * 1000;
+  /**
+   * How long an untouched bucket is kept before it's dropped to save memory.
+   *
+   * This CANNOT be a flat 30 minutes: dropping a bucket resets it to full, so
+   * evicting one before it would have refilled on its own hands the key a free
+   * budget. The per-IP session-mint bucket (20 tokens refilling at 20/hour)
+   * takes a full hour to recover, so a flat half-hour window let one address
+   * mint 20 workspaces, idle 31 minutes, and mint 20 more — about double the
+   * documented cap. So: never evict sooner than a full refill would take.
+   * (A bucket with no refill at all can only be reset by eviction, hence the
+   * 24-hour ceiling rather than keeping it forever.)
+   */
+  private readonly staleAfterMs: number;
   private lastSweep = Date.now();
 
-  constructor(private readonly spec: BucketSpec) {}
+  constructor(private readonly spec: BucketSpec) {
+    const fullRefillMs = spec.refillPerSec > 0 ? (spec.capacity / spec.refillPerSec) * 1000 : Infinity;
+    this.staleAfterMs = Math.min(24 * 60 * 60 * 1000, Math.max(30 * 60 * 1000, fullRefillMs));
+  }
 
   /** Spend one token for `key`. Returns `undefined` when the request is
    *  allowed, or the number of whole seconds until the next token is
