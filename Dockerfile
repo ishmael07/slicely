@@ -15,9 +15,10 @@ FROM node:20-bookworm-slim
 # that still publishes one. Bump this only after checking, with the GitHub API
 # query below, that the target tag actually has a linux-x64...GTK3 AppImage.
 ARG PRUSASLICER_VERSION=2.8.1
-ARG SOURCE_COMMIT=dev
+# PRUSASLICER_PATH points at a wrapper (baked in below), not AppRun directly —
+# see the wrapper's own comment for why.
 ENV SLICELY_MODE=hosted SLICELY_WORKDIR=/data SLICELY_TRUST_PROXY=1 SLICELY_PORT=8080 \
-    PRUSASLICER_PATH=/opt/prusaslicer/AppRun SLICELY_SOURCE_COMMIT=${SOURCE_COMMIT} NODE_ENV=production
+    PRUSASLICER_PATH=/opt/prusaslicer/slicer.sh NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl libgtk-3-0 libgl1 libglu1-mesa libegl1 libwebkit2gtk-4.1-0 libdbus-1-3 xvfb \
     && rm -rf /var/lib/apt/lists/*
@@ -30,7 +31,16 @@ RUN set -eux; url=$(curl -fsSL "https://api.github.com/repos/prusa3d/PrusaSlicer
       | grep browser_download_url | grep 'linux-x64.*GTK3' | grep -v 'bgcode\|older' | head -1 | cut -d '"' -f 4); \
     curl -fsSL -o /tmp/ps.AppImage "$url"; chmod +x /tmp/ps.AppImage; \
     cd /tmp && ./ps.AppImage --appimage-extract >/dev/null && mv squashfs-root /opt/prusaslicer && rm /tmp/ps.AppImage; \
-    xvfb-run -a /opt/prusaslicer/AppRun --help >/dev/null
+    printf '#!/bin/sh\nexec xvfb-run -a /opt/prusaslicer/AppRun "$@"\n' > /opt/prusaslicer/slicer.sh; \
+    chmod +x /opt/prusaslicer/slicer.sh; \
+    /opt/prusaslicer/slicer.sh --help >/dev/null
+# Declared here, not above: SOURCE_COMMIT changes on every deploy, and an ARG
+# used in an ENV invalidates every later layer that depends on it — declaring
+# it after the apt-get and AppImage-extraction layers keeps those cached
+# across deploys instead of re-running them for a commit hash they don't care
+# about.
+ARG SOURCE_COMMIT=dev
+ENV SLICELY_SOURCE_COMMIT=${SOURCE_COMMIT}
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules

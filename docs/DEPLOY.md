@@ -104,25 +104,24 @@ shared-cpu-2x VM is spending too much CPU on slicing versus everything else.
 
 ## If the slicer needs a display
 
-The Dockerfile's own build-time check already runs PrusaSlicer's `AppRun --help` under
-`xvfb-run -a`, so the image build fails loudly (rather than with a misleading error) if the
-binary can't even start without a display. If slicing itself fails at *runtime* with a
-similar symptom — a crash or hang that only reproduces without a display attached — there is
-no `SLICELY_XVFB` environment flag wired into the code today (`src/main/prusaslicer.ts`
-invokes `PRUSASLICER_PATH` directly). The fix, until that's added, is to give PrusaSlicer a
-virtual display yourself:
+The image bakes in a one-line wrapper, `/opt/prusaslicer/slicer.sh`:
+```sh
+#!/bin/sh
+exec xvfb-run -a /opt/prusaslicer/AppRun "$@"
+```
+`PRUSASLICER_PATH` (set in the Dockerfile) points at that wrapper, not at `AppRun` directly —
+so every invocation, build-time smoke test included, already runs under a virtual display by
+default. There is no `SLICELY_XVFB` environment flag wired into the code (`src/main/prusaslicer.ts`
+invokes whatever `PRUSASLICER_PATH` names directly) — the wrapper is what makes that
+unnecessary, since the display requirement is handled once, in the image, rather than per
+call.
 
-1. Write a one-line wrapper in the image, e.g. `/opt/prusaslicer/run-headless`:
-   ```sh
-   #!/bin/sh
-   exec xvfb-run -a /opt/prusaslicer/AppRun "$@"
-   ```
-2. Point `PRUSASLICER_PATH` at that wrapper instead of `AppRun` directly (`fly.toml`'s
-   `[env]` block, or a `fly secrets set` if you'd rather not commit it).
-
-Only do this if you actually observe the failure — most headless PrusaSlicer CLI usage
-(`--export-gcode` and friends) does not need a display, which is why the Dockerfile doesn't
-wrap the runtime path by default.
+If it turns out PrusaSlicer's CLI usage here (`--export-gcode` and friends) never actually
+needs a display — plausible, since most headless slicing doesn't — spinning up an Xvfb server
+for every slice is pure overhead you can drop. Bypass the wrapper by pointing
+`PRUSASLICER_PATH` straight at the real binary instead, either in `fly.toml`'s `[env]` block
+or with `fly secrets set PRUSASLICER_PATH=/opt/prusaslicer/AppRun`, and confirm a slice still
+succeeds afterward.
 
 ## Not verified locally
 
@@ -135,7 +134,8 @@ and that every environment variable the Dockerfile/`fly.toml` set has a real rea
 `fly deploy` (or a local `docker build` on a machine that has Docker):
 
 - That the image actually builds — the apt package set resolves, the AppImage extracts
-  cleanly, and `xvfb-run -a /opt/prusaslicer/AppRun --help` exits 0 inside the container.
+  cleanly, and `/opt/prusaslicer/slicer.sh --help` (the `xvfb-run -a AppRun` wrapper) exits 0
+  inside the container.
 - That the extracted PrusaSlicer 2.8.1 binary (not 2.9.x — see the Dockerfile's `ARG
   PRUSASLICER_VERSION` comment: PrusaSlicer stopped publishing a Linux AppImage as of
   2.9.0, moving to Flathub instead, so no 2.9.x release has one) actually runs on
