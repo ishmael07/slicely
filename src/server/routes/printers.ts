@@ -36,26 +36,49 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
    * returns undefined.
    */
   async function ownPrinter(req: Request, res: Response): Promise<PrinterConnection | undefined> {
-    const printer = await api!.getPrinter(req.params.id);
+    let printer: PrinterConnection | undefined;
+    try {
+      printer = await api!.getPrinter(req.params.id);
+    } catch (err) {
+      // A rejection here (a driver/registry bug, a disk error) must still
+      // answer with JSON — every one of this helper's callers only checked
+      // this awaited call for a resolved value, not for a rejection, so an
+      // unguarded one became an unhandled promise rejection that could take
+      // the whole process down. See fix round 1 in the D1+D2 report.
+      fail(res, err, "couldn't look up that printer", 500);
+      return undefined;
+    }
     if (printer) return printer;
     res.status(404).json({ error: "No such printer.", code: "not_found" });
     return undefined;
   }
 
-  /** A failure while validating/applying client input. A `WireError` already
-   *  says what the client should be told (status + stable code); anything else
-   *  is a plain validation complaint, with absolute paths scrubbed — no wire
-   *  payload may carry a server path (spec §Error handling). */
+  /** A failure while validating/applying client input, OR any rejection from
+   *  an awaited registry/driver call — every route funnels both through here.
+   *  A `WireError` already says what the client should be told (status +
+   *  stable code); a plain "Printer not found: <id>" (the registry's own
+   *  message, e.g. from a race between this session's own two concurrent
+   *  requests) gets the same 404 an unowned id gets; anything else is a
+   *  generic complaint, with absolute paths scrubbed — no wire payload may
+   *  carry a server path (spec §Error handling). */
   function fail(res: Response, err: unknown, fallback: string, status = 422): void {
     if (err instanceof WireError) {
       sendError(res, err);
+      return;
+    }
+    if (err instanceof Error && /^printer not found/i.test(err.message)) {
+      res.status(404).json({ error: "No such printer.", code: "not_found" });
       return;
     }
     res.status(status).json({ error: stripPaths((err as Error)?.message || fallback) });
   }
 
   router.get("/printers", async (_req: Request, res: Response) => {
-    res.json(await api.listPrinters());
+    try {
+      res.json(await api.listPrinters());
+    } catch (err) {
+      fail(res, err, "list printers failed", 500);
+    }
   });
 
   router.get("/printers/drivers", (_req: Request, res: Response) => {
@@ -63,7 +86,11 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
   });
 
   router.get("/printers/status", async (_req: Request, res: Response) => {
-    res.json(await api.allStatuses());
+    try {
+      res.json(await api.allStatuses());
+    } catch (err) {
+      fail(res, err, "status failed", 500);
+    }
   });
 
   // Order matters: this literal route must be registered before the
@@ -87,15 +114,19 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
 
   router.post("/printers/active", async (req: Request, res: Response) => {
     const id = (req.body ?? {}).id;
-    // Selecting a printer this session doesn't own is the same kind of miss as
-    // addressing one by id — and the façade throws for an unknown id, which
-    // would otherwise surface as a 500.
-    if (typeof id === "string" && !(await api.getPrinter(id))) {
-      res.status(404).json({ error: "No such printer.", code: "not_found" });
-      return;
+    try {
+      // Selecting a printer this session doesn't own is the same kind of miss
+      // as addressing one by id — and the façade throws for an unknown id,
+      // which would otherwise surface as a 500 (or, unguarded, a crash).
+      if (typeof id === "string" && !(await api.getPrinter(id))) {
+        res.status(404).json({ error: "No such printer.", code: "not_found" });
+        return;
+      }
+      await api.setActivePrinter(typeof id === "string" ? id : undefined);
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err, "set active printer failed", 500);
     }
-    await api.setActivePrinter(typeof id === "string" ? id : undefined);
-    res.json({ ok: true });
   });
 
   router.post("/printers", async (req: Request, res: Response) => {
@@ -146,8 +177,12 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
 
   router.delete("/printers/:id", async (req: Request, res: Response) => {
     if (!(await ownPrinter(req, res))) return;
-    await api.removePrinter(req.params.id);
-    res.status(204).end();
+    try {
+      await api.removePrinter(req.params.id);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err, "delete failed", 500);
+    }
   });
 
   router.post("/printers/:id/test", async (req: Request, res: Response) => {
@@ -225,8 +260,12 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     // whole point of the gate is that a human confirmed this bed is clear.
     if (!(await ownPrinter(req, res))) return;
     const armed = (req.body ?? {}).armed === true;
-    await api.setAutoStart(req.params.id, armed);
-    res.json({ ok: true });
+    try {
+      await api.setAutoStart(req.params.id, armed);
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err, "autostart failed", 500);
+    }
   });
 
   return router;

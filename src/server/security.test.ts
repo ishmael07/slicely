@@ -18,6 +18,7 @@ import { createApp, type CreateAppOptions } from "./index";
 import { SessionStore } from "./session";
 import { createPrintersRouter } from "./routes/printers";
 import type { PrintersApi } from "./facades";
+import type { PrinterConnection } from "../shared/printers";
 
 async function listen(app: express.Express): Promise<{ base: string; close: () => Promise<void> }> {
   const server: Server = createServer(app);
@@ -101,6 +102,125 @@ function unusedPrinterApi(): PrintersApi {
     driverLabels: () => [],
   };
 }
+
+// ── A rejecting façade call must answer JSON, never crash (fix round 1) ─────
+// Every `/printers/:id` route awaited `ownPrinter`'s lookup outside any
+// try/catch, and DELETE and the autostart toggle awaited their own write the
+// same way. A rejection there (a disk error, a driver bug) became an
+// unhandled promise rejection with no process-wide handler to catch it — able
+// to take the whole server down over a single failed call. These stand in for
+// "the façade rejected" and check the HTTP response, which is what changed:
+// before the fix, node's own unhandled-rejection handling means the process
+// itself doesn't survive making this same request.
+
+/** A working PrintersApi stub — every method resolves normally, standing in
+ *  for the real façade so exactly one method can be overridden to reject. */
+function okPrinterApi(overrides: Partial<PrintersApi> = {}): PrintersApi {
+  const printer: PrinterConnection = { id: "p1", label: "Test", transport: "octoprint", enabled: true };
+  return {
+    listPrinters: async () => [printer],
+    getPrinter: async (id: string) => (id === printer.id ? printer : undefined),
+    addPrinter: async () => ({ printer, test: { ok: true, message: "ok" } }),
+    updatePrinter: async () => printer,
+    removePrinter: async () => undefined,
+    testPrinter: async () => ({ ok: true, message: "ok" }),
+    allStatuses: async () => [],
+    printerStatus: async () => ({ id: printer.id, state: "idle" as const, observedAt: new Date().toISOString() }),
+    sendToPrinter: async () => ({ ok: true, started: false, message: "ok" }),
+    controlPrinter: async () => ({ ok: true, started: false, message: "ok" }),
+    discoverPrinters: async () => [],
+    setActivePrinter: async () => undefined,
+    setAutoStart: async () => undefined,
+    driverLabels: () => [],
+    ...overrides,
+  };
+}
+
+async function expectJsonErrorNotCrash(app: express.Express, path: string, init?: RequestInit): Promise<void> {
+  const { base, close } = await listen(app);
+  try {
+    const resp = await fetch(`${base}${path}`, init);
+    assert.ok(resp.status >= 400, `expected an error status for ${path}, got ${resp.status}`);
+    const body = (await resp.json()) as { error?: string };
+    assert.ok(body.error, "a JSON error body, not a dropped connection");
+  } finally {
+    await close();
+  }
+}
+
+test("a rejecting removePrinter on DELETE answers JSON, not a crash", async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api",
+    createPrintersRouter(
+      okPrinterApi({
+        removePrinter: async () => {
+          throw new Error("disk exploded");
+        },
+      }),
+    ),
+  );
+  await expectJsonErrorNotCrash(app, "/api/printers/p1", { method: "DELETE" });
+});
+
+test("a rejecting setAutoStart on the autostart toggle answers JSON, not a crash", async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api",
+    createPrintersRouter(
+      okPrinterApi({
+        setAutoStart: async () => {
+          throw new Error("disk exploded");
+        },
+      }),
+    ),
+  );
+  await expectJsonErrorNotCrash(app, "/api/printers/p1/autostart", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ armed: true }),
+  });
+});
+
+test("a rejecting getPrinter lookup answers JSON on a :id route, not a crash", async () => {
+  // getPrinter backs ownPrinter, the guard shared by every "/printers/:id"
+  // route (PATCH here stands in for all seven).
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api",
+    createPrintersRouter(
+      okPrinterApi({
+        getPrinter: async () => {
+          throw new Error("registry read failed");
+        },
+      }),
+    ),
+  );
+  await expectJsonErrorNotCrash(app, "/api/printers/p1", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label: "x" }),
+  });
+});
+
+test("a rejecting listPrinters on the plain listing answers JSON, not a crash", async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api",
+    createPrintersRouter(
+      okPrinterApi({
+        listPrinters: async () => {
+          throw new Error("disk exploded");
+        },
+      }),
+    ),
+  );
+  await expectJsonErrorNotCrash(app, "/api/printers");
+});
 
 test("SLICELY_MODE=hosted disables LAN discovery without ever calling the façade", async () => {
   const app = express();

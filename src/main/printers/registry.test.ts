@@ -4,19 +4,20 @@
 // the test hermetic — it never touches the real user's ~/Slicely — and each
 // test file is its own `node --test` worker process, so this doesn't leak
 // into other test files.
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
-process.env.SLICELY_WORKDIR = mkdtempSync(join(tmpdir(), "slicely-registry-test-"));
+const WORKDIR = mkdtempSync(join(tmpdir(), "slicely-registry-test-"));
+process.env.SLICELY_WORKDIR = WORKDIR;
 // Printer credentials are encrypted at rest, so the vault needs a master key.
 // Hosted mode takes it from the environment (desktop mode would write one into
 // the workdir), which is the posture a public deploy runs in.
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import * as registry from "./registry";
 import { resetKeyVaultForTests } from "../keyvault";
@@ -30,6 +31,16 @@ const DIR_T = mkdtempSync(join(tmpdir(), "slicely-registry-t-"));
 function inT<T>(fn: () => T): T {
   return runInSession(sessionContext("t", DIR_T), fn);
 }
+
+// Every mkdtempSync call in this file is a REAL directory under $TMPDIR. Left
+// alone, a few hundred survived across repeated test runs and helped fill the
+// disk (fix round 1, task D1+D2) — these two are created once for the whole
+// file, so they are removed once here; each test below that makes its own
+// removes it in a finally.
+after(() => {
+  rmSync(WORKDIR, { recursive: true, force: true });
+  rmSync(DIR_T, { recursive: true, force: true });
+});
 
 test("addConnection / listConnections round-trip with secrets stripped from the public listing", () => {
   inT(() => {
@@ -131,68 +142,76 @@ test("setActiveId and setAutoStart reject unknown printer ids", () => {
 test("one registry per session: a second visitor sees none of the first's printers", () => {
   const dirA = mkdtempSync(join(tmpdir(), "slicely-registry-a-"));
   const dirB = mkdtempSync(join(tmpdir(), "slicely-registry-b-"));
-
-  const idA = runInSession(sessionContext("A", dirA), () => {
-    const created = registry.addConnection({
-      label: "A's MK4",
-      transport: "prusalink",
-      host: "10.0.0.60",
-      apiKey: "k-A",
+  try {
+    const idA = runInSession(sessionContext("A", dirA), () => {
+      const created = registry.addConnection({
+        label: "A's MK4",
+        transport: "prusalink",
+        host: "10.0.0.60",
+        apiKey: "k-A",
+      });
+      assert.equal(registry.listConnections().length, 1);
+      return created.id;
     });
-    assert.equal(registry.listConnections().length, 1);
-    return created.id;
-  });
 
-  runInSession(sessionContext("B", dirB), () => {
-    assert.deepEqual(registry.listConnections(), [], "B's registry is its own, and empty");
-    assert.equal(registry.getConnection(idA), undefined);
-    assert.throws(() => registry.resolve(idA), /not found/i);
-    assert.throws(() => registry.updateConnection(idA, { label: "pwned" }), /not found/i);
-    assert.throws(() => registry.setAutoStart(idA, true), /not found/i);
-    assert.throws(() => registry.setActiveId(idA), /not found/i);
-  });
+    runInSession(sessionContext("B", dirB), () => {
+      assert.deepEqual(registry.listConnections(), [], "B's registry is its own, and empty");
+      assert.equal(registry.getConnection(idA), undefined);
+      assert.throws(() => registry.resolve(idA), /not found/i);
+      assert.throws(() => registry.updateConnection(idA, { label: "pwned" }), /not found/i);
+      assert.throws(() => registry.setAutoStart(idA, true), /not found/i);
+      assert.throws(() => registry.setActiveId(idA), /not found/i);
+    });
 
-  const onDisk = readFileSync(join(dirA, "printer-secrets.json"), "utf8");
-  assert.ok(!onDisk.includes("k-A"), "a printer credential must never hit disk in plaintext");
-  assert.match(onDisk, /"version": 2/);
+    const onDisk = readFileSync(join(dirA, "printer-secrets.json"), "utf8");
+    assert.ok(!onDisk.includes("k-A"), "a printer credential must never hit disk in plaintext");
+    assert.match(onDisk, /"version": 2/);
 
-  // Dropping the cache (what a swept/destroyed session does) must not lose the
-  // printer — the file on disk is still the truth.
-  registry.disposeSessionPrinters("A");
-  runInSession(sessionContext("A", dirA), () => {
-    const listed = registry.listConnections();
-    assert.equal(listed.length, 1, "re-read from disk after the cache was dropped");
-    assert.equal(listed[0].label, "A's MK4");
-    assert.equal(listed[0].autoStart, false);
-    assert.equal(registry.resolve(idA).apiKey, "k-A", "and the secret still decrypts");
-  });
+    // Dropping the cache (what a swept/destroyed session does) must not lose
+    // the printer — the file on disk is still the truth.
+    registry.disposeSessionPrinters("A");
+    runInSession(sessionContext("A", dirA), () => {
+      const listed = registry.listConnections();
+      assert.equal(listed.length, 1, "re-read from disk after the cache was dropped");
+      assert.equal(listed[0].label, "A's MK4");
+      assert.equal(listed[0].autoStart, false);
+      assert.equal(registry.resolve(idA).apiKey, "k-A", "and the secret still decrypts");
+    });
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
 });
 
 test("a legacy plaintext printer-secrets.json is read once and rewritten encrypted", () => {
   const dir = mkdtempSync(join(tmpdir(), "slicely-registry-v1-"));
-  writeFileSync(
-    join(dir, "printers.json"),
-    JSON.stringify({
-      version: 1,
-      printers: [{ id: "p1", label: "Old Timer", transport: "octoprint", host: "10.0.0.61", enabled: true }],
-      autoStart: [],
-    }),
-  );
-  // v1 format: a bare map of printer id -> plaintext PrinterSecrets.
-  writeFileSync(join(dir, "printer-secrets.json"), JSON.stringify({ p1: { apiKey: "legacy-key" } }));
+  try {
+    writeFileSync(
+      join(dir, "printers.json"),
+      JSON.stringify({
+        version: 1,
+        printers: [{ id: "p1", label: "Old Timer", transport: "octoprint", host: "10.0.0.61", enabled: true }],
+        autoStart: [],
+      }),
+    );
+    // v1 format: a bare map of printer id -> plaintext PrinterSecrets.
+    writeFileSync(join(dir, "printer-secrets.json"), JSON.stringify({ p1: { apiKey: "legacy-key" } }));
 
-  runInSession(sessionContext("L", dir), () => {
-    assert.equal(registry.resolve("p1").apiKey, "legacy-key", "a v1 file is still readable");
-  });
+    runInSession(sessionContext("L", dir), () => {
+      assert.equal(registry.resolve("p1").apiKey, "legacy-key", "a v1 file is still readable");
+    });
 
-  const onDisk = readFileSync(join(dir, "printer-secrets.json"), "utf8");
-  assert.ok(!onDisk.includes("legacy-key"), "and is rewritten as ciphertext on first read");
-  assert.match(onDisk, /"version": 2/);
+    const onDisk = readFileSync(join(dir, "printer-secrets.json"), "utf8");
+    assert.ok(!onDisk.includes("legacy-key"), "and is rewritten as ciphertext on first read");
+    assert.match(onDisk, /"version": 2/);
 
-  registry.disposeSessionPrinters("L");
-  runInSession(sessionContext("L", dir), () => {
-    assert.equal(registry.resolve("p1").apiKey, "legacy-key", "the rewritten file decrypts back");
-  });
+    registry.disposeSessionPrinters("L");
+    runInSession(sessionContext("L", dir), () => {
+      assert.equal(registry.resolve("p1").apiKey, "legacy-key", "the rewritten file decrypts back");
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("autoStart is reported from the arming list, and a patch can't fake it", () => {
@@ -201,18 +220,22 @@ test("autoStart is reported from the arming list, and a patch can't fake it", ()
   // connection record, the listing would claim "armed" for a printer that
   // isn't (or worse, the reverse) — so it is always derived, never stored.
   const dir = mkdtempSync(join(tmpdir(), "slicely-registry-arm-"));
-  runInSession(sessionContext("S", dir), () => {
-    const created = registry.addConnection({ label: "Arm Me", transport: "octoprint", host: "10.0.0.62" });
-    assert.equal(registry.listConnections()[0].autoStart, false);
+  try {
+    runInSession(sessionContext("S", dir), () => {
+      const created = registry.addConnection({ label: "Arm Me", transport: "octoprint", host: "10.0.0.62" });
+      assert.equal(registry.listConnections()[0].autoStart, false);
 
-    registry.updateConnection(created.id, { autoStart: true });
-    assert.equal(registry.isAutoStartArmed(created.id), false, "a patch must not arm auto-start");
-    assert.equal(registry.listConnections()[0].autoStart, false);
+      registry.updateConnection(created.id, { autoStart: true });
+      assert.equal(registry.isAutoStartArmed(created.id), false, "a patch must not arm auto-start");
+      assert.equal(registry.listConnections()[0].autoStart, false);
 
-    registry.setAutoStart(created.id, true);
-    assert.equal(registry.listConnections()[0].autoStart, true);
-    assert.equal(registry.getConnection(created.id)?.autoStart, true);
-  });
+      registry.setAutoStart(created.id, true);
+      assert.equal(registry.listConnections()[0].autoStart, true);
+      assert.equal(registry.getConnection(created.id)?.autoStart, true);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // NOTE: registry.ts's tolerate-a-corrupt-file behavior (readJsonSafe's

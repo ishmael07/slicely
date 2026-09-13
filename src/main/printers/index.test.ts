@@ -5,19 +5,27 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
-process.env.SLICELY_WORKDIR = mkdtempSync(join(tmpdir(), "slicely-index-test-"));
+const WORKDIR = mkdtempSync(join(tmpdir(), "slicely-index-test-"));
+process.env.SLICELY_WORKDIR = WORKDIR;
 // The registry encrypts printer credentials at rest, so the vault needs a
 // master key — hosted mode reads one from the environment.
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import * as printers from "./index";
 import { resetKeyVaultForTests } from "../keyvault";
 import { WireError } from "../../server/errors";
 
 resetKeyVaultForTests();
+
+// Created once for the whole file (see the note at the top) — removed once
+// here rather than per test. Left alone, one of these survived every run of
+// this file and helped fill the disk (fix round 1, task D1+D2).
+after(() => {
+  rmSync(WORKDIR, { recursive: true, force: true });
+});
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
