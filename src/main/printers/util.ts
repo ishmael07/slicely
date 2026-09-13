@@ -4,6 +4,7 @@
 // Electron main process and the headless web server, so nothing here may
 // import "electron".
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { isHosted } from "../mode";
@@ -129,24 +130,36 @@ export function safeJobName(name: string | undefined, fallback: string): string 
   return base;
 }
 
+/** Where macOS mounts every disk that isn't the boot volume — external SSDs,
+ *  disk images, and (the point of this rule) SD cards. It is the ONE place
+ *  outside `$HOME` a person can plausibly mean by "save my prints here": the
+ *  transport's own label is "Folder / SD card", and a card reader mounts
+ *  exactly here, never under a user's home. */
+const VOLUMES_ROOT = `${sep}Volumes`;
+
 /**
  * Assert that `dir` is somewhere a person could plausibly have chosen to save a
  * G-code file, and return it resolved.
  *
- * Three rules, in order:
- *
  *  1. HOSTED MODE HAS NO FOLDERS. On a shared server the "folder" is the
  *     server's own disk, which the visitor cannot see and does not own, so the
  *     whole transport is refused with a message that points at the Mac app.
- *  2. ABSOLUTE, AND INSIDE THE USER'S HOME. A relative path would resolve
- *     against whatever cwd the process happens to have; anything outside
- *     `homedir()` (`/etc`, `/usr/local/bin`, another account's home) is not a
- *     place a person means when they pick "save my prints here".
- *  3. NO DOT SEGMENTS. `~/.ssh`, `~/.config`, `~/.aws` and friends hold the
- *     credentials and configuration that make a home directory dangerous to
- *     write into. Excluding every dot-prefixed segment costs the user nothing
- *     (nobody keeps their prints in a hidden folder) and removes the entire
- *     class at once.
+ *  2. ABSOLUTE, AND SOMEWHERE A PERSON COULD MEAN. A relative path would
+ *     resolve against whatever cwd the process happens to have. What's left
+ *     is either inside `homedir()` (Desktop, Documents, …) or under
+ *     `/Volumes` (a mounted drive) — anything else (`/etc`,
+ *     `/usr/local/bin`, another account's home) is refused.
+ *  3. NO DOT SEGMENTS. `~/.ssh`, `~/.config`, `~/.aws` — and, on a mounted
+ *     volume, `.Trashes`, `.fseventsd` — hold credentials, app config, or
+ *     filesystem bookkeeping that make writing into them dangerous. Excluding
+ *     every dot-prefixed segment costs the user nothing (nobody keeps their
+ *     prints in a hidden folder) and removes the entire class at once.
+ *  4. A MOUNTED VOLUME MUST ACTUALLY BE THERE. `$HOME` gets its safety from
+ *     containment; `/Volumes` has no such property (anything could be
+ *     mounted, or unmounted, at any name), so a real, currently-existing
+ *     directory stands in for it instead. An SD card that was removed (or a
+ *     path for one that was never inserted) resolves to nothing, same as
+ *     picking a folder that was never there.
  */
 export function assertAllowedOutputDir(dir: string): string {
   if (isHosted()) {
@@ -159,15 +172,37 @@ export function assertAllowedOutputDir(dir: string): string {
   const home = resolvePath(homedir());
   const target = resolvePath(dir);
   const rel = relative(home, target);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    throw new WireError(403, "Pick a folder inside your home folder.", "not_in_workspace");
+  const insideHome = !rel.startsWith("..") && !isAbsolute(rel);
+  const insideVolumes = target.startsWith(`${VOLUMES_ROOT}${sep}`);
+
+  if (!insideHome && !insideVolumes) {
+    throw new WireError(
+      403,
+      "Pick a folder inside your home folder, or on a mounted drive under /Volumes.",
+      "not_in_workspace",
+    );
   }
-  if (rel.split(sep).some((segment) => segment.startsWith("."))) {
+
+  const relSegments = (insideHome ? rel : relative(VOLUMES_ROOT, target)).split(sep);
+  if (relSegments.some((segment) => segment.startsWith("."))) {
     throw new WireError(
       403,
       "That's a hidden system folder. Pick somewhere like your Desktop or a folder in Documents.",
       "not_in_workspace",
     );
   }
+
+  if (insideVolumes) {
+    let isDir = false;
+    try {
+      isDir = statSync(target).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      throw new WireError(403, "That drive isn't connected. Plug it in and try again.", "not_in_workspace");
+    }
+  }
+
   return target;
 }

@@ -9,11 +9,12 @@
 // This is the one driver that writes to the machine Slicely runs on, so it is
 // the one driver where a caller-supplied string is a filesystem capability.
 // `outputDir` goes through `assertAllowedOutputDir` (desktop only, inside the
-// user's home, no hidden folders) and the filename through `safeJobName` (a
-// basename with a printable extension) — see printers/util.ts for why each
-// rule exists. The façade validates both when a printer is saved and when a
-// job is sent; re-checking here means a record written by an older version, or
-// a caller that bypasses the façade, still cannot escape.
+// user's home or on a mounted drive under /Volumes, no hidden folders) and the
+// filename through `safeJobName` (a basename with a printable extension) —
+// see printers/util.ts for why each rule exists. The façade validates both
+// when a printer is saved and when a job is sent; re-checking here means a
+// record written by an older version, or a caller that bypasses the façade,
+// still cannot escape.
 import { copyFile, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { getConfig } from "../../config";

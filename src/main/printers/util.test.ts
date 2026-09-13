@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { normalizeColourHex, describeError, safeJobName, assertAllowedOutputDir } from "./util";
@@ -122,5 +123,59 @@ test("assertAllowedOutputDir refuses dot-directories and anything outside home",
     ]) {
       assert.throws(() => assertAllowedOutputDir(dir), WireError, `must refuse ${dir}`);
     }
+  });
+});
+
+// ── /Volumes: the "Folder / SD card" transport's other real use ─────────────
+// A card reader mounts outside $HOME, so it needs its own allowance — see the
+// function's doc comment. These tests must not depend on any actual USB stick
+// or SD card being plugged into the machine running them.
+
+test("assertAllowedOutputDir rejects a traversal that resolves outside /Volumes", () => {
+  // Pure path-string case: path.resolve collapses the ".." before this
+  // function ever touches the filesystem, so "/Volumes/../etc" is refused as
+  // plain "/etc" — outside both $HOME and /Volumes — with today's usual code,
+  // never treated as an escaped-but-real volume path.
+  inMode("desktop", () => {
+    assert.throws(
+      () => assertAllowedOutputDir("/Volumes/../etc"),
+      (err: unknown) => {
+        assert.ok(err instanceof WireError);
+        assert.equal(err.status, 403);
+        assert.equal(err.code, "not_in_workspace");
+        return true;
+      },
+    );
+  });
+});
+
+test("assertAllowedOutputDir rejects a /Volumes path with nothing mounted there", () => {
+  inMode("desktop", () => {
+    assert.throws(
+      () => assertAllowedOutputDir("/Volumes/slicely-test-definitely-not-mounted"),
+      (err: unknown) => {
+        assert.ok(err instanceof WireError);
+        assert.equal(err.code, "not_in_workspace");
+        return true;
+      },
+      "a path under /Volumes that doesn't resolve to a real directory must still be refused",
+    );
+  });
+});
+
+test("assertAllowedOutputDir accepts a real directory under /Volumes", () => {
+  // The check only asks "does this resolve to a directory that exists right
+  // now" (see the function's doc comment, point 4) — it does not, and cannot
+  // without touching real hardware, verify that the entry is REMOVABLE media
+  // rather than some other mount. Every Mac has at least one entry here (its
+  // own boot disk), so this exercises the exact same code path a real SD card
+  // would, without requiring one to be plugged in. If the check is ever
+  // changed to call realpathSync and re-validate the target, this test (which
+  // does not) will need to change with it.
+  inMode("desktop", () => {
+    const mounted = readdirSync("/Volumes").filter((name) => !name.startsWith("."));
+    assert.ok(mounted.length > 0, "expected at least the boot disk under /Volumes");
+    const target = join("/Volumes", mounted[0]);
+    assert.equal(assertAllowedOutputDir(target), target);
   });
 });
