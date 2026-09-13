@@ -53,10 +53,12 @@ function tooLarge(): WireError {
 }
 
 /** `<session>/scratch` — where multer streams the raw multipart bytes before
- *  anything has been validated. Created on demand; the files are moved into
- *  `<session>/uploads` (or deleted) before the response. */
+ *  anything has been validated. The files are moved into `<session>/uploads`
+ *  (or deleted) before the response; whatever an interrupted request abandons
+ *  there is aged out by session.ts's file sweep, which covers `scratchDir`
+ *  exactly like the other scratch directories. */
 function scratchDirFor(req: Request): string {
-  const dir = join(req.session!.dir, "scratch");
+  const dir = req.session!.scratchDir;
   mkdirSync(dir, { recursive: true });
   return dir;
 }

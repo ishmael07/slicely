@@ -14,6 +14,8 @@ import { noLimit, type RouteLimitOptions } from "../security";
 import type { JobsApi, PlanJobPartInput } from "../facades";
 import type { JobEvent, JobPlanOptions } from "../../shared/jobs";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "../session";
+import { toWire } from "../errors";
+import { withSliceQueueLimit, REST_SLICE_QUEUE_MS } from "../../main/prusaslicer";
 
 export function createJobsRouter(
   api: JobsApi | undefined = loadJobsApi(),
@@ -110,15 +112,24 @@ export function createJobsRouter(
       // onEvent, which the chain above relocates and writes. Writing another
       // one here sent two job_done frames per run, the second carrying
       // un-relocated paths. Just await the chain and let that event stand.
-      await api.runJob(req.params.id, onEvent);
+      // The other REST entry point into the slicer (main/jobs/runner.ts calls
+      // prusaslicer.slice per plate) — same bounded queue wait as /api/slice.
+      await withSliceQueueLimit(REST_SLICE_QUEUE_MS, () =>
+        api.runJob(req.params.id, onEvent),
+      );
       await chain;
     } catch (err) {
       await chain.catch(() => undefined);
+      // Headers are long gone, so `sendError` can't answer here — but the frame
+      // still has to carry the SAME vetted text a status code would have, not a
+      // raw `err.message` full of absolute slicer paths.
+      const { body } = toWire(err);
       res.write(
         `data: ${JSON.stringify({
           type: "job_failed",
           jobId: req.params.id,
-          error: (err as Error).message ?? String(err),
+          error: body.error,
+          code: body.code,
         })}\n\n`,
       );
     } finally {

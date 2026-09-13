@@ -14,6 +14,24 @@
 // jump in. First come, first sliced.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** `acquire(timeoutMs)` gave up before a permit came free. Deliberately NOT a
+ *  wire error: the semaphore knows nothing about HTTP, and its two callers want
+ *  different answers (a REST visitor gets 503 `slicer_busy`; the desktop app
+ *  keeps waiting and never passes a timeout at all). */
+export class SemaphoreTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Timed out after ${timeoutMs}ms waiting for a permit`);
+    this.name = "SemaphoreTimeoutError";
+  }
+}
+
+/** One queued caller. Cancelled entries are left for `release` to skip rather
+ *  than being handed a permit nobody is waiting for any more. */
+interface Waiter {
+  wake: () => void;
+  cancelled: boolean;
+}
+
 export class Semaphore {
   /** How many permits exist. At least 1 — a size of 0 would deadlock every
    *  caller forever, which is never what a misconfigured env var should buy. */
@@ -23,7 +41,7 @@ export class Semaphore {
   private held = 0;
 
   /** Callers queued for a permit, oldest first. */
-  private queue: Array<() => void> = [];
+  private queue: Waiter[] = [];
 
   constructor(size: number) {
     this.size = Number.isFinite(size) && size >= 1 ? Math.floor(size) : 1;
@@ -41,14 +59,45 @@ export class Semaphore {
    *
    * A free permit is claimed SYNCHRONOUSLY (before the returned promise is even
    * awaited) so two callers in the same tick can't both see the last one.
+   *
+   * With `timeoutMs`, a caller that has waited that long stops waiting and the
+   * promise rejects with `SemaphoreTimeoutError`. Waiting forever is the right
+   * default for a desktop app and the wrong one for an HTTP request, which has
+   * a browser and a proxy on the other end that will each give up on their own
+   * schedule and leave the work queued behind a connection nobody is reading.
    */
-  acquire(): Promise<() => void> {
+  acquire(timeoutMs?: number): Promise<() => void> {
     if (this.held < this.size) {
       this.held++;
       return Promise.resolve(this.releaser());
     }
-    return new Promise<() => void>((resolve) => {
-      this.queue.push(() => resolve(this.releaser()));
+    const bounded = typeof timeoutMs === "number" && Number.isFinite(timeoutMs);
+    if (bounded && timeoutMs! <= 0) {
+      return Promise.reject(new SemaphoreTimeoutError(timeoutMs!));
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: Waiter = { cancelled: false, wake: () => {} };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      waiter.wake = () => {
+        if (timer) clearTimeout(timer);
+        resolve(this.releaser());
+      };
+      this.queue.push(waiter);
+      if (!bounded) return;
+      timer = setTimeout(() => {
+        // Leave the queue: a cancelled waiter still in it would be handed the
+        // next permit by `release`, which would then be held by nobody and
+        // never given back — the queue would wedge one permit at a time.
+        waiter.cancelled = true;
+        const at = this.queue.indexOf(waiter);
+        if (at >= 0) this.queue.splice(at, 1);
+        reject(new SemaphoreTimeoutError(timeoutMs!));
+      }, timeoutMs!);
+      // Deliberately NOT unref'd. The timer is the only thing that can settle
+      // this promise, so letting the event loop drain out from under it would
+      // leave a caller awaiting a result that can never arrive — a worse trade
+      // than a timer that keeps the loop alive for at most `timeoutMs`, and it
+      // is cleared the moment a permit arrives.
     });
   }
 
@@ -59,11 +108,14 @@ export class Semaphore {
     return () => {
       if (spent) return;
       spent = true;
-      const next = this.queue.shift();
+      // Skip anyone who timed out while queued: handing them the permit would
+      // retire it for good.
+      let next = this.queue.shift();
+      while (next?.cancelled) next = this.queue.shift();
       if (next) {
         // Hand the permit straight to the next in line — never drop `held` in
         // between, or a caller arriving in this tick would slip past the queue.
-        next();
+        next.wake();
         return;
       }
       this.held--;

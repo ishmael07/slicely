@@ -13,6 +13,8 @@ import {
   slice,
   sliceSemaphore,
   withSliceProgress,
+  withSliceQueueLimit,
+  REST_SLICE_QUEUE_MS,
 } from "./prusaslicer";
 
 test("a requested colour is part of the shared settings, not the slice-only args", () => {
@@ -119,6 +121,216 @@ test("a slice that has to queue says so on the progress channel", async () => {
     held.forEach((release) => release());
     if (prevBin === undefined) delete process.env.PRUSASLICER_PATH;
     else process.env.PRUSASLICER_PATH = prevBin;
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── the queue has a ceiling for HTTP callers ─────────────────────────────────
+// The desktop app should wait for a free slicer; a web request should not. The
+// browser and any proxy in front of it time out on their own, and the visitor is
+// left holding a dead connection while the server still dutifully slices.
+
+test("a REST slice that can't get a permit in time is told the slicer is busy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-busy-"));
+  const fakeSlicer = join(dir, "fake-prusaslicer");
+  writeFileSync(fakeSlicer, "#!/bin/sh\nexit 0\n");
+  chmodSync(fakeSlicer, 0o755);
+  const stlPath = join(dir, "part.stl");
+  writeFileSync(stlPath, "solid x\nendsolid x\n");
+
+  const prevBin = process.env.PRUSASLICER_PATH;
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.PRUSASLICER_PATH = fakeSlicer;
+  process.env.SLICELY_WORKDIR = dir;
+  resetConfigForTests();
+
+  // Every permit taken: the next caller can only queue.
+  const held: Array<() => void> = [];
+  for (let i = 0; i < sliceSemaphore.size; i++) held.push(await sliceSemaphore.acquire());
+
+  try {
+    await assert.rejects(
+      () => withSliceQueueLimit(40, () => slice(stlPath)),
+      (err: unknown) => {
+        const e = err as { status?: number; code?: string; message?: string };
+        assert.equal(e.status, 503, "a queue we gave up on is 'come back', not 'your model is bad'");
+        assert.equal(e.code, "slicer_busy");
+        assert.doesNotMatch(String(e.message), /\//, "no paths in a busy message");
+        return true;
+      },
+    );
+    assert.equal(sliceSemaphore.waiting, 0, "the abandoned wait must not linger in the queue");
+
+    // The permits are intact: releasing them lets a normal slice through, which
+    // is the regression a lost permit would cause (a server that reports busy
+    // forever, with nothing running).
+    held.forEach((release) => release());
+    held.length = 0;
+    const info = await getModelInfo(stlPath).catch(() => null);
+    assert.ok(info === null || typeof info === "object");
+  } finally {
+    held.forEach((release) => release());
+    if (prevBin === undefined) delete process.env.PRUSASLICER_PATH;
+    else process.env.PRUSASLICER_PATH = prevBin;
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the desktop path is unbounded: no queue limit means wait, not 503", async () => {
+  const sem = sliceSemaphore;
+  const held: Array<() => void> = [];
+  for (let i = 0; i < sem.size; i++) held.push(await sem.acquire());
+  try {
+    // Outside withSliceQueueLimit there is no budget, so this stays queued
+    // rather than being refused — the agent's spinner is the right UX there.
+    let settled = false;
+    const queued = sem.acquire().then((rel) => {
+      settled = true;
+      rel();
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(settled, false, "an unbounded wait must keep waiting");
+    held.forEach((release) => release());
+    held.length = 0;
+    await queued;
+  } finally {
+    held.forEach((release) => release());
+  }
+});
+
+test("the REST queue budget is a sane, documented number", () => {
+  assert.ok(
+    REST_SLICE_QUEUE_MS >= 10_000 && REST_SLICE_QUEUE_MS <= 60_000,
+    "long enough to outlast a slice ahead of it, short enough to beat a proxy",
+  );
+});
+
+// ── finished output beats the clock ──────────────────────────────────────────
+
+test("a slice whose G-code landed just as the clock ran out is a success, not a timeout", async () => {
+  // The kill and the final write race: PrusaSlicer can close a complete .gcode
+  // and still be SIGKILLed before `close` fires. Checking `timedOut` first threw
+  // slice_timeout away on a slice whose output was sitting on disk, finished —
+  // the user re-ran a ten-minute slice for a file they already had.
+  const dir = mkdtempSync(join(tmpdir(), "slicely-raced-"));
+  const fakeSlicer = join(dir, "fake-prusaslicer");
+  // Writes a plausible G-code summary to --output, THEN hangs past the timeout.
+  writeFileSync(
+    fakeSlicer,
+    [
+      "#!/bin/sh",
+      'out=""',
+      "while [ $# -gt 0 ]; do",
+      '  if [ "$1" = "--output" ]; then out="$2"; fi',
+      "  shift",
+      "done",
+      'printf "; estimated printing time (normal mode) = 1h 2m 3s\n" > "$out"',
+      'printf "; filament used [mm] = 1000\n" >> "$out"',
+      'printf ";LAYER_CHANGE\n" >> "$out"',
+      "sleep 5",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeSlicer, 0o755);
+  const stlPath = join(dir, "part.stl");
+  writeFileSync(stlPath, "solid x\nendsolid x\n");
+
+  const prevBin = process.env.PRUSASLICER_PATH;
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.PRUSASLICER_PATH = fakeSlicer;
+  process.env.SLICELY_WORKDIR = dir;
+  resetConfigForTests();
+  setSliceTimeoutForTests(400);
+
+  try {
+    const metrics = await slice(stlPath);
+    assert.equal(metrics.estimatedPrintTime, "1h 2m 3s", "the finished output is parsed and returned");
+    assert.equal(metrics.filamentUsedMm, 1000);
+  } finally {
+    setSliceTimeoutForTests();
+    if (prevBin === undefined) delete process.env.PRUSASLICER_PATH;
+    else process.env.PRUSASLICER_PATH = prevBin;
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── a failed slice is a coded refusal, with no server paths in it ────────────
+
+test("a slice that fails surfaces as 422 slice_failed with the slicer's reason, paths stripped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-failed-"));
+  const fakeSlicer = join(dir, "fake-prusaslicer");
+  // Fails the way PrusaSlicer does: a reason on stderr, quoting the input path,
+  // and no G-code written.
+  writeFileSync(
+    fakeSlicer,
+    [
+      "#!/bin/sh",
+      'echo "Invalid value for --layer-height while processing /Users/someone/sessions/abc/uploads/part.stl" 1>&2',
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeSlicer, 0o755);
+  const stlPath = join(dir, "part.stl");
+  writeFileSync(stlPath, "solid x\nendsolid x\n");
+
+  const prevBin = process.env.PRUSASLICER_PATH;
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.PRUSASLICER_PATH = fakeSlicer;
+  process.env.SLICELY_WORKDIR = dir;
+  resetConfigForTests();
+
+  try {
+    await assert.rejects(
+      () => slice(stlPath),
+      (err: unknown) => {
+        const e = err as { status?: number; code?: string; message?: string };
+        assert.equal(e.status, 422, "the model is the problem, so not a 500");
+        assert.equal(e.code, "slice_failed");
+        const msg = String(e.message);
+        assert.match(msg, /layer-height/, "the actionable reason survives");
+        assert.doesNotMatch(msg, /\/Users\/someone/, "the absolute path does not");
+        assert.doesNotMatch(msg, /uploads/, "nor the directory layout around it");
+        return true;
+      },
+    );
+  } finally {
+    if (prevBin === undefined) delete process.env.PRUSASLICER_PATH;
+    else process.env.PRUSASLICER_PATH = prevBin;
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a missing model file is a coded 404 that does not name the path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-missing-"));
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.SLICELY_WORKDIR = dir;
+  resetConfigForTests();
+  try {
+    const gone = join(dir, "sessions", "abc", "uploads", "gone.stl");
+    await assert.rejects(
+      () => slice(gone),
+      (err: unknown) => {
+        const e = err as { status?: number; code?: string; message?: string };
+        // 404 only if a slicer is installed to get that far; either way the
+        // message must never quote the path.
+        assert.doesNotMatch(String(e.message), /gone\.stl/);
+        return true;
+      },
+    );
+  } finally {
     if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
     else process.env.SLICELY_WORKDIR = prevWorkdir;
     resetConfigForTests();

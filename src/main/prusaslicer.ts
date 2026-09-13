@@ -35,8 +35,8 @@ import { packPlates, type PlatePart } from "./plates";
 import { getConfig } from "./config";
 import { sessionSlicesDir } from "./session-context";
 import { ensureBackgroundProcessing } from "./profiles";
-import { Semaphore } from "./semaphore";
-import { WireError } from "../server/errors";
+import { Semaphore, SemaphoreTimeoutError } from "./semaphore";
+import { WireError, stripPaths } from "../server/errors";
 
 const APP_NAME = "PrusaSlicer";
 /** macOS LaunchServices bundle id for PrusaSlicer (used by lsappinfo). */
@@ -92,10 +92,38 @@ export function withSliceProgress<T>(
   return progressStore.run(report, work);
 }
 
+/**
+ * How long THIS call may sit in the slicer queue, or undefined for "forever".
+ *
+ * Scoped rather than global because the two callers genuinely differ. The
+ * desktop app and the chat agent should wait: the user is watching a spinner
+ * that says "waiting for a free slicer", and a slice that starts in ninety
+ * seconds is what they want. An HTTP request should not: the browser and any
+ * proxy in front of it will time out on their own, and the visitor is left
+ * holding a dead connection while the server still dutifully slices for nobody.
+ */
+const queueLimitStore = new AsyncLocalStorage<number>();
+
+/** How long a REST slice request waits for a free slicer before it's told the
+ *  server is busy. Long enough to outlast a normal slice ahead of it, short
+ *  enough to beat the proxy and browser idle timeouts that would otherwise
+ *  decide this for us. */
+export const REST_SLICE_QUEUE_MS = 45_000;
+
+/**
+ * Run `work` with a ceiling on how long any slice inside it may WAIT for a
+ * permit (the slice's own runtime is bounded separately, by `sliceTimeoutMs`).
+ * Exceeding it raises a 503 `slicer_busy`, which is a retryable answer rather
+ * than a stalled request.
+ */
+export function withSliceQueueLimit<T>(timeoutMs: number, work: () => Promise<T>): Promise<T> {
+  return queueLimitStore.run(timeoutMs, work);
+}
+
 /** Take a slice permit, saying so if we have to queue for it. */
 async function acquireSlicePermit(): Promise<() => void> {
   const queuedBefore = sliceSemaphore.waiting;
-  const permit = sliceSemaphore.acquire();
+  const permit = sliceSemaphore.acquire(queueLimitStore.getStore());
   // `acquire()` takes a free permit synchronously, so a grown queue is the
   // signal that this caller is the one now waiting. `waiting` counts us, which
   // is also exactly how many runs must finish before ours starts.
@@ -105,7 +133,18 @@ async function acquireSlicePermit(): Promise<() => void> {
       `Waiting for a free slicer (${ahead} ahead)…`,
     );
   }
-  return permit;
+  try {
+    return await permit;
+  } catch (err) {
+    if (err instanceof SemaphoreTimeoutError) {
+      throw new WireError(
+        503,
+        "Every slicer is busy right now. Try again in a minute.",
+        "slicer_busy",
+      );
+    }
+    throw err;
+  }
 }
 
 interface RunResult {
@@ -280,7 +319,9 @@ function assertInstalled(): string {
 export async function getModelInfo(stlPath: string): Promise<ModelInfo> {
   const bin = assertInstalled();
   if (!existsSync(stlPath)) {
-    throw new Error(`Model file not found: ${stlPath}`);
+    // Never name the absolute path: on a hosted server that is the directory
+    // layout of the deployment. The user can act on "it's gone", not on where.
+    throw new WireError(404, "That model file is no longer on the server.", "not_found");
   }
   const { code, stdout, stderr } = await run(
     bin,
@@ -330,7 +371,9 @@ export async function slice(
 ): Promise<SliceMetrics> {
   const bin = assertInstalled();
   if (!existsSync(stlPath)) {
-    throw new Error(`Model file not found: ${stlPath}`);
+    // Never name the absolute path: on a hosted server that is the directory
+    // layout of the deployment. The user can act on "it's gone", not on where.
+    throw new WireError(404, "That model file is no longer on the server.", "not_found");
   }
 
   const cfg = getConfig();
@@ -425,16 +468,21 @@ export async function slice(
       true,
     );
 
-    // A killed slice is not a verdict to re-interpret: retrying it would just
-    // burn another ten minutes and hold a permit while doing so.
-    if (timedOut) {
-      throw new WireError(504, "Slicing took too long and was stopped.", "slice_timeout");
-    }
-
+    // FINISHED OUTPUT WINS OVER THE CLOCK. The kill and the last write race:
+    // PrusaSlicer can close its .gcode and be SIGKILLed before `close` fires,
+    // and the old order threw `slice_timeout` on a slice whose output was
+    // sitting on disk, complete. Look for the file first and only call it a
+    // timeout when there is nothing to show for the run.
     if (existsSync(gcodePath)) {
       const metrics = await parseMetrics(gcodePath);
       if (fixes.length) metrics.fixes = fixes;
       return metrics;
+    }
+
+    // A killed slice is not a verdict to re-interpret: retrying it would just
+    // burn another ten minutes and hold a permit while doing so.
+    if (timedOut) {
+      throw new WireError(504, "Slicing took too long and was stopped.", "slice_timeout");
     }
 
     // No gcode written → classify the failure and try to auto-correct.
@@ -453,12 +501,23 @@ export async function slice(
       lastReason,
     )
   ) {
-    throw new Error(
+    throw new WireError(
+      422,
       "Nothing landed on the bed — the plate is over-packed or a part sits outside the print volume. Reduce copies, scale parts down, or split across more plates.",
+      "slice_failed",
     );
   }
-  throw new Error(
-    `Slicing failed: ${lastReason || "the print may be empty or outside the print volume."}`,
+  // `lastReason` is PrusaSlicer's own stderr. It is the most useful thing we can
+  // tell the user ("layer height greater than nozzle diameter") and it also
+  // quotes the absolute path of every input file, which is the deployment layout
+  // of a multi-tenant server. Strip the paths, keep the diagnosis, and give it a
+  // code so the client can offer "adjust settings" instead of reading it as a
+  // server fault. (It used to be a bare Error: the route relayed `err.message`
+  // verbatim, so the paths shipped, and every other caller saw a generic 500.)
+  throw new WireError(
+    422,
+    `Slicing failed: ${stripPaths(lastReason) || "the print may be empty or outside the print volume."}`,
+    "slice_failed",
   );
 }
 

@@ -425,6 +425,19 @@ export interface UploadResult {
 export const MAX_ZIP_ENTRIES = 500;
 export const MAX_ZIP_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 
+/**
+ * Cap on ONE entry's uncompressed size.
+ *
+ * The two caps above bound an archive in aggregate and still let a single
+ * member be enormous: one declared 1.9 GB entry passes both, and an extractor
+ * that buffers an entry whole (`entry.buffer()`) then asks Node for a 1.9 GB
+ * Buffer — which either throws or takes the process's memory with it, long
+ * before any total-bytes counter gets a chance to object. A per-entry ceiling
+ * is what makes streaming extraction safe to bound incrementally. Matches the
+ * per-entry allowance `sourcing/download.ts` already applies to fetched zips.
+ */
+export const MAX_ZIP_ENTRY_BYTES = 500 * 1024 * 1024;
+
 /** Mesh/CAD extensions Slicely accepts from the user. `.zip` is accepted and
  *  expanded into its contained meshes. */
 export const ACCEPTED_UPLOAD_EXTS = [

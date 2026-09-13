@@ -82,7 +82,7 @@ const DEFAULT_MINT_PER_HOUR = 20;
 
 /** The per-session directories whose contents are disposable — regenerable by
  *  re-uploading, re-downloading or re-slicing. */
-const SCRATCH_DIRS = ["uploadsDir", "downloadsDir", "slicesDir"] as const;
+const SCRATCH_DIRS = ["uploadsDir", "downloadsDir", "slicesDir", "scratchDir"] as const;
 
 /** Names a file sweep must never touch even if one turned up inside a scratch
  *  directory: the encrypted API key, the session's settings, and its chat
@@ -119,6 +119,12 @@ export interface SessionRecord {
   uploadsDir: string;
   downloadsDir: string;
   slicesDir: string;
+  /** `<session>/scratch` — multer's landing strip for raw multipart bytes,
+   *  before an upload is validated and moved into `uploadsDir`. Swept like any
+   *  other scratch directory: a request that dies mid-upload (a cancelled
+   *  browser tab, a 413 refusal, a crash between write and rename) leaves its
+   *  part file behind, and nothing else would ever come back for it. */
+  scratchDir: string;
   createdAt: number;
   lastActiveAt: number;
   /** Absolute mesh paths the session has uploaded/imported, most-recent last.
@@ -313,7 +319,10 @@ export class SessionStore {
     const uploadsDir = join(dir, "uploads");
     const downloadsDir = join(dir, "downloads");
     const slicesDir = join(dir, "slices");
-    for (const d of [dir, uploadsDir, downloadsDir, slicesDir]) mkdirSync(d, { recursive: true });
+    const scratchDir = join(dir, "scratch");
+    for (const d of [dir, uploadsDir, downloadsDir, slicesDir, scratchDir]) {
+      mkdirSync(d, { recursive: true });
+    }
     const now = Date.now();
     const record: SessionRecord = {
       id,
@@ -321,6 +330,7 @@ export class SessionStore {
       uploadsDir,
       downloadsDir,
       slicesDir,
+      scratchDir,
       createdAt: now,
       lastActiveAt: now,
       activeModelPaths: [],

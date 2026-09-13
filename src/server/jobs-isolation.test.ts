@@ -20,6 +20,7 @@ function fakeSession(root: string, id: string): SessionRecord {
     uploadsDir: join(dir, "uploads"),
     downloadsDir: join(dir, "downloads"),
     slicesDir,
+    scratchDir: join(dir, "scratch"),
     createdAt: Date.now(),
     lastActiveAt: Date.now(),
     activeModelPaths: [],

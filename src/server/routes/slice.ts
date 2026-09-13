@@ -15,11 +15,13 @@ import {
   slice as sliceOne,
   slicePlates,
   getStatus,
+  withSliceQueueLimit,
+  REST_SLICE_QUEUE_MS,
   type RecommendInput,
 } from "../../main/prusaslicer";
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
 import { adoptGcodeFile, isInsideDir } from "../session";
-import { WireError, sendError } from "../errors";
+import { sendError } from "../errors";
 import { loadPrintersApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
 
@@ -104,10 +106,14 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
       const stem = basename(primary).replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_");
       const suffix = Date.now().toString(36).slice(-4);
       const outName = `${stem || "slice"}-${suffix}`;
-      const metricsList =
+      // Bound the QUEUE wait (not the slice itself): a visitor who arrives
+      // behind a full slicer is told "busy, try again" rather than holding a
+      // connection open until a proxy kills it from the other end.
+      const metricsList = await withSliceQueueLimit(REST_SLICE_QUEUE_MS, async () =>
         requestedPaths.length > 1
           ? (await slicePlates(requestedPaths, params, { w: bed.x, d: bed.y }, undefined, outName)).plates
-          : [await sliceOne(primary, params, undefined, outName)];
+          : [await sliceOne(primary, params, undefined, outName)],
+      );
 
       const plates: Array<Record<string, unknown>> = [];
       for (const m of metricsList) {
@@ -118,14 +124,12 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
       session.lastActiveAt = Date.now();
       res.json({ info, rationale: rec.rationale, warnings: rec.warnings, plates });
     } catch (err) {
-      // A slice we gave up on (or any other deliberate, coded refusal) already
-      // carries the status and code the client should see — 422 "slice failed"
-      // would throw that away and read as "your model is bad".
-      if (err instanceof WireError) {
-        sendError(res, err);
-        return;
-      }
-      res.status(422).json({ error: (err as Error).message ?? "slice failed" });
+      // Everything goes through the one funnel. A slice we gave up on carries
+      // its own status and code (422 `slice_failed`, 503 `slicer_busy`, 504
+      // `slice_timeout`); anything else is a bug and becomes a generic 500
+      // rather than relaying `err.message`, which is how PrusaSlicer's stderr —
+      // absolute session paths and all — used to reach the browser verbatim.
+      sendError(res, err);
     }
   });
 
@@ -153,7 +157,8 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
       res.setHeader("Cache-Control", "private, max-age=3600");
       res.json(mesh);
     } catch (err) {
-      res.status(422).json({ error: (err as Error).message ?? "Could not read that model." });
+      // Same funnel, same reason: `previewMesh` failures quote the file path.
+      sendError(res, err);
     }
   });
 

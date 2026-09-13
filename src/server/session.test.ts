@@ -182,17 +182,22 @@ test("sweepFiles clears stale scratch files but keeps secrets, settings and chat
     stale(join(session.uploadsDir, "bracket.stl"), "solid\n");
     stale(join(session.downloadsDir, "kit.zip"), "PK");
     stale(join(session.slicesDir, "bracket.gcode"), "G28\n");
+    // multer's landing strip. A request that dies between the write and the
+    // rename (a cancelled tab, a 413 refusal, a crash) abandons its part file
+    // here, and nothing else ever comes back for it — so the sweep must own it.
+    stale(join(session.scratchDir, "abcd1234-bracket.stl"), "solid\n");
     writeFileSync(join(session.dir, "secrets.json"), "{}");
     writeFileSync(join(session.dir, "settings.json"), "{}");
     mkdirSync(join(session.dir, "chats"), { recursive: true });
     writeFileSync(join(session.dir, "chats", "one.json"), "[]");
 
     const removed = await store.sweepFiles();
-    assert.ok(removed >= 3, `expected the three scratch files to go, removed ${removed}`);
+    assert.ok(removed >= 4, `expected the four scratch files to go, removed ${removed}`);
 
     assert.deepEqual(readdirSync(session.uploadsDir), [], "uploads/ is emptied");
     assert.deepEqual(readdirSync(session.downloadsDir), [], "downloads/ is emptied");
     assert.deepEqual(readdirSync(session.slicesDir), [], "slices/ is emptied");
+    assert.deepEqual(readdirSync(session.scratchDir), [], "scratch/ is emptied");
     assert.equal(existsSync(session.uploadsDir), true, "…but the directory itself stays");
     assert.equal(existsSync(join(session.dir, "secrets.json")), true, "the encrypted key survives");
     assert.equal(existsSync(join(session.dir, "settings.json")), true, "settings survive");
