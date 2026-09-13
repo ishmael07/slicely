@@ -19,6 +19,7 @@ import {
 } from "../../main/prusaslicer";
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
 import { adoptGcodeFile, isInsideDir } from "../session";
+import { WireError, sendError } from "../errors";
 import { loadPrintersApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
 
@@ -117,6 +118,13 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
       session.lastActiveAt = Date.now();
       res.json({ info, rationale: rec.rationale, warnings: rec.warnings, plates });
     } catch (err) {
+      // A slice we gave up on (or any other deliberate, coded refusal) already
+      // carries the status and code the client should see — 422 "slice failed"
+      // would throw that away and read as "your model is bad".
+      if (err instanceof WireError) {
+        sendError(res, err);
+        return;
+      }
       res.status(422).json({ error: (err as Error).message ?? "slice failed" });
     }
   });

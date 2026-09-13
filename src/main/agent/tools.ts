@@ -30,6 +30,7 @@ import {
   recommendForPlate,
   type RecommendInput,
   type PlateSliceResult,
+  withSliceProgress,
 } from "../prusaslicer";
 import {
   getProfileState,
@@ -1017,27 +1018,38 @@ async function sliceViaJobPipeline(
   const { planJob, runJob } = await import("../jobs");
   const prefs = getPreferences();
   const colourOf = new Map(importedParts.map((p) => [p.path, p.colourHex]));
-  const planned = await planJob(
-    paths.map((path) => ({ path, copies: 1, colourHex: colourOf.get(path) })),
-    {
-      bed,
-      maxHeightMm: bed.z,
-      // Colour by height belongs to the JOB, not to a part: a filament swap
-      // stops the whole printer, so it applies to everything on the plate.
-      colourBands: colour?.bands.length ? colour.bands : undefined,
-      colourStops: colour?.stops.length ? colour.stops : undefined,
-      goal: prefs.goal ?? "quality",
-      material: prefs.material ?? "PLA",
-      params,
-      name: baseStem(paths[0]),
-      onProgress: (p) => {
-        const where = p.partName ? ` ${p.partName}` : "";
-        const counter = p.total > 1 && p.index > 0 ? ` (${p.index} of ${p.total})` : "";
-        emit({ type: "tool_progress", tool: "slice_model", label: `Preparing${where}${counter}…` });
-      },
-    },
+  // Planning measures every part with the slicer's --info, which takes a slice
+  // permit too — so a busy queue is reported here as well, not just at run time.
+  const planned = await withSliceProgress(
+    (label) => emit({ type: "tool_progress", tool: "slice_model", label }),
+    () =>
+      planJob(
+        paths.map((path) => ({ path, copies: 1, colourHex: colourOf.get(path) })),
+        {
+          bed,
+          maxHeightMm: bed.z,
+          // Colour by height belongs to the JOB, not to a part: a filament swap
+          // stops the whole printer, so it applies to everything on the plate.
+          colourBands: colour?.bands.length ? colour.bands : undefined,
+          colourStops: colour?.stops.length ? colour.stops : undefined,
+          goal: prefs.goal ?? "quality",
+          material: prefs.material ?? "PLA",
+          params,
+          name: baseStem(paths[0]),
+          onProgress: (p) => {
+            const where = p.partName ? ` ${p.partName}` : "";
+            const counter = p.total > 1 && p.index > 0 ? ` (${p.index} of ${p.total})` : "";
+            emit({ type: "tool_progress", tool: "slice_model", label: `Preparing${where}${counter}…` });
+          },
+        },
+      ),
   );
-  const ran = await runJob(planned.id, (ev) => emit({ type: "job_progress", event: ev }));
+  // A plate may have to queue behind another visitor's slice; surface that on
+  // the same spinner rather than looking hung.
+  const ran = await withSliceProgress(
+    (label) => emit({ type: "tool_progress", tool: "slice_model", label }),
+    () => runJob(planned.id, (ev) => emit({ type: "job_progress", event: ev })),
+  );
   return {
     plates: ran.plates
       .map((pl) => pl.metrics)

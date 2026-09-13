@@ -15,6 +15,11 @@ function envStr(name: string, fallback = ""): string {
   return v && v.trim().length > 0 ? v.trim() : fallback;
 }
 
+function envInt(name: string, fallback: number): number {
+  const n = Number.parseInt(envStr(name), 10);
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
 /**
  * Owner-supplied, environment-only configuration.
  *
@@ -34,6 +39,10 @@ export interface SlicelyConfig {
   workdir: string;
   downloadsDir: string;
   slicesDir: string;
+  /** How many PrusaSlicer processes may run at once (`SLICELY_MAX_SLICES`).
+   *  Two is the shipped default: enough to keep a second visitor from waiting
+   *  behind a long slice, few enough that a 2-core host still answers HTTP. */
+  maxSlices: number;
 }
 
 let cached: SlicelyConfig | null = null;
@@ -64,6 +73,7 @@ export function getConfig(): SlicelyConfig {
     effort: envStr("SLICELY_EFFORT", "high"),
     prusaSlicerPath: envStr("PRUSASLICER_PATH", DEFAULT_PRUSA_MAC),
     prusaConfigIni: envStr("PRUSASLICER_CONFIG_INI"),
+    maxSlices: envInt("SLICELY_MAX_SLICES", 2),
     workdir,
     downloadsDir,
     slicesDir,

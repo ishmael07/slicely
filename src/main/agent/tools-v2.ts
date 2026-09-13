@@ -19,6 +19,7 @@ import {
   downloadFromUrl,
   sourceAvailability,
 } from "../sourcing";
+import { withSliceProgress } from "../prusaslicer";
 import {
   listPrinters,
   allStatuses,
@@ -609,42 +610,47 @@ export async function executeV2Tool(
         ? (await printerStatus(printers[0].id)).filaments
         : undefined;
 
-      const job = await planJob(parts, {
-        // Planning a detailed multi-part job takes many seconds. Without this
-        // the UI shows a spinner that never changes, which reads as a hang.
-        onProgress: (p) => {
-          const where = p.partName ? ` ${p.partName}` : "";
-          const counter = p.total > 1 && p.index > 0 ? ` (${p.index} of ${p.total})` : "";
-          const verb =
-            p.stage === "inspecting"
-              ? "Measuring"
-              : p.stage === "orienting"
-                ? "Finding the best orientation for"
-                : p.stage === "colouring"
-                  ? "Matching colours to your filament for"
-                  : "Packing plates for";
-          emit({
-            type: "tool_progress",
-            tool: "plan_job",
-            label: `${verb}${where || " the job"}${counter}…`,
-          });
-        },
-        bed: geom.bed,
-        maxHeightMm: geom.bed.z,
-        autoOrient: input.autoOrient !== false,
-        // Only forward an explicit choice; leaving it undefined lets the
-        // planner pick based on how many filament slots the printer has.
-        groupByColour:
-          typeof input.groupByColour === "boolean" ? input.groupByColour : undefined,
-        colourBands: Array.isArray(input.colourBands)
-          ? (input.colourBands as unknown[]).map(String).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c))
-          : undefined,
-        colourStops: colourRequest(input).stops,
-        goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",
-        slots,
-        name: input.name ? String(input.name) : undefined,
-        material: (input.material as PrintMaterial) ?? prefs.material ?? "PLA",
-      });
+      // --info takes a slice permit, so planning can queue behind a slice too.
+      const job = await withSliceProgress(
+        (label) => emit({ type: "tool_progress", tool: "plan_job", label }),
+        () =>
+          planJob(parts, {
+            // Planning a detailed multi-part job takes many seconds. Without this
+            // the UI shows a spinner that never changes, which reads as a hang.
+            onProgress: (p) => {
+              const where = p.partName ? ` ${p.partName}` : "";
+              const counter = p.total > 1 && p.index > 0 ? ` (${p.index} of ${p.total})` : "";
+              const verb =
+                p.stage === "inspecting"
+                  ? "Measuring"
+                  : p.stage === "orienting"
+                    ? "Finding the best orientation for"
+                    : p.stage === "colouring"
+                      ? "Matching colours to your filament for"
+                      : "Packing plates for";
+              emit({
+                type: "tool_progress",
+                tool: "plan_job",
+                label: `${verb}${where || " the job"}${counter}…`,
+              });
+            },
+            bed: geom.bed,
+            maxHeightMm: geom.bed.z,
+            autoOrient: input.autoOrient !== false,
+            // Only forward an explicit choice; leaving it undefined lets the
+            // planner pick based on how many filament slots the printer has.
+            groupByColour:
+              typeof input.groupByColour === "boolean" ? input.groupByColour : undefined,
+            colourBands: Array.isArray(input.colourBands)
+              ? (input.colourBands as unknown[]).map(String).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c))
+              : undefined,
+            colourStops: colourRequest(input).stops,
+            goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",
+            slots,
+            name: input.name ? String(input.name) : undefined,
+            material: (input.material as PrintMaterial) ?? prefs.material ?? "PLA",
+          }),
+      );
       sessionState.lastJobId = job.id;
       emit({ type: "job", job });
 
@@ -674,23 +680,29 @@ export async function executeV2Tool(
     case "run_job": {
       const jobId = input.jobId ? String(input.jobId) : sessionState.lastJobId;
       if (!jobId) return "No job to run — call plan_job first.";
-      const job = await runJob(jobId, (ev) => {
-        emit({ type: "job_progress", event: ev });
-        // Slicing a plate can take minutes; say which one is running.
-        if (ev.type === "plate_start") {
-          emit({
-            type: "tool_progress",
-            tool: "run_job",
-            label: `Slicing plate ${ev.plateIndex}…`,
-          });
-        } else if (ev.type === "plate_done") {
-          emit({
-            type: "tool_progress",
-            tool: "run_job",
-            label: `Plate ${ev.plateIndex} done (${ev.metrics.estimatedPrintTime ?? "sliced"}) — continuing…`,
-          });
-        }
-      });
+      // Plates can also sit in the slice queue behind another visitor's job;
+      // withSliceProgress routes that wait to the same spinner.
+      const job = await withSliceProgress(
+        (label) => emit({ type: "tool_progress", tool: "run_job", label }),
+        () =>
+          runJob(jobId, (ev) => {
+            emit({ type: "job_progress", event: ev });
+            // Slicing a plate can take minutes; say which one is running.
+            if (ev.type === "plate_start") {
+              emit({
+                type: "tool_progress",
+                tool: "run_job",
+                label: `Slicing plate ${ev.plateIndex}…`,
+              });
+            } else if (ev.type === "plate_done") {
+              emit({
+                type: "tool_progress",
+                tool: "run_job",
+                label: `Plate ${ev.plateIndex} done (${ev.metrics.estimatedPrintTime ?? "sliced"}) — continuing…`,
+              });
+            }
+          }),
+      );
       emit({ type: "job", job });
 
       const done = job.plates.filter((p) => p.status === "done" || p.status === "ready");

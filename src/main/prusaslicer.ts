@@ -18,6 +18,7 @@
 //   • Running check: we track our OWN headless spawns and exclude them so a
 //        slice-in-progress isn't mistaken for the user having the GUI open;
 //        LaunchServices (`lsappinfo`) is the authoritative GUI-app signal.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, execFile } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -34,6 +35,8 @@ import { packPlates, type PlatePart } from "./plates";
 import { getConfig } from "./config";
 import { sessionSlicesDir } from "./session-context";
 import { ensureBackgroundProcessing } from "./profiles";
+import { Semaphore } from "./semaphore";
+import { WireError } from "../server/errors";
 
 const APP_NAME = "PrusaSlicer";
 /** macOS LaunchServices bundle id for PrusaSlicer (used by lsappinfo). */
@@ -48,42 +51,132 @@ const ownPids = new Set<number>();
 let cachedVersion: string | undefined;
 let versionResolved = false;
 
+// ── concurrency and the per-slice clock ──────────────────────────────────────
+//
+// Two separate bounds, for two separate failure modes:
+//
+//   1. HOW MANY at once (the semaphore). A slice saturates a core; letting one
+//      per visitor run means nobody's finishes and the server stops answering.
+//   2. HOW LONG each may take (the timeout). PrusaSlicer can and does get stuck
+//      on pathological geometry, and a stuck process holds a permit forever —
+//      which turns bound #1 from a queue into a deadlock. A slice that blows the
+//      clock is SIGKILLed, not asked nicely.
+
+/** Slice permits. Sized from `SLICELY_MAX_SLICES` (default 2). */
+export const sliceSemaphore = new Semaphore(getConfig().maxSlices);
+
+const DEFAULT_SLICE_TIMEOUT_MS = 10 * 60_000;
+let sliceTimeoutMs = DEFAULT_SLICE_TIMEOUT_MS;
+
+/** Tests only: shorten (or, with no argument, restore) the per-slice ceiling,
+ *  so a timeout can be exercised in milliseconds instead of ten minutes. */
+export function setSliceTimeoutForTests(ms?: number): void {
+  sliceTimeoutMs = typeof ms === "number" && ms > 0 ? ms : DEFAULT_SLICE_TIMEOUT_MS;
+}
+
+/** How a caller waiting on the queue is told what it's waiting for. Scoped to
+ *  the in-flight call (an AsyncLocalStorage, not a global listener list) so one
+ *  visitor's queue notice can never surface in another visitor's chat. */
+const progressStore = new AsyncLocalStorage<(label: string) => void>();
+
+/**
+ * Run `work` with `report` as the ambient slicer-progress channel. Long tools
+ * pass their own `tool_progress` emitter, so "Waiting for a free slicer" shows
+ * up where the user is already watching a spinner. Anything not wrapped (the
+ * REST slice route, Electron) simply has no channel and stays silent.
+ */
+export function withSliceProgress<T>(
+  report: (label: string) => void,
+  work: () => Promise<T>,
+): Promise<T> {
+  return progressStore.run(report, work);
+}
+
+/** Take a slice permit, saying so if we have to queue for it. */
+async function acquireSlicePermit(): Promise<() => void> {
+  const queuedBefore = sliceSemaphore.waiting;
+  const permit = sliceSemaphore.acquire();
+  // `acquire()` takes a free permit synchronously, so a grown queue is the
+  // signal that this caller is the one now waiting. `waiting` counts us, which
+  // is also exactly how many runs must finish before ours starts.
+  if (sliceSemaphore.waiting > queuedBefore) {
+    const ahead = sliceSemaphore.waiting;
+    progressStore.getStore()?.(
+      `Waiting for a free slicer (${ahead} ahead)…`,
+    );
+  }
+  return permit;
+}
+
 interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** The run blew its clock and was killed; `code`/`stderr` describe the
+   *  corpse, not a real slicer verdict. */
+  timedOut: boolean;
 }
 
 /** Spawn a process, capture stdout/stderr, resolve on exit (never rejects).
  *  When `track` is set, the child's PID is recorded as one of our own
- *  headless slicer processes for the duration of the run. */
-function run(
+ *  headless slicer processes for the duration of the run. When `gate` is set,
+ *  the run holds a slice permit for its whole life. */
+async function run(
   cmd: string,
   args: string[],
   timeoutMs = 120_000,
   track = false,
+  gate = false,
+): Promise<RunResult> {
+  if (!gate) return spawnCaptured(cmd, args, timeoutMs, track);
+  const release = await acquireSlicePermit();
+  try {
+    return await spawnCaptured(cmd, args, timeoutMs, track);
+  } finally {
+    release();
+  }
+}
+
+function spawnCaptured(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+  track: boolean,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(cmd, args, { windowsHide: true });
+    let timedOut = false;
+
+    // AbortSignal.timeout + killSignal is the same kill as the hand-rolled
+    // timer this replaces, minus the bug: the signal also covers the window
+    // BEFORE the process has spawned, and its timer doesn't hold the event loop
+    // open. SIGKILL rather than SIGTERM because a wedged PrusaSlicer is exactly
+    // the process that ignores a polite request.
+    const signal = AbortSignal.timeout(timeoutMs);
+    const onAbort = () => {
+      timedOut = true;
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    const child = spawn(cmd, args, {
+      windowsHide: true,
+      signal,
+      killSignal: "SIGKILL",
+    });
 
     if (track && typeof child.pid === "number") {
       ownPids.add(child.pid);
     }
 
-    const finish = (result: RunResult) => {
+    const finish = (result: Omit<RunResult, "timedOut">) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       if (track && typeof child.pid === "number") ownPids.delete(child.pid);
-      resolve(result);
+      resolve({ ...result, timedOut });
     };
-
-    const timer = setTimeout(() => {
-      if (!settled) child.kill("SIGKILL");
-    }, timeoutMs);
 
     child.stdout?.on("data", (d) => (stdout += d.toString()));
     child.stderr?.on("data", (d) => (stderr += d.toString()));
@@ -159,6 +252,11 @@ function lsappinfoRunning(): Promise<boolean> {
 
 async function getVersion(bin: string): Promise<string | undefined> {
   if (versionResolved) return cachedVersion;
+  // DELIBERATELY NOT gated by the slice semaphore. This is a banner probe, not
+  // work — and it sits behind GET /api/status, which the UI polls. Queueing it
+  // would mean every status poll during a busy slice hangs for up to ten
+  // minutes, i.e. the concurrency bound would take down the very endpoint that
+  // reports on it. It is still bounded by its own 15 s timeout.
   const { stdout, stderr } = await run(bin, ["--help"], 15_000, true);
   const banner = (stdout + stderr).split("\n", 1)[0] ?? "";
   // First line looks like: "PrusaSlicer-2.9.0+... based on Slic3r ..."
@@ -189,6 +287,7 @@ export async function getModelInfo(stlPath: string): Promise<ModelInfo> {
     ["--info", stlPath],
     60_000,
     true, // our own spawn — exclude from GUI-running detection
+    true, // real work on a mesh — holds a slice permit
   );
   if (code !== 0 && !stdout.includes("size_x")) {
     throw new Error(
@@ -318,7 +417,19 @@ export async function slice(
       }
     }
 
-    const { code, stdout, stderr } = await run(bin, buildArgs(effective), 300_000, true);
+    const { code, stdout, stderr, timedOut } = await run(
+      bin,
+      buildArgs(effective),
+      sliceTimeoutMs,
+      true,
+      true,
+    );
+
+    // A killed slice is not a verdict to re-interpret: retrying it would just
+    // burn another ten minutes and hold a permit while doing so.
+    if (timedOut) {
+      throw new WireError(504, "Slicing took too long and was stopped.", "slice_timeout");
+    }
 
     if (existsSync(gcodePath)) {
       const metrics = await parseMetrics(gcodePath);
@@ -607,7 +718,7 @@ export async function writeEffectiveConfig(
   if (base) args.push("--load", base);
   args.push(...settingArgs(params), "--save", outPath);
 
-  await run(bin, args, 60_000, true);
+  await run(bin, args, 60_000, true, true);
   return existsSync(outPath) ? outPath : undefined;
 }
 
@@ -792,6 +903,10 @@ export async function openInGui(
   // it is detached and NOT tracked as one of our headless spawns.
   if (configIni && existsSync(configIni)) {
     const bin = assertInstalled();
+    // Not gated and not timed out: this is the user's own GUI, launched
+    // detached and expected to live for as long as they keep it open. Holding a
+    // slice permit for that would starve every headless slice, and a ten-minute
+    // clock would kill their window out from under them.
     const child = spawn(bin, ["--load", configIni, ...paths], {
       detached: true,
       stdio: "ignore",
