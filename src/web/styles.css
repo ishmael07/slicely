@@ -1065,7 +1065,9 @@ details.thinking summary::-webkit-details-marker {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+  /* The home-indicator strip on a modern phone sits over the bottom of the
+     viewport, so the send row needs to clear it. */
+  padding: 8px 10px calc(12px + env(safe-area-inset-bottom));
   border-top: 0.5px solid var(--border);
   background: rgba(10, 10, 11, 0.6);
   backdrop-filter: blur(14px);
@@ -1261,11 +1263,11 @@ details.thinking summary::-webkit-details-marker {
   opacity: 1;
   transform: translateY(0);
 }
-.toast.err {
+.toast.error {
   border-color: rgba(248, 113, 113, 0.4);
   color: #fecaca;
 }
-.toast.ok {
+.toast.success {
   border-color: rgba(74, 222, 128, 0.35);
 }
 
@@ -2023,4 +2025,388 @@ a.link:hover {
 a.btn,
 a.btn:hover {
   text-decoration: none;
+}
+
+/* ── One error component, one loading component ─────────────────────────────
+   A list that failed to load and a list that is genuinely empty are different
+   facts, and a coloured sentence cannot be retried. .error-card says what went
+   wrong and puts the one useful action beside it; .skeleton stands in while a
+   list is still on its way, so nothing reads as "you have nothing" too early. */
+.error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  align-self: flex-start;
+  max-width: min(100%, 560px);
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.07);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.error-card .error-ico {
+  color: #fca5a5;
+  flex: 0 0 auto;
+  line-height: 1.45;
+}
+.error-card .error-text {
+  flex: 1 1 auto;
+  color: #fecaca;
+  overflow-wrap: anywhere;
+}
+.error-card .btn {
+  flex: 0 0 auto;
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.skeleton-row {
+  height: 38px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
+  background-size: 260% 100%;
+  animation: skeleton-sweep 1.4s var(--ease) infinite;
+}
+@keyframes skeleton-sweep {
+  from {
+    background-position: 130% 0;
+  }
+  to {
+    background-position: -130% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+    background: var(--panel);
+  }
+}
+
+/* ── Confirmation dialog ───────────────────────────────────────────────────
+   Removing a printer, arming auto-start and deleting data are irreversible or
+   hazardous, so each one asks first. Escape and the scrim both cancel: the safe
+   answer is always the easy one. */
+.dialog-host {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(6, 6, 8, 0.62);
+  backdrop-filter: blur(3px);
+}
+.dialog {
+  width: min(100%, 380px);
+  background: var(--panel);
+  border: 0.5px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+.dialog-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 650;
+}
+.dialog-body {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.btn.danger-solid {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fecaca;
+}
+.btn.danger-solid:hover {
+  background: rgba(248, 113, 113, 0.24);
+}
+
+/* A menu item is a real <button role="menuitem"> now, so it needs the reset a
+   button doesn't get for free. */
+button.menu-item {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+}
+button.menu-item:disabled {
+  cursor: default;
+}
+
+/* ── Bring your own key ─────────────────────────────────────────────────────
+   Slicely has no AI key of its own, so this card is the first thing a new
+   visitor meets and the thing they come back to in Settings → AI. Same
+   component both places, deliberately wordy: what it costs, who bills it, and
+   why a Pro subscription won't do are all things a user should not have to
+   discover by failing. */
+.key-card {
+  border: 0.5px solid var(--border-bright);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  text-align: left;
+}
+.key-copy {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.key-copy strong {
+  color: var(--text);
+}
+.key-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 3px;
+}
+.key-label {
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.key-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.key-input {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-1);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  color: var(--text);
+  outline: none;
+}
+.key-input:focus {
+  border-color: var(--accent-glow);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.key-error {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #fecaca;
+}
+.key-prompt {
+  align-self: stretch;
+  max-width: min(100%, 560px);
+}
+.key-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.key-hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  margin-right: auto;
+}
+
+/* ── First-run: three steps to a first print ────────────────────────────────
+   Step one is the key card itself rather than a link to it, because nothing
+   below it works until that step is done. */
+.empty.onboarding {
+  justify-content: flex-start;
+  gap: 14px;
+  text-align: left;
+  padding: 18px 4px;
+}
+.empty.onboarding .big {
+  align-self: center;
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  max-width: 560px;
+}
+.step-title {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.step-sub {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.empty.onboarding .examples {
+  justify-content: flex-start;
+}
+
+/* ── The consent line ───────────────────────────────────────────────────────
+   Shown once, above the composer, and remembered as dismissed. */
+.consent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.consent-text {
+  flex: 1 1 auto;
+}
+.consent-dismiss {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.consent-dismiss:hover {
+  color: var(--text);
+}
+
+/* ── Settings → Data / About ─────────────────────────────────────────────── */
+.data-body,
+.about-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 14px 4px;
+  align-items: flex-start;
+}
+.ai-body {
+  padding: 0 14px 4px;
+}
+.about-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.about-links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+/* ── Keyboard focus ─────────────────────────────────────────────────────────
+   Every control here is reachable by Tab, which is only useful if you can see
+   where you are. :focus-visible keeps this off mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.menu-item:focus-visible {
+  background: var(--panel-2);
+  outline-offset: -2px;
+}
+.sheet:focus {
+  outline: none;
+}
+
+/* ── Nothing found, as distinct from something broken ─────────────────────── */
+.empty-note {
+  align-self: flex-start;
+  max-width: min(100%, 560px);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+/* ── Narrow phones ─────────────────────────────────────────────────────────
+   Under 480px the two header pills plus three icon buttons don't fit on one
+   line. They used to scroll sideways, which hides them; wrapping shows them. */
+@media (max-width: 479px) {
+  #titlebar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .title-right {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    overflow-x: visible;
+    justify-content: flex-end;
+  }
+  .pill {
+    max-width: 100%;
+  }
+  #printerLabel,
+  #statusText {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* ── Tablet and desktop ────────────────────────────────────────────────────
+   A 720px column is right on a phone and cramped on a laptop, where the result
+   cards and plate rows have room to breathe. */
+@media (min-width: 1024px) {
+  #app {
+    max-width: 860px;
+  }
+  .sheet {
+    max-width: 860px;
+  }
+}
+
+/* ── Running inside the Mac app ────────────────────────────────────────────
+   Electron gives the window no title bar of its own, so the header has to BE
+   the title bar: draggable, except for the controls in it. The class is set by
+   app.ts only when window.slicely exists, so the browser is unaffected. */
+body.is-desktop #titlebar {
+  -webkit-app-region: drag;
+}
+body.is-desktop #titlebar button,
+body.is-desktop #titlebar .pill {
+  -webkit-app-region: no-drag;
 }
