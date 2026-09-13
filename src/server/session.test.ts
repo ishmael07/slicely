@@ -153,6 +153,7 @@ test("destroying a session disposes its in-memory state, settings and key", asyn
     assert.equal(after.state, before.state + 1, "agent state must be dropped");
     assert.equal(after.settings, before.settings + 1, "settings must be dropped");
     assert.equal(after.userKey, before.userKey + 1, "the decrypted API key must not linger in memory");
+    assert.equal(after.printers, before.printers + 1, "nor the decrypted printer credentials");
     assert.equal(store.get(id), undefined);
     assert.equal(existsSync(session!.dir), false, "the workspace directory goes too");
   } finally {
@@ -197,6 +198,44 @@ test("sweepFiles clears stale scratch files but keeps secrets, settings and chat
     assert.equal(existsSync(join(session.dir, "settings.json")), true, "settings survive");
     assert.equal(existsSync(join(session.dir, "chats", "one.json")), true, "chat history survives");
     assert.equal(store.count(), 1, "a file sweep never evicts the session itself");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepFiles keeps a stale file the session is still holding a reference to", async () => {
+  // Age is not evidence that nobody wants the file: the visitor who uploaded a
+  // mesh an hour ago and is about to slice it still has it in activeModelPaths,
+  // and the G-code they haven't downloaded yet still has a live token.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0, fileIdleMs: 0 });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  const { base, close } = await listen(app);
+  try {
+    const cookie = setCookieValue(await fetch(`${base}/api/config`));
+    const session = store.get(sessionIdFrom(cookie!))!;
+    const stale = (path: string, body: string) => {
+      writeFileSync(path, body);
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(path, past, past);
+      return path;
+    };
+    const kept = stale(join(session.uploadsDir, "in-use.stl"), "solid\n");
+    const keptGcode = stale(join(session.slicesDir, "in-use.gcode"), "G28\n");
+    const dropped = stale(join(session.uploadsDir, "forgotten.stl"), "solid\n");
+
+    session.activeModelPaths.push(kept);
+    session.gcodeFiles.set("tok", { path: keptGcode, label: "in-use.gcode" });
+
+    await store.sweepFiles();
+
+    assert.equal(existsSync(kept), true, "the model the session is working on survives");
+    assert.equal(existsSync(keptGcode), true, "so does G-code the browser still holds a token for");
+    assert.equal(existsSync(dropped), false, "an unreferenced stale file still goes");
+    assert.deepEqual(session.activeModelPaths, [kept], "and the reference is still valid");
+    assert.equal(session.gcodeFiles.get("tok")?.path, keptGcode);
   } finally {
     await close();
     store.stopSweep();

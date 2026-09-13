@@ -84,6 +84,7 @@ function unusedPrinterApi(): PrintersApi {
   };
   return {
     listPrinters: async () => [],
+    getPrinter: fail("getPrinter") as unknown as PrintersApi["getPrinter"],
     addPrinter: fail("addPrinter") as unknown as PrintersApi["addPrinter"],
     updatePrinter: fail("updatePrinter") as unknown as PrintersApi["updatePrinter"],
     removePrinter: async () => undefined,

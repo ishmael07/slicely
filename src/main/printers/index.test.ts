@@ -3,12 +3,20 @@
 import { mkdtempSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 process.env.SLICELY_WORKDIR = mkdtempSync(join(tmpdir(), "slicely-index-test-"));
+// The registry encrypts printer credentials at rest, so the vault needs a
+// master key — hosted mode reads one from the environment.
+process.env.SLICELY_MODE = "hosted";
+process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as printers from "./index";
+import { resetKeyVaultForTests } from "../keyvault";
+
+resetKeyVaultForTests();
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

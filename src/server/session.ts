@@ -40,6 +40,7 @@ import { runInSession, sessionContext } from "../main/session-context";
 import { disposeSessionState } from "../main/agent/state";
 import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
+import { disposeSessionPrinters } from "../main/printers/registry";
 import { clientIp, TokenBuckets } from "./security";
 
 // Augment Express's Request with the session this middleware attaches. Scoped
@@ -356,6 +357,13 @@ export class SessionStore {
    * settings, its chat history — is never touched, so a visitor coming back
    * next week still finds their workspace, just not last week's files.
    *
+   * STILL-REFERENCED FILES ARE KEPT regardless of age. A visitor who uploads a
+   * mesh, goes to lunch, and comes back to slice it still holds a live
+   * `activeModelPaths` entry / G-code token for it; deleting the file under
+   * them because its mtime aged out would turn "slice my model" into a 500 with
+   * nothing to re-try. Age alone is not evidence that nobody wants the file —
+   * only age AND no live reference is.
+   *
    * Best-effort: a file that vanishes (or is being written) under us is simply
    * left for the next sweep. Returns how many entries were removed.
    */
@@ -363,6 +371,14 @@ export class SessionStore {
     const cutoff = Date.now() - this.fileIdleMs;
     let removed = 0;
     for (const session of this.sessions.values()) {
+      const inUse = [
+        ...session.activeModelPaths,
+        ...[...session.gcodeFiles.values()].map((g) => g.path),
+      ];
+      /** True when `target` IS a live file, or a directory holding one (an
+       *  unpacked zip's folder, whose mesh inside it is the referenced path). */
+      const isInUse = (target: string) => inUse.some((p) => isInsideDir(target, p));
+
       for (const key of SCRATCH_DIRS) {
         const dir = session[key];
         let entries: string[];
@@ -374,6 +390,7 @@ export class SessionStore {
         for (const entry of entries) {
           if (KEEP_FOREVER.has(entry)) continue;
           const target = join(dir, entry);
+          if (isInUse(target)) continue;
           try {
             const info = await stat(target);
             if (info.mtimeMs > cutoff) continue;
@@ -413,10 +430,11 @@ export class SessionStore {
  * Drop every IN-MEMORY trace of a session.
  *
  * Deleting the directory is not enough: the ambient-session caches
- * (main/agent/state.ts, main/settings.ts, main/userkey.ts) are process-global
- * Maps keyed by session id. Left alone they grow without bound on a busy
- * server, and — worse — the visitor's decrypted API key would sit in memory
- * long after they pressed "Delete my data".
+ * (main/agent/state.ts, main/settings.ts, main/userkey.ts,
+ * main/printers/registry.ts) are process-global Maps keyed by session id. Left
+ * alone they grow without bound on a busy server, and — worse — the visitor's
+ * decrypted API key and printer credentials would sit in memory long after
+ * they pressed "Delete my data".
  */
 function forgetSession(session: SessionRecord): void {
   session.agent?.cancel();
@@ -426,15 +444,17 @@ function forgetSession(session: SessionRecord): void {
   disposeCalls.settings += 1;
   disposeSessionUserKey(session.id);
   disposeCalls.userKey += 1;
+  disposeSessionPrinters(session.id);
+  disposeCalls.printers += 1;
 }
 
 /** How many times each ambient cache has been disposed. A counter rather than
  *  a spy because node:test has no module mocking for CommonJS requires, and
  *  "did destroy() really drop the decrypted key?" is worth a test. */
-const disposeCalls = { state: 0, settings: 0, userKey: 0 };
+const disposeCalls = { state: 0, settings: 0, userKey: 0, printers: 0 };
 
 /** Test-only read side of `disposeCalls`. Never called by the server. */
-export function __disposeCallsForTests(): { state: number; settings: number; userKey: number } {
+export function __disposeCallsForTests(): { state: number; settings: number; userKey: number; printers: number } {
   return { ...disposeCalls };
 }
 

@@ -30,6 +30,7 @@ import type {
   PrinterStatus,
   PrinterTestResult,
   PrinterTransport,
+  ResolvedPrinter,
   SendJobOptions,
   SendJobResult,
 } from "../../shared/printers";
@@ -55,6 +56,22 @@ const DRIVERS: Record<PrinterTransport, PrinterDriver> = {
 
 function driverFor(transport: PrinterTransport): PrinterDriver {
   return DRIVERS[transport];
+}
+
+/** A stand-in for `driver.test()`. */
+export type ConnectionProbe = (printer: ResolvedPrinter) => Promise<PrinterTestResult>;
+
+/**
+ * Replace the driver probe every `testPrinter()` (and therefore `addPrinter()`)
+ * call makes. TESTS ONLY: an HTTP-level test needs to add a printer without a
+ * real printer — or any network — on the other end, and stubbing global
+ * `fetch` isn't available to a test that is itself talking HTTP to the server
+ * under test. Production never calls this; `createApp`'s `printerTestOverride`
+ * is the only caller, and that option exists for the same reason.
+ */
+let probeOverride: ConnectionProbe | undefined;
+export function setConnectionTestOverride(fn: ConnectionProbe | undefined): void {
+  probeOverride = fn;
 }
 
 /** Every configured printer, secrets stripped. */
@@ -105,8 +122,9 @@ export async function removePrinter(id: string): Promise<void> {
 export async function testPrinter(id: string): Promise<PrinterTestResult> {
   const printer = registry.resolve(id);
   const driver = driverFor(printer.transport);
+  const probe: ConnectionProbe = probeOverride ?? ((p) => driver.test(p));
   try {
-    return await driver.test(printer);
+    return await probe(printer);
   } catch (err) {
     return { ok: false, message: describeError(err) };
   }

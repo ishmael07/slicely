@@ -27,6 +27,7 @@ import type {
   PrinterTestResult,
   PrinterStatus,
   PrinterTransport,
+  ResolvedPrinter,
   SendJobOptions,
   SendJobResult,
   DiscoveredPrinter,
@@ -60,6 +61,9 @@ export interface PlanJobPartInput {
 /** Mirrors "../main/printers". */
 export interface PrintersApi {
   listPrinters(): Promise<PrinterConnection[]>;
+  /** Undefined when THIS SESSION has no printer with that id — which is how
+   *  every `/api/printers/:id` route decides whether to answer 404. */
+  getPrinter(id: string): Promise<PrinterConnection | undefined>;
   addPrinter(
     input: Omit<PrinterConnection, "id"> & PrinterSecrets,
   ): Promise<{ printer: PrinterConnection; test: PrinterTestResult }>;
@@ -89,6 +93,11 @@ export interface PrintersApi {
     defaultPort: number;
     requiredSecrets: string[];
   }>;
+  /** Tests only — see the façade's own doc comment. Optional so a hand-written
+   *  fake api in a test need not implement it. */
+  setConnectionTestOverride?(
+    fn: ((printer: ResolvedPrinter) => Promise<PrinterTestResult>) | undefined,
+  ): void;
 }
 
 /** Mirrors "../main/sourcing". */

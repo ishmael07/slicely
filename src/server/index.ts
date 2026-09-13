@@ -37,6 +37,8 @@ import { createJobsRouter } from "./routes/jobs";
 import { createConfigRouter } from "./routes/config";
 import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
+import { loadPrintersApi } from "./facades";
+import type { PrinterTestResult, ResolvedPrinter } from "../shared/printers";
 
 export interface CreateAppOptions {
   /** Inject a session store (tests use a temp-dir-backed one with a short
@@ -50,6 +52,10 @@ export interface CreateAppOptions {
    *  Tests MUST override it — the default makes a live `models.list` call with
    *  the pasted key. */
   keyValidator?: KeyValidator;
+  /** Replace the printer connection probe `POST /api/printers` makes on add.
+   *  TESTS ONLY: it lets a test add a printer without a printer (or a network)
+   *  on the other end. Never set in production. */
+  printerTestOverride?: (printer: ResolvedPrinter) => Promise<PrinterTestResult>;
   /** Narrow (or widen) the rate-limit tiers. Production uses the `LIMITS`
    *  values from spec §2 verbatim; a test overrides a tier so it can prove the
    *  limiter fires in three requests instead of sixty. */
@@ -132,7 +138,14 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   api.use(createModelsRouter(undefined, { limit: heavyLimit }));
   api.use(createUploadRouter({ limit: heavyLimit }));
   api.use(createSliceRouter({ limit: heavyLimit }));
-  api.use(createPrintersRouter());
+  const printersApi = loadPrintersApi();
+  if (opts.printerTestOverride) {
+    // Test seam only (see the option's doc comment). Applied to the loaded
+    // façade rather than threaded through the router, because the probe happens
+    // two layers down inside addPrinter().
+    printersApi?.setConnectionTestOverride?.(opts.printerTestOverride);
+  }
+  api.use(createPrintersRouter(printersApi));
   api.use(createJobsRouter(undefined, { limit: heavyLimit }));
   api.use(createSettingsRouter());
   api.use(createChatsRouter());

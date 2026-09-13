@@ -11,6 +11,7 @@ import type { Request, Response } from "express";
 import { loadPrintersApi } from "../facades";
 import type { PrintersApi } from "../facades";
 import { isMultiUser, isLanOnlyTransport } from "../security";
+import { sendError, stripPaths, WireError } from "../errors";
 import type { PrinterConnection, PrinterSecrets, PrinterTransport } from "../../shared/printers";
 
 export function createPrintersRouter(api: PrintersApi | undefined = loadPrintersApi()): Router {
@@ -21,6 +22,36 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       res.status(503).json({ error: "Printer connections are not available on this server yet." });
     });
     return router;
+  }
+
+  /**
+   * Every `/printers/:id` route starts here.
+   *
+   * The registry is per session (main/printers/registry.ts), so an id this
+   * session doesn't own simply isn't there — and the honest, non-leaking answer
+   * is 404, the same one the caller gets for an id that never existed. Anything
+   * else (403, or relaying the registry's "Printer not found: <id>" as a 422)
+   * would confirm to one visitor that another visitor's printer id is real.
+   * Returns the printer when it is this session's, otherwise answers and
+   * returns undefined.
+   */
+  async function ownPrinter(req: Request, res: Response): Promise<PrinterConnection | undefined> {
+    const printer = await api!.getPrinter(req.params.id);
+    if (printer) return printer;
+    res.status(404).json({ error: "No such printer.", code: "not_found" });
+    return undefined;
+  }
+
+  /** A failure while validating/applying client input. A `WireError` already
+   *  says what the client should be told (status + stable code); anything else
+   *  is a plain validation complaint, with absolute paths scrubbed — no wire
+   *  payload may carry a server path (spec §Error handling). */
+  function fail(res: Response, err: unknown, fallback: string, status = 422): void {
+    if (err instanceof WireError) {
+      sendError(res, err);
+      return;
+    }
+    res.status(status).json({ error: stripPaths((err as Error)?.message || fallback) });
   }
 
   router.get("/printers", async (_req: Request, res: Response) => {
@@ -56,6 +87,13 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
 
   router.post("/printers/active", async (req: Request, res: Response) => {
     const id = (req.body ?? {}).id;
+    // Selecting a printer this session doesn't own is the same kind of miss as
+    // addressing one by id — and the façade throws for an unknown id, which
+    // would otherwise surface as a 500.
+    if (typeof id === "string" && !(await api.getPrinter(id))) {
+      res.status(404).json({ error: "No such printer.", code: "not_found" });
+      return;
+    }
     await api.setActivePrinter(typeof id === "string" ? id : undefined);
     res.json({ ok: true });
   });
@@ -78,7 +116,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       const result = await api.addPrinter(input);
       res.status(201).json(result);
     } catch (err) {
-      res.status(422).json({ error: (err as Error).message ?? "add printer failed" });
+      fail(res, err, "add printer failed");
     }
   });
 
@@ -88,36 +126,41 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       res.status(400).json({ error: "LAN-only transports are disabled on a hosted server." });
       return;
     }
+    if (!(await ownPrinter(req, res))) return;
     try {
       const typedPatch = patch as unknown as Partial<PrinterConnection & PrinterSecrets>;
       res.json(await api.updatePrinter(req.params.id, typedPatch));
     } catch (err) {
-      res.status(422).json({ error: (err as Error).message ?? "update failed" });
+      fail(res, err, "update failed");
     }
   });
 
   router.delete("/printers/:id", async (req: Request, res: Response) => {
+    if (!(await ownPrinter(req, res))) return;
     await api.removePrinter(req.params.id);
     res.status(204).end();
   });
 
   router.post("/printers/:id/test", async (req: Request, res: Response) => {
+    if (!(await ownPrinter(req, res))) return;
     try {
       res.json(await api.testPrinter(req.params.id));
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "test failed" });
+      fail(res, err, "test failed", 502);
     }
   });
 
   router.get("/printers/:id/status", async (req: Request, res: Response) => {
+    if (!(await ownPrinter(req, res))) return;
     try {
       res.json(await api.printerStatus(req.params.id));
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "status failed" });
+      fail(res, err, "status failed", 502);
     }
   });
 
   router.post("/printers/:id/send", async (req: Request, res: Response) => {
+    if (!(await ownPrinter(req, res))) return;
     const session = req.session!;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const gcodeId = body.gcodeId;
@@ -147,7 +190,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       });
       res.json(result);
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "send failed" });
+      fail(res, err, "send failed", 502);
     }
   });
 
@@ -157,10 +200,11 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       res.status(400).json({ error: "action must be pause, resume, or cancel" });
       return;
     }
+    if (!(await ownPrinter(req, res))) return;
     try {
       res.json(await api.controlPrinter(req.params.id, action));
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "control failed" });
+      fail(res, err, "control failed", 502);
     }
   });
 
@@ -168,7 +212,9 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     // SAFETY: this endpoint IS the arming switch, meant to be hit only by an
     // explicit user toggle in Settings — never called implicitly from /send
     // or from planning/running a job. Do not wire an automatic call to this
-    // into any other flow.
+    // into any other flow. And a visitor may only arm THEIR OWN printer: the
+    // whole point of the gate is that a human confirmed this bed is clear.
+    if (!(await ownPrinter(req, res))) return;
     const armed = (req.body ?? {}).armed === true;
     await api.setAutoStart(req.params.id, armed);
     res.json({ ok: true });
