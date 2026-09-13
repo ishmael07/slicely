@@ -34,9 +34,12 @@ import type {
   SendJobOptions,
   SendJobResult,
 } from "../../shared/printers";
+import { basename } from "node:path";
 import * as registry from "./registry";
 import { discoverPrinters as runDiscovery } from "./discovery";
-import { describeError, nowIso } from "./util";
+import { assertAllowedOutputDir, describeError, nowIso, safeJobName } from "./util";
+import { isHosted } from "../mode";
+import { WireError } from "../../server/errors";
 import { octoprintDriver } from "./drivers/octoprint";
 import { moonrakerDriver } from "./drivers/moonraker";
 import { prusalinkDriver } from "./drivers/prusalink";
@@ -92,7 +95,7 @@ export async function getPrinter(id: string): Promise<PrinterConnection | undefi
 export async function addPrinter(
   input: Omit<PrinterConnection, "id"> & PrinterSecrets,
 ): Promise<{ printer: PrinterConnection; test: PrinterTestResult }> {
-  const printer = registry.addConnection(input);
+  const printer = registry.addConnection(checkOutputDir(input.transport, input));
   const test = await testPrinter(printer.id);
 
   const patch: Partial<PrinterConnection> = {};
@@ -110,7 +113,33 @@ export async function updatePrinter(
   id: string,
   patch: Partial<PrinterConnection & PrinterSecrets>,
 ): Promise<PrinterConnection> {
-  return registry.updateConnection(id, patch);
+  const transport = patch.transport ?? registry.getConnection(id)?.transport;
+  return registry.updateConnection(id, checkOutputDir(transport, patch));
+}
+
+/**
+ * Validate the "file" transport's destination folder before it is ever stored.
+ *
+ * `outputDir` is the one connection field that is a filesystem capability: the
+ * driver copies a file into it. So it is checked HERE, at save time — a
+ * validated record is worth more than a check deferred to every send — and
+ * normalised to its resolved form so there is exactly one spelling on disk.
+ * The "file" transport is desktop-only (a hosted server's folders are not the
+ * visitor's), which `assertAllowedOutputDir` enforces; a `file` printer with no
+ * folder at all is refused the same way, so hosted mode can't hold one.
+ * Returns the input (with the resolved directory) so callers can pass it
+ * straight to the registry.
+ */
+function checkOutputDir<T extends { outputDir?: string }>(
+  transport: PrinterTransport | undefined,
+  input: T,
+): T {
+  if (transport !== "file" && input.outputDir === undefined) return input;
+  if (transport === "file" && isHosted()) {
+    throw new WireError(403, "Saving to a folder only works in the Mac app.", "forbidden_in_hosted_mode");
+  }
+  if (typeof input.outputDir !== "string" || input.outputDir.trim().length === 0) return input;
+  return { ...input, outputDir: assertAllowedOutputDir(input.outputDir) };
 }
 
 export async function removePrinter(id: string): Promise<void> {
@@ -171,7 +200,10 @@ export async function sendToPrinter(
   const armed = registry.isAutoStartArmed(id);
   const finalOpts: SendJobOptions = {
     startImmediately: requestedStart && armed,
-    jobName: opts.jobName,
+    // The job name becomes a filename on a printer or in a folder, so it is
+    // sanitised HERE, once, for every transport — no driver has to remember
+    // (see safeJobName). The G-code's own basename is the fallback.
+    jobName: safeJobName(opts.jobName, basename(gcodePath)),
   };
 
   let result: SendJobResult;

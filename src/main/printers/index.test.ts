@@ -1,7 +1,7 @@
 // Redirect the workdir to a throwaway temp directory before anything
 // transitively requires ../config (see the same note in registry.test.ts).
-import { mkdtempSync, writeFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -15,6 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as printers from "./index";
 import { resetKeyVaultForTests } from "../keyvault";
+import { WireError } from "../../server/errors";
 
 resetKeyVaultForTests();
 
@@ -147,4 +148,59 @@ test("getPrinter/listPrinters never expose secrets", async (t) => {
   assert.ok(all.every((p) => (p as unknown as Record<string, unknown>).apiKey === undefined));
 
   await printers.removePrinter(printer.id);
+});
+
+// ── Task D2: the "file" transport can only write where a person would ────────
+
+test("the file transport can't be added on a hosted server", async () => {
+  await assert.rejects(
+    () =>
+      printers.addPrinter({
+        label: "Someone else's disk",
+        transport: "file",
+        outputDir: join(homedir(), "Desktop"),
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof WireError, "a hosted refusal must carry its own status and code");
+      assert.equal(err.status, 403);
+      assert.equal(err.code, "forbidden_in_hosted_mode");
+      return true;
+    },
+  );
+  // Not even without a folder: there is no folder a visitor could collect from.
+  await assert.rejects(() => printers.addPrinter({ label: "No folder", transport: "file" }), WireError);
+});
+
+test("a file-transport send stays inside the chosen folder, whatever the job is called", async () => {
+  const prevMode = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = "desktop";
+  // Inside the real home directory, because "inside the home directory" is the
+  // rule under test. Removed again in the finally below.
+  const dir = mkdtempSync(join(homedir(), "slicely-file-transport-test-"));
+  const gcodePath = join(tmpdir(), `slicely-file-send-${Date.now()}.gcode`);
+  writeFileSync(gcodePath, "G28\n");
+  try {
+    const { printer, test: probe } = await printers.addPrinter({
+      label: "Desktop folder",
+      transport: "file",
+      outputDir: dir,
+    });
+    assert.equal(probe.ok, true, probe.message);
+
+    const result = await printers.sendToPrinter(printer.id, gcodePath, { jobName: "../../../escaped" });
+    assert.equal(result.ok, true, result.message);
+    assert.equal(result.started, false, "a folder never starts a print");
+    assert.equal(existsSync(join(dir, "escaped.gcode")), true, "the copy lands in the chosen folder");
+    assert.equal(existsSync(join(dir, "..", "escaped.gcode")), false, "and nowhere above it");
+
+    // A hidden system folder is refused even when the record already existed.
+    await assert.rejects(() => printers.updatePrinter(printer.id, { outputDir: join(homedir(), ".ssh") }), WireError);
+
+    await printers.removePrinter(printer.id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    unlinkSync(gcodePath);
+    if (prevMode === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prevMode;
+  }
 });

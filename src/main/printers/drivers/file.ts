@@ -1,17 +1,43 @@
 // "file" transport — no network at all. Copies the sliced G-code into a
-// destination folder (default: the shared slices directory from
+// destination folder (default: the session's slices directory from
 // getConfig()). This is the always-works fallback: SD-card printers, "just
 // show me the file", and the safety net when no networked transport is
 // configured or reachable. It can never fail to reach a "printer" (there
 // isn't one), so test() only checks that the destination is writable.
+//
+// ── WHERE IT MAY WRITE ──────────────────────────────────────────────────────
+// This is the one driver that writes to the machine Slicely runs on, so it is
+// the one driver where a caller-supplied string is a filesystem capability.
+// `outputDir` goes through `assertAllowedOutputDir` (desktop only, inside the
+// user's home, no hidden folders) and the filename through `safeJobName` (a
+// basename with a printable extension) — see printers/util.ts for why each
+// rule exists. The façade validates both when a printer is saved and when a
+// job is sent; re-checking here means a record written by an older version, or
+// a caller that bypasses the façade, still cannot escape.
 import { copyFile, mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { getConfig } from "../../config";
+import { isHosted } from "../../mode";
+import { WireError } from "../../../server/errors";
 import type { PrinterDriver, PrinterStatus, PrinterTestResult, SendJobResult } from "../../../shared/printers";
-import { describeError, nowIso } from "../util";
+import { assertAllowedOutputDir, describeError, nowIso, safeJobName } from "../util";
 
+/**
+ * The folder this printer writes into.
+ *
+ * A user-chosen folder is validated. An empty one means "wherever Slicely puts
+ * slices", which is the server's own choice of directory rather than user
+ * input — so it is used as-is (it lives under the configured workdir, which may
+ * legitimately sit outside the home directory), but only in desktop mode: on a
+ * hosted server there is no folder the visitor could ever collect the file
+ * from, so the transport itself doesn't apply.
+ */
 function destDir(outputDir: string | undefined): string {
-  return outputDir && outputDir.trim().length > 0 ? outputDir : getConfig().slicesDir;
+  if (outputDir && outputDir.trim().length > 0) return assertAllowedOutputDir(outputDir);
+  if (isHosted()) {
+    throw new WireError(403, "Saving to a folder only works in the Mac app.", "forbidden_in_hosted_mode");
+  }
+  return getConfig().slicesDir;
 }
 
 export const fileDriver: PrinterDriver = {
@@ -23,7 +49,14 @@ export const fileDriver: PrinterDriver = {
   requiredSecrets: [],
 
   async test(printer): Promise<PrinterTestResult> {
-    const dir = destDir(printer.outputDir);
+    // Contract: test() never throws — a refused directory is a failed probe
+    // with the reason the user needs, not an exception.
+    let dir: string;
+    try {
+      dir = destDir(printer.outputDir);
+    } catch (err) {
+      return { ok: false, message: describeError(err) };
+    }
     try {
       await mkdir(dir, { recursive: true });
       return { ok: true, message: `Ready — G-code will be copied to ${dir}.` };
@@ -44,8 +77,13 @@ export const fileDriver: PrinterDriver = {
   },
 
   async send(printer, gcodePath, opts): Promise<SendJobResult> {
-    const dir = destDir(printer.outputDir);
-    const name = opts.jobName || basename(gcodePath);
+    let dir: string;
+    try {
+      dir = destDir(printer.outputDir);
+    } catch (err) {
+      return { ok: false, started: false, message: describeError(err) };
+    }
+    const name = safeJobName(opts.jobName, basename(gcodePath));
     try {
       await mkdir(dir, { recursive: true });
       const dest = join(dir, name);

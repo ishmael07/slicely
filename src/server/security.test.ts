@@ -121,6 +121,34 @@ test("SLICELY_MODE=hosted disables LAN discovery without ever calling the façad
   }
 });
 
+test("SLICELY_MODE=hosted refuses the folder transport with its own code, façade untouched", async () => {
+  // "Save to a folder" on a hosted server means the OPERATOR's disk, which the
+  // visitor can neither see nor collect a file from — so it is refused before
+  // the façade is asked, and with the code the UI branches on (not the LAN
+  // advice, which is nonsense for a transport with no network).
+  const app = express();
+  app.use(express.json());
+  app.use("/api", createPrintersRouter(unusedPrinterApi()));
+  const { base, close } = await listen(app);
+  const prev = process.env.SLICELY_MODE;
+  try {
+    process.env.SLICELY_MODE = "hosted";
+    const resp = await fetch(`${base}/api/printers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transport: "file", label: "Folder", outputDir: "/etc" }),
+    });
+    assert.equal(resp.status, 403);
+    const body = (await resp.json()) as { error: string; code?: string };
+    assert.equal(body.code, "forbidden_in_hosted_mode");
+    assert.match(body.error, /Mac app/);
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+    await close();
+  }
+});
+
 test("SLICELY_MODE=desktop allows LAN discovery through to the façade", async () => {
   const app = express();
   app.use(express.json());

@@ -105,6 +105,15 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       res.status(400).json({ error: "transport is required" });
       return;
     }
+    // The folder transport writes to the machine Slicely runs on. On a hosted
+    // server that is the operator's disk — not a folder the visitor could ever
+    // open — so it is refused with its own stable code rather than the LAN
+    // message below, which would be confusing advice for a transport that has
+    // no network at all.
+    if (isMultiUser() && transport === "file") {
+      res.status(403).json({ error: "Saving to a folder only works in the Mac app.", code: "forbidden_in_hosted_mode" });
+      return;
+    }
     if (isMultiUser() && isLanOnlyTransport(transport)) {
       res.status(400).json({
         error: `"${transport}" requires being on the printer's own LAN, so it can't be added on a hosted server. Use a cloud transport (Prusa Connect or Bambu Cloud).`,
