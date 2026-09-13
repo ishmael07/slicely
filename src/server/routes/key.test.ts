@@ -23,6 +23,11 @@ import { SessionStore, type ChatAgent } from "../session";
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
+// The developer's own .env (loaded by config.ts) may carry an ANTHROPIC_API_KEY
+// and the operator flag; a hosted-mode test must never see either.
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
+
 const GOOD_KEY = "sk-ant-api03-" + "k".repeat(40);
 const OAT_TOKEN = "sk-ant-oat01-" + "k".repeat(40);
 

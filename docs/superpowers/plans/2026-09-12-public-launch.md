@@ -332,7 +332,7 @@ test("hosted mode refuses to boot without a real 32-byte SLICELY_MASTER_KEY", ()
   ```ts
   export const ANTHROPIC_KEY_RE = /^sk-ant-api\d{2}-[A-Za-z0-9_-]{20,}$/;
   export class NoApiKeyError extends Error { code = "no_key" as const }
-  export function getUserApiKey(): string | undefined;     // decrypts <session>/secrets.json → anthropicKey; desktop dev fallback: SLICELY_DEV_ANTHROPIC_KEY when isDesktop()
+  export function getUserApiKey(): string | undefined;     // decrypts <session>/secrets.json → anthropicKey; operator fallback: ANTHROPIC_API_KEY when isDesktop() or SLICELY_ALLOW_OPERATOR_KEY=1 (userKeyHint() then reports "this server's key", never the last four)
   export function setUserApiKey(key: string): void;        // validates format (throws KeyFormatError code "key_invalid_format"), encrypts, writes 0600, updates cache
   export function clearUserApiKey(): void;
   export function userKeyHint(): string | undefined;       // last 4 chars, e.g. "…a1b2"

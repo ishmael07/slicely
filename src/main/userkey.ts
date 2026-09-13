@@ -64,10 +64,10 @@ const SECRETS_FILE = () => sessionFile("secrets.json");
  * What this session's stored state says, which is NOT simply "a key or not".
  *
  * `cleared` is a tombstone: the user pressed Disconnect. It has to be recorded,
- * because desktop mode falls back to `SLICELY_DEV_ANTHROPIC_KEY` when no key is
- * stored — so without a tombstone, DELETE /api/key would answer
+ * because there is a fallback to the OPERATOR'S key when none is stored (see
+ * `operatorKey`) — so without a tombstone, DELETE /api/key would answer
  * `{hasKey: false}`, the very next /api/config would answer `{hasKey: true}`
- * again, and chat would keep spending the developer's key after the user asked
+ * again, and chat would keep spending the operator's key after the user asked
  * it to stop.
  */
 interface KeyState {
@@ -149,28 +149,52 @@ function readState(): KeyState {
  * key" rather than an exception: the user can simply paste theirs again, which
  * is a better outcome than every request in the session throwing.
  *
- * Desktop dev convenience: `SLICELY_DEV_ANTHROPIC_KEY` stands in when no key
- * has been stored. Only in desktop mode — a hosted server must never fall back
- * to an operator-supplied key, because that would bill the owner for a
- * visitor's chat.
+ * Falls back to the OPERATOR'S OWN `ANTHROPIC_API_KEY` when no key is stored —
+ * but only where that cannot quietly bill one person for another's chat:
+ *
+ *   • desktop mode, where the operator and the user are the same human, and
+ *   • a hosted server whose operator set `SLICELY_ALLOW_OPERATOR_KEY=1`, an
+ *     explicit, documented decision to pay for every visitor's chat.
+ *
+ * Anywhere else, no stored key means no key. A hosted deployment that merely
+ * happens to have `ANTHROPIC_API_KEY` in its environment — for a script, a
+ * sibling service, a copied .env — must not start spending it on strangers.
+ * That is what makes the standard variable name safe to read here: the name is
+ * not the permission, the flag is.
  */
 export function getUserApiKey(): string | undefined {
+  return resolveKey().key;
+}
+
+/** Where the key in play came from — the distinction `userKeyHint` needs. */
+type KeySource = "session" | "operator" | "none";
+
+function resolveKey(): { key?: string; source: KeySource } {
   const sid = currentSessionId();
   let state = cache.get(sid);
   if (!state) {
     state = readState();
     cache.set(sid, state);
   }
-  if (state.key) return state.key;
-  // An explicit disconnect wins over the dev fallback — "no" has to mean no.
-  if (state.cleared) return undefined;
+  if (state.key) return { key: state.key, source: "session" };
+  // An explicit disconnect wins over the fallback — "no" has to mean no.
+  if (state.cleared) return { source: "none" };
 
-  if (isDesktop()) {
-    // Not cached: it's an env var a developer flips between runs.
-    const dev = process.env.SLICELY_DEV_ANTHROPIC_KEY?.trim();
-    if (dev) return dev;
-  }
-  return undefined;
+  const operator = operatorKey();
+  return operator ? { key: operator, source: "operator" } : { source: "none" };
+}
+
+/** True when this deployment has opted into spending the operator's own key. */
+function operatorKeyAllowed(): boolean {
+  if (isDesktop()) return true;
+  return process.env.SLICELY_ALLOW_OPERATOR_KEY?.trim() === "1";
+}
+
+/** The operator's key, if one is configured AND allowed to be used. Not cached:
+ *  it is an env var an operator flips between runs. */
+function operatorKey(): string | undefined {
+  if (!operatorKeyAllowed()) return undefined;
+  return process.env.ANTHROPIC_API_KEY?.trim() || undefined;
 }
 
 /**
@@ -209,11 +233,20 @@ export function clearUserApiKey(): void {
   cache.set(currentSessionId(), { cleared: true });
 }
 
-/** The only thing a client is ever told about the key itself: its last four
- *  characters, so a user can tell which key is connected. */
+/**
+ * The only thing a client is ever told about the key itself: its last four
+ * characters, so a user can tell which key is connected.
+ *
+ * The operator's fallback key is NEVER described that way. Four characters of
+ * it are four characters of a credential the visitor has no business seeing,
+ * and "…a4f2" would also read as "the key I pasted" to someone who pasted
+ * nothing. They are told whose key is paying instead.
+ */
 export function userKeyHint(): string | undefined {
-  const key = getUserApiKey();
-  return key ? "…" + key.slice(-4) : undefined;
+  const { key, source } = resolveKey();
+  if (!key) return undefined;
+  if (source === "operator") return "this server's key";
+  return "…" + key.slice(-4);
 }
 
 /** Drop a session's cached key (called when a session is destroyed or swept,

@@ -60,9 +60,11 @@ Electron ┼─ HTTPS ─► Express (src/server) ┼── sourcing providers (
   `maxRetries: 2`); its errors are mapped: 401 → "Your key was rejected — update it in
   Settings", 429 → "Your Anthropic account is rate-limited", 402/billing → "Your Anthropic
   account has no credit". The `.env` wording is removed from user-facing strings.
-- The owner's `ANTHROPIC_API_KEY` env var is **no longer read by the server**. It remains
-  only as an optional desktop dev convenience (`SLICELY_DEV_ANTHROPIC_KEY`) that pre-fills
-  the local key at startup.
+- The owner's `ANTHROPIC_API_KEY` env var is **not read for a visitor's chat**. It remains
+  only as an operator fallback, gated on desktop mode or an explicit
+  `SLICELY_ALLOW_OPERATOR_KEY=1` — so a hosted deployment that merely has the variable in
+  its environment never spends it on strangers. Where it does apply, `userKeyHint()`
+  reports "this server's key" rather than the owner's last four characters.
 - First-run UI: a "Connect your Claude key" card in the transcript empty state and in
   Settings → "AI". Copy tells users to create a personal key with an expiry at
   console.anthropic.com, says the key is encrypted at rest and sent only to Anthropic,

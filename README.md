@@ -58,7 +58,7 @@ That's deliberate. Starting a print on a bed that still holds the last part wrec
 
 - **Node.js 18+**
 - **[PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/)** — at `/Applications/PrusaSlicer.app` for the macOS app, or installed on the host for the web server. Search and import work without it.
-- An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com)).
+- An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com)) — each user connects their own in Settings, and their own account is billed. A server operator does not supply one for their visitors (see `SLICELY_ALLOW_OPERATOR_KEY` below).
 - Optional, for more sources: a free [Thingiverse App Token](https://www.thingiverse.com/apps/create), `GITHUB_TOKEN`, `MYMINIFACTORY_API_KEY`, `SMITHSONIAN_API_KEY`. Printables, NIH 3D, and NASA need nothing.
 
 ## Setup
@@ -67,7 +67,7 @@ That's deliberate. Starting a print on a bed that still holds the last part wrec
 git clone https://github.com/ishmael07/slicely.git
 cd slicely
 npm install
-cp .env.example .env      # then add ANTHROPIC_API_KEY
+cp .env.example .env      # then set SLICELY_MASTER_KEY; read its notes on keys
 ```
 
 ## Run
@@ -100,7 +100,9 @@ Type what you want, or paste a link:
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | ✅ | — | Powers the agent. |
+| `ANTHROPIC_API_KEY` | | — | **Yours**, not your visitors'. Read only in desktop mode, or on a hosted server with `SLICELY_ALLOW_OPERATOR_KEY=1`. Otherwise each user connects their own key in Settings and is billed for their own chat. |
+| `SLICELY_ALLOW_OPERATOR_KEY` | | off | Set to `1` to let a hosted server fall back to your `ANTHROPIC_API_KEY`. **Every visitor's chat is then billed to you**, so only for a private deployment or one you intend to pay for. |
+| `SLICELY_MASTER_KEY` | ✅ hosted | — | Encrypts each session's stored key at rest. `openssl rand -base64 32`. |
 | `SLICELY_PORT` | | `3000` | Web server port. |
 | `SLICELY_ENABLE_SCRAPERS` | | off | Re-enable Thangs / Yeggi / STLFinder. They are bot-blocked in practice and added ~8s to every search, so they are off by default. |
 | `SLICELY_MULTI_USER` | | off | Set for a **public** deployment: disables LAN discovery and LAN-only transports, because the server's network is not the visitor's. |

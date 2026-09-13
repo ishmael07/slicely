@@ -23,12 +23,11 @@ function envInt(name: string, fallback: number): number {
 /**
  * Owner-supplied, environment-only configuration.
  *
- * Deliberately ABSENT: any Anthropic credential. `ANTHROPIC_API_KEY` is no
- * longer read anywhere in Slicely — AI access is bring-your-own, per session
- * (see userkey.ts), so chat bills the user who pasted the key rather than
- * whoever deployed the server. The only Anthropic-shaped env var left is
- * `SLICELY_DEV_ANTHROPIC_KEY`, a desktop-mode developer convenience read by
- * userkey.ts.
+ * Deliberately ABSENT: any Anthropic credential. AI access is bring-your-own,
+ * per session (see userkey.ts), so chat bills the user who pasted the key
+ * rather than whoever deployed the server. `ANTHROPIC_API_KEY` is read in
+ * exactly one place — userkey.ts's operator fallback, gated on desktop mode or
+ * `SLICELY_ALLOW_OPERATOR_KEY=1` — and never becomes part of this config.
  */
 export interface SlicelyConfig {
   thingiverseToken: string;
