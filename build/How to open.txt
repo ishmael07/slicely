@@ -1,0 +1,1 @@
+This build isn't signed with an Apple Developer ID yet. First launch: right-click Slicely.app → Open → Open. Or: System Settings → Privacy & Security → Open Anyway. Source: https://github.com/ishmael07/slicely.
