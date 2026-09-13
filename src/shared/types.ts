@@ -411,6 +411,20 @@ export interface UploadResult {
   sliceable: boolean;
 }
 
+/**
+ * Hard caps on what a single ZIP archive may expand into — the zip-bomb
+ * bounds, shared by BOTH extractors (main/meshzip.ts for uploads,
+ * main/sourcing/download.ts for downloads) so neither can be the soft spot.
+ *
+ * Entry COUNT is the cheap attack: a few kilobytes of archive can name tens of
+ * thousands of files, each of which costs an inode, a write, and a row in the
+ * session's file list. Total UNCOMPRESSED SIZE is the classic one: DEFLATE
+ * reaches ~1000:1 on zeroes, so a 2 MB upload can ask for 2 GB of disk.
+ * 500 entries / 2 GB is far beyond any real multi-part model kit.
+ */
+export const MAX_ZIP_ENTRIES = 500;
+export const MAX_ZIP_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+
 /** Mesh/CAD extensions Slicely accepts from the user. `.zip` is accepted and
  *  expanded into its contained meshes. */
 export const ACCEPTED_UPLOAD_EXTS = [

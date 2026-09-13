@@ -20,6 +20,8 @@ import { createWriteStream, promises as fsp } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import unzipper from "unzipper";
 import type { DownloadPart, DownloadResult } from "../../shared/types";
+import { MAX_ZIP_TOTAL_BYTES } from "../../shared/types";
+import { assertZipWithinCaps } from "../meshzip";
 import { guardedFetch, safeText } from "./net";
 import {
   filenameFromContentDisposition,
@@ -207,7 +209,14 @@ export async function expandZipFile(
 ): Promise<DownloadPart[]> {
   await fsp.mkdir(destDir, { recursive: true });
   const directory = await unzipper.Open.file(zipPath);
+
+  // Entry count and total uncompressed size, from the central directory, before
+  // anything is written — the per-entry cap below bounds one file but says
+  // nothing about 50,000 of them, or about 2 GB spread across a thousand.
+  assertZipWithinCaps(directory.files);
+
   const parts: DownloadPart[] = [];
+  let written = 0;
 
   for (const entry of directory.files) {
     if (entry.type !== "File") continue;
@@ -223,6 +232,14 @@ export async function expandZipFile(
 
     const outPath = resolveZipEntryPath(destDir, entry.path);
     const content = await entry.buffer();
+    // Count real bytes too: the declared sizes checked above came from the
+    // archive, and a hostile archive is free to under-report them.
+    written += content.byteLength;
+    if (written > MAX_ZIP_TOTAL_BYTES) {
+      throw new Error(
+        `Archive unpacks to more than the ${MAX_ZIP_TOTAL_BYTES}-byte cap: ${zipPath}`,
+      );
+    }
     await fsp.writeFile(outPath, content);
     parts.push({
       localPath: outPath,

@@ -6,15 +6,17 @@
 // rejects BEFORE the route would need to shell out to it).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
-import type { Server } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import type { ClientRequest, Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Express } from "express";
 import { createApp } from "../index";
 import { SessionStore } from "../session";
+import { resetConfigForTests } from "../../main/config";
+import { buildZip } from "../../main/sourcing/zipFixture";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "slicely-test-"));
@@ -101,6 +103,124 @@ test("session isolation: session B cannot slice a file session A uploaded", asyn
     const sliceData = (await sliceResp.json()) as { error: string };
     assert.equal(sliceResp.status, 403);
     assert.match(sliceData.error, /not part of this session/);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("uploaded files land under the session's own directory, never in a global uploads/", async () => {
+  const root = tmpRoot();
+  const workdir = tmpRoot();
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.SLICELY_WORKDIR = workdir;
+  resetConfigForTests();
+
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(createApp({ sessionStore: store }));
+  try {
+    const fd = new FormData();
+    // 1 KB each — the point is where they land, not how big they are.
+    fd.append("files", new Blob(["solid a\n" + "x".repeat(1000) + "\nendsolid a\n"]), "a.stl");
+    fd.append("files", new Blob(["solid b\n" + "y".repeat(1000) + "\nendsolid b\n"]), "b.stl");
+    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
+    const data = (await resp.json()) as { uploaded: Array<{ localPath: string; fileName: string }> };
+    assert.equal(resp.status, 200);
+    assert.equal(data.uploaded.length, 2);
+
+    for (const u of data.uploaded) {
+      assert.ok(u.localPath.startsWith(root), `left the sessions root: ${u.localPath}`);
+      assert.ok(existsSync(u.localPath), `missing on disk: ${u.localPath}`);
+    }
+
+    // THE REGRESSION: main/uploads.ts used to copy every upload into the ONE
+    // global `<workdir>/uploads` directory first, so a hosted server had every
+    // visitor's files piled into a shared folder (and a second copy of each on
+    // disk) before they were moved into the session. Nothing may write there.
+    assert.ok(
+      !existsSync(join(workdir, "uploads")),
+      `a global uploads/ dir was written: ${readdirSync(workdir).join(", ")}`,
+    );
+  } finally {
+    await close();
+    store.stopSweep();
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a zip with more entries than the cap is refused, not expanded", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(createApp({ sessionStore: store }));
+  try {
+    // 501 tiny STLs: harmless in bytes (~10 KB total), hostile in entry count.
+    // Without an entry cap the extractor writes 501 files and the route stores
+    // 501 UploadResults per request — a cheap way to hammer a shared server.
+    const zip = buildZip(
+      Array.from({ length: 501 }, (_, i) => ({
+        name: `part-${i}.stl`,
+        content: Buffer.from(`solid p${i}\nendsolid p${i}\n`),
+      })),
+    );
+    const fd = new FormData();
+    fd.append("files", new Blob([new Uint8Array(zip)]), "parts.zip");
+    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
+    const data = (await resp.json()) as { error: string; code?: string };
+    assert.equal(resp.status, 400);
+    assert.equal(data.code, "zip_too_many_entries");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a batch bigger than the 600 MB cap is refused before its bytes are read", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(createApp({ sessionStore: store }));
+  try {
+    // A declared 700 MB body, of which we send 64 bytes. The point is that the
+    // server answers from the header alone: 12 × 200 MB used to be an accepted
+    // request, so the only way to prove the cap is to watch it refuse one
+    // WITHOUT us having to actually transfer 700 MB.
+    const url = new URL("/api/upload", base);
+    let sent: ClientRequest | undefined;
+    const answer = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      sent = httpRequest(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: "POST",
+          headers: {
+            "content-type": "multipart/form-data; boundary=----slicely",
+            "content-length": String(700 * 1024 * 1024),
+          },
+        },
+        (resp) => {
+          let text = "";
+          resp.setEncoding("utf8");
+          resp.on("data", (d: string) => (text += d));
+          resp.on("end", () => resolve({ status: resp.statusCode ?? 0, body: text }));
+        },
+      );
+      sent.on("error", (e) => reject(e));
+      sent.write("------slicely\r\n");
+      // Deliberately never end(): the declared Content-Length is never met.
+    }).catch((e: Error) => ({ status: 0, body: e.message }));
+    // We are the rude client here — hang up so the server can close.
+    sent?.destroy();
+
+    assert.equal(answer.status, 413);
+    const data = JSON.parse(answer.body) as { error: string; code?: string };
+    assert.equal(data.code, "too_large");
+    assert.match(data.error, /600 MB max per batch/);
   } finally {
     await close();
     store.stopSweep();

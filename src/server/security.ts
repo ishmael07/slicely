@@ -48,6 +48,14 @@ export const JSON_BODY_LIMIT = "2mb";
  *  a hostile upload. */
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
+/** Ceiling on ONE upload request, all files together.
+ *
+ * multer's own limits are per-file and per-count only, so `fileSize: 200 MB`
+ * with `files: 12` authorises a 2.4 GB request — enough to fill a small host's
+ * disk in a single POST, from one session, inside the `heavy` rate limit. The
+ * batch total is a separate, manually-counted bound (see routes/upload.ts). */
+export const MAX_UPLOAD_BATCH_BYTES = 600 * 1024 * 1024;
+
 export function securityHeaders(): RequestHandler {
   return (_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");

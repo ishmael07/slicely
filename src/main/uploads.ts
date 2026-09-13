@@ -12,6 +12,7 @@ import { ACCEPTED_UPLOAD_EXTS } from "../shared/types";
 import type { UploadResult } from "../shared/types";
 import { getConfig } from "./config";
 import { extractMeshesFromZip } from "./meshzip";
+import { WireError } from "../server/errors";
 
 /** Mesh formats PrusaSlicer slices directly from the CLI. */
 const SLICEABLE_EXTS = new Set([".stl", ".3mf", ".obj", ".amf"]);
@@ -20,12 +21,24 @@ function isAccepted(ext: string): boolean {
   return (ACCEPTED_UPLOAD_EXTS as readonly string[]).includes(ext);
 }
 
+/** Where accepted files land when the caller doesn't say. The single global
+ *  workdir folder is right for Electron (one user, one machine) and wrong for a
+ *  hosted server, where every visitor's files would pile into one shared
+ *  directory — so routes/upload.ts passes its own session's uploads dir. */
+function defaultUploadsDir(): string {
+  return join(getConfig().workdir, "uploads");
+}
+
 /**
- * Copy one accepted (non-archive) mesh/CAD file into <workdir>/uploads and
- * describe it. Throws on an unsupported extension or unreadable source.
- * ZIP archives are handled by acceptUploads (they expand to many files).
+ * Copy one accepted (non-archive) mesh/CAD file into `destDir` (default
+ * <workdir>/uploads) and describe it. Throws on an unsupported extension or
+ * unreadable source. ZIP archives are handled by acceptUploads (they expand to
+ * many files).
  */
-export async function acceptUpload(sourcePath: string): Promise<UploadResult> {
+export async function acceptUpload(
+  sourcePath: string,
+  destDir?: string,
+): Promise<UploadResult> {
   const ext = extname(sourcePath).toLowerCase();
   if (!isAccepted(ext)) {
     throw new Error(
@@ -40,7 +53,7 @@ export async function acceptUpload(sourcePath: string): Promise<UploadResult> {
     throw new Error(`Can't read file: ${sourcePath}`);
   }
 
-  const uploadsDir = join(getConfig().workdir, "uploads");
+  const uploadsDir = destDir ?? defaultUploadsDir();
   await mkdir(uploadsDir, { recursive: true });
 
   const fileName = sanitizeFileName(basename(sourcePath));
@@ -60,17 +73,26 @@ export async function acceptUpload(sourcePath: string): Promise<UploadResult> {
  * Accept many files, skipping (not failing on) ones that error. A `.zip` is
  * expanded in place into its contained mesh files, so dropping one archive of
  * parts yields multiple UploadResults the rest of the pipeline can arrange.
+ *
+ * "Skipping, not failing" is right for a bad file (one unreadable STL in a drop
+ * of twelve shouldn't lose the other eleven) and WRONG for a refusal we owe the
+ * user an explanation for: a zip that blew the entry/size caps is rethrown so
+ * the caller can answer with its code instead of a blank "nothing usable here".
  */
-export async function acceptUploads(paths: string[]): Promise<UploadResult[]> {
+export async function acceptUploads(
+  paths: string[],
+  destDir?: string,
+): Promise<UploadResult[]> {
   const out: UploadResult[] = [];
   for (const p of paths) {
     try {
       if (extname(p).toLowerCase() === ".zip") {
-        out.push(...(await acceptZip(p)));
+        out.push(...(await acceptZip(p, destDir)));
       } else {
-        out.push(await acceptUpload(p));
+        out.push(await acceptUpload(p, destDir));
       }
     } catch (err) {
+      if (err instanceof WireError) throw err;
       console.warn(`[uploads] skipped ${p}:`, (err as Error).message);
     }
   }
@@ -78,11 +100,10 @@ export async function acceptUploads(paths: string[]): Promise<UploadResult[]> {
 }
 
 /** Expand a ZIP of parts into one UploadResult per contained mesh. */
-async function acceptZip(zipPath: string): Promise<UploadResult[]> {
+async function acceptZip(zipPath: string, destDir?: string): Promise<UploadResult[]> {
   const buf = await readFile(zipPath);
   const stem = sanitizeFileName(basename(zipPath, ".zip"));
-  const destDir = join(getConfig().workdir, "uploads", stem);
-  const parts = await extractMeshesFromZip(buf, destDir);
+  const parts = await extractMeshesFromZip(buf, join(destDir ?? defaultUploadsDir(), stem));
   if (parts.length === 0) {
     throw new Error(`No printable meshes found in ${basename(zipPath)}.`);
   }
