@@ -26,8 +26,13 @@ ARG PRUSASLICER_VERSION=2.8.1
 # see the wrapper's own comment for why.
 ENV SLICELY_MODE=hosted SLICELY_WORKDIR=/data SLICELY_TRUST_PROXY=1 SLICELY_PORT=8080 \
     PRUSASLICER_PATH=/opt/prusaslicer/slicer.sh NODE_ENV=production
+# `xauth` is not padding: xvfb-run shells out to it to write the per-display
+# auth cookie, and it is only a RECOMMENDS of the xvfb package — which
+# --no-install-recommends drops. Without it the wrapper dies on
+# `xvfb-run: error: xauth command not found` before PrusaSlicer is even reached,
+# which is to say every slice would have failed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl libgtk-3-0 libgl1 libglu1-mesa libegl1 libwebkit2gtk-4.1-0 libdbus-1-3 xvfb \
+      ca-certificates curl libgtk-3-0 libgl1 libglu1-mesa libegl1 libwebkit2gtk-4.1-0 libdbus-1-3 xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 # THE RUNTIME USER IS CREATED HERE, not just before `USER` at the bottom, and it
 # gets a REAL HOME. `useradd -r` on its own leaves `$HOME` pointing at a
