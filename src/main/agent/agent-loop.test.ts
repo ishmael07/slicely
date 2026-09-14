@@ -19,7 +19,8 @@ import { SlicelyAgent } from "./agent";
 import type { AgentEvent, ProviderId } from "../../shared/types";
 import type { NeutralMessage, Provider, StreamRequest, TurnResult } from "./provider";
 import { getProvider } from "./provider";
-import { OpenAiError } from "./provider-openai";
+import { OpenAiError, toOpenAiInput } from "./provider-openai";
+import { toAnthropicMessages } from "./provider-anthropic";
 
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
@@ -405,6 +406,103 @@ test("cancelling between parallel tool calls still answers every call", async ()
       assert.equal(stub.type === "tool_result" && stub.isError, undefined);
       // Only the one turn: the loop stopped where it was told to.
       assert.equal(provider.seen.length, 1);
+    });
+  });
+});
+
+// ── a turn that produced nothing ─────────────────────────────────────────────
+
+/** Every check that says a saved history can be sent back to either provider:
+ *  no empty message (both APIs 400 on `content: []`), every message carrying at
+ *  least one item through each mapping, and an assistant turn at the end. */
+function assertReplayable(messages: NeutralMessage[]): void {
+  for (const m of messages) {
+    assert.ok(m.content.length > 0, `an empty ${m.role} turn is a 400 on the next message`);
+  }
+  for (const m of toAnthropicMessages(messages)) {
+    assert.ok(Array.isArray(m.content) && m.content.length > 0, "no Anthropic message may be empty");
+  }
+  assert.ok(toOpenAiInput(messages).length >= messages.length, "every message becomes at least one input item");
+  assert.equal(messages.at(-1)?.role, "assistant", "a history has to end on the assistant");
+}
+
+test("a turn that produced nothing says so, and leaves no empty assistant message", async () => {
+  await withTempDir("agent-empty-", async (dir) => {
+    // What a max-effort turn cut off by the token ceiling looks like from here:
+    // the provider streamed no text and collected no items (the one item it saw
+    // was `status: "incomplete"` and was dropped). Pushing `{content: []}` for
+    // that used to be a 400 on the user's NEXT message — and a silent `done`,
+    // which reads as the assistant ignoring them.
+    const provider = fakeProvider([{ assistant: [], toolCalls: [] }]);
+    await runInSession(sessionContext("empty", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => provider });
+      const events: AgentEvent[] = [];
+      await agent.send("slice it", (e) => events.push(e));
+
+      const said = events
+        .filter((e): e is AgentEvent & { type: "text" } => e.type === "text")
+        .map((e) => e.text)
+        .join("");
+      assert.match(said, /cut off/i, "the user is told why nothing came back");
+      assert.equal(events.at(-1)?.type, "done");
+      assert.equal(events.some((e) => e.type === "error"), false);
+
+      const messages = (agent.exportHistory() as { messages: NeutralMessage[] }).messages;
+      assert.deepEqual(messages.map((m) => m.role), ["user", "assistant"]);
+      assertReplayable(messages);
+
+      // And the next message really does go out: two user turns in a row, or an
+      // empty one between them, is what the provider would have refused.
+      await agent.send("try again", () => {});
+      const sent = provider.seen[1].messages;
+      assert.deepEqual(sent.map((m) => m.role), ["user", "assistant", "user"]);
+      for (const m of sent) assert.ok(m.content.length > 0, "nothing empty goes out on the wire");
+      for (const m of toAnthropicMessages(sent)) assert.ok((m.content as unknown[]).length > 0);
+    });
+  });
+});
+
+test("a turn that dies between the tool calls and their results still answers every call", async () => {
+  await withTempDir("agent-throw-", async (dir) => {
+    // The renderer's socket closes while the first tool_start is being written,
+    // so `emit` throws — AFTER the assistant turn with two `tool_use` blocks is
+    // already in the history, and BEFORE any `tool_result` is. A history that
+    // ends there is a 400 on the next message on both providers, and it is the
+    // history that gets SAVED, so reopening the chat inherits the break.
+    const calls = [
+      { id: "t1", name: "get_slicer_status", input: {} },
+      { id: "t2", name: "get_slicer_status", input: {} },
+    ];
+    const provider = fakeProvider([
+      { assistant: calls.map((c) => ({ type: "tool_use" as const, ...c })), toolCalls: calls },
+    ]);
+
+    await runInSession(sessionContext("throw", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => provider });
+      const events: AgentEvent[] = [];
+      let thrown = false;
+      await agent.send("two things at once", (e) => {
+        if (e.type === "tool_start" && !thrown) {
+          thrown = true;
+          throw new Error("the renderer went away");
+        }
+        events.push(e);
+      });
+
+      const messages = (agent.exportHistory() as { messages: NeutralMessage[] }).messages;
+      const results = messages.flatMap((m) => m.content.filter((b) => b.type === "tool_result"));
+      assert.deepEqual(
+        results.map((b) => (b.type === "tool_result" ? b.id : b.type)),
+        ["t1", "t2"],
+        "every call the model made is answered, whatever killed the turn",
+      );
+      assertReplayable(messages);
+      // The tool never ran, so the stub is not an error — nothing went wrong
+      // with the tool, the turn died around it.
+      assert.equal(results[0].type === "tool_result" && results[0].isError, undefined);
+      assert.equal(events.at(-1)?.type, "done");
     });
   });
 });

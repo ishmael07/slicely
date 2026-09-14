@@ -37,6 +37,12 @@ const CONSOLE_URL = "https://console.anthropic.com/settings/keys";
  *  a slow TLS handshake, short enough that a paste doesn't hang the UI. */
 const VALIDATE_TIMEOUT_MS = 10_000;
 
+/** The hard ceiling on ONE streamed turn — the same 10 minutes the OpenAI path
+ *  applies (see provider-openai.ts), stated explicitly here so a stalled upstream
+ *  cannot hold the socket, the turn and the session's chat slot on either
+ *  provider. Generous, because cutting a real answer off is worse than waiting. */
+const STREAM_TIMEOUT_MS = 10 * 60_000;
+
 // ── neutral → Anthropic ──────────────────────────────────────────────────────
 
 export function toAnthropicTools(tools: ToolSpec[]): Anthropic.Tool[] {
@@ -254,6 +260,7 @@ export const ANTHROPIC_PROVIDER: Provider = {
     // stop painting the deltas (the tokens are billed either way).
     const stream = client.messages.stream(params as unknown as Anthropic.MessageStreamParams, {
       signal: req.signal,
+      timeout: STREAM_TIMEOUT_MS,
     });
     // Thinking only fires on adaptive-thinking models; on the others the event
     // simply never arrives, which the renderer handles gracefully.

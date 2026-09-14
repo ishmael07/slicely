@@ -427,6 +427,17 @@ function statusForStreamCode(code: string | undefined): number {
 function collectItem(raw: unknown, assistant: NeutralBlock[], toolCalls: ToolCall[]): void {
   if (!raw || typeof raw !== "object") return;
   const item = raw as Record<string, unknown>;
+  // A CUT-OFF ITEM IS NOT AN ITEM. When a response ends on `max_output_tokens`
+  // the item it was part-way through still arrives on `.done`, marked
+  // `status: "incomplete"` — and for a `function_call` that means `arguments` is
+  // a truncated JSON string, which `parseArguments` turns into `{}`. Executing
+  // that would run a real tool with silently wrong arguments (slice the wrong
+  // file, search for nothing) and then hand the model an answer to a question it
+  // never finished asking. Replaying a half-written reasoning or message item is
+  // the same bet with less to gain. Whatever the user actually WATCHED arrive is
+  // not lost by this: the deltas were already streamed, and the agent keeps them
+  // (see agent.ts) when a turn collects nothing.
+  if (item.status === "incomplete") return;
   switch (item.type) {
     case "message": {
       const content = Array.isArray(item.content) ? item.content : [];
@@ -507,7 +518,9 @@ export const OPENAI_PROVIDER: Provider = {
     // The caller's cancel AND a ceiling, so a turn ends whether or not anybody is
     // watching. `AbortSignal.any` keeps both live: whichever fires first wins,
     // and the composite is what the socket is bound to — a `fetch` with no signal
-    // could be neither cancelled nor timed out.
+    // could be neither cancelled nor timed out. (It landed in Node 20.3, which is
+    // why package.json now states an `engines.node`: on an older runtime this is
+    // `undefined is not a function` on the first chat turn, not a build error.)
     const signal = req.signal
       ? AbortSignal.any([req.signal, AbortSignal.timeout(STREAM_TIMEOUT_MS)])
       : AbortSignal.timeout(STREAM_TIMEOUT_MS);

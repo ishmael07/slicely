@@ -84,6 +84,14 @@ const CANCELLED_RESULT = "Cancelled by the user.";
  *  sits, and the user has already seen why (a Stop, or an error frame). */
 const INTERRUPTED_REPLY = "(This reply was interrupted.)";
 
+/** What the user is told when a turn came back with NOTHING — no text, no
+ *  reasoning, no call. It happens for real: `max_output_tokens` counts reasoning
+ *  tokens on the Responses API, so a max-effort turn can spend the whole budget
+ *  thinking and be cut off before its first word. A silent `done` reads as the
+ *  assistant ignoring them, so one line says what happened and what to try. */
+const EMPTY_TURN_NOTICE =
+  "The reply was cut off before it started — try again, or use a smaller effort.";
+
 /** The current shape of an exported history. v1 was a bare
  *  `Anthropic.MessageParam[]` with nothing saying so. */
 const HISTORY_VERSION = 2;
@@ -126,6 +134,17 @@ export class SlicelyAgent {
    * Replaced per turn, so a cancel can never poison the next one.
    */
   private inFlight = new AbortController();
+  /**
+   * The text of the turn in flight, as the user watched it arrive.
+   *
+   * Kept because the history is otherwise written only from what the provider
+   * COLLECTS, and a turn can be killed after streaming half a sentence — a Stop,
+   * a dropped socket, a token ceiling that cut the item the sentence lived in. On
+   * every one of those the user is looking at words the model never got credited
+   * with, and the next turn would carry on with no idea it had said them.
+   * Cleared as soon as an assistant turn is recorded.
+   */
+  private streamed = "";
   private readonly resolveProvider: (model: string) => Provider;
 
   constructor(opts: AgentOptions = {}) {
@@ -168,6 +187,7 @@ export class SlicelyAgent {
     this.history = [];
     this.historyProvider = undefined;
     this.cancelled = false;
+    this.streamed = "";
   }
 
   /** The conversation so far, for storing against a saved chat. */
@@ -185,6 +205,7 @@ export class SlicelyAgent {
    *  existed when it was written. */
   importHistory(history: unknown): void {
     this.cancelled = false;
+    this.streamed = "";
     const tagged = asExported(history);
     if (tagged) {
       this.history = tagged.messages;
@@ -211,8 +232,46 @@ export class SlicelyAgent {
    * it; a normal turn always ends on the assistant, so this is a no-op there.
    */
   private closeTurn(): void {
+    // FIRST the calls, because a history that ends on an unanswered `tool_use`
+    // is the same 400 as one that ends on a user message, and a throw between
+    // the assistant push and the tool-results push leaves exactly that. So does
+    // a cancel, and so does reopening a chat whose file was written mid-loop.
+    this.answerOpenCalls();
     if (this.history.at(-1)?.role !== "user") return;
-    this.history.push({ role: "assistant", content: [{ type: "text", text: INTERRUPTED_REPLY }] });
+    // The half sentence the user watched arrive is the assistant's own words,
+    // and it goes in FRONT of the stub: dropping it would leave the model
+    // carrying on from a reply the user can still see on screen but the model
+    // was never told it made.
+    const content: NeutralBlock[] = [];
+    if (this.streamed.trim()) content.push({ type: "text", text: this.streamed });
+    content.push({ type: "text", text: INTERRUPTED_REPLY });
+    this.streamed = "";
+    this.history.push({ role: "assistant", content });
+  }
+
+  /**
+   * Answer every `tool_use` in the final assistant turn that nothing came back
+   * for.
+   *
+   * A `function_call` (or `tool_use`) with no matching output is a 400 on the
+   * NEXT message, on both providers — and the history is what gets SAVED, so an
+   * unanswered call does not just break this turn, it breaks the chat every time
+   * it is reopened. The loop below fills them in where the turn ran normally;
+   * this is the same thing for a turn that never got there at all.
+   */
+  private answerOpenCalls(): void {
+    const last = this.history.at(-1);
+    // Only the LAST message can be fixed by appending: a tool_result has to sit
+    // in the message immediately after its call, so an orphan deeper in the
+    // history is not something a stub at the end would make legal.
+    if (last?.role !== "assistant") return;
+    const calls = last.content.filter(
+      (b): b is Extract<NeutralBlock, { type: "tool_use" }> => b.type === "tool_use",
+    );
+    if (!calls.length) return;
+    const results: NeutralBlock[] = [];
+    answerEveryCall(calls, results);
+    this.history.push({ role: "user", content: results });
   }
 
   /** Run one user turn to completion, streaming events via `emit`. */
@@ -263,12 +322,35 @@ export class SlicelyAgent {
             signal: this.inFlight.signal,
           },
           (delta) => {
-            if (!this.cancelled) emit({ type: delta.type, text: delta.text });
+            if (this.cancelled) return;
+            // Remembered as well as painted — see `streamed`.
+            if (delta.type === "text") this.streamed += delta.text;
+            emit({ type: delta.type, text: delta.text });
           },
         );
 
         // Record the assistant turn (text + reasoning + any tool calls).
-        this.history.push({ role: "assistant", content: assistant });
+        // NEVER EMPTY: `content: []` is a 400 on both providers, so a turn that
+        // collected nothing must not become a message. That is not a
+        // hypothetical — `max_output_tokens` counts reasoning tokens on the
+        // Responses API, and a cut-off item is dropped rather than replayed
+        // (provider-openai.ts), so a max-effort turn really can come back with
+        // no blocks at all.
+        if (assistant.length > 0) {
+          this.history.push({ role: "assistant", content: assistant });
+          this.streamed = "";
+        } else if (this.streamed.trim()) {
+          // Nothing collected, but the user watched text arrive: keep what they
+          // saw, so the model and the transcript agree on what it said.
+          this.history.push({ role: "assistant", content: [{ type: "text", text: this.streamed }] });
+          this.streamed = "";
+        } else {
+          // Nothing at all. Say so — a bare `done` after a long wait reads as
+          // the assistant ignoring the question — and let closeTurn put the stub
+          // in the history.
+          emit({ type: "text", text: EMPTY_TURN_NOTICE });
+          break;
+        }
 
         if (toolCalls.length === 0) break; // natural end of turn
 
@@ -312,15 +394,10 @@ export class SlicelyAgent {
           }
         }
 
-        // ANSWER EVERY CALL, even the ones that never ran. A `function_call`
-        // (or `tool_use`) with no matching output is a 400 on the NEXT message,
-        // on both providers — so the cancel above, which deliberately skips the
-        // rest of a parallel batch, would otherwise brick the conversation it
-        // was only meant to interrupt.
-        for (const call of toolCalls) {
-          const answered = toolResults.some((r) => r.type === "tool_result" && r.id === call.id);
-          if (!answered) toolResults.push({ type: "tool_result", id: call.id, content: CANCELLED_RESULT });
-        }
+        // ANSWER EVERY CALL, even the ones that never ran — the cancel above
+        // deliberately skips the rest of a parallel batch, and an unanswered
+        // call would brick the conversation it was only meant to interrupt.
+        answerEveryCall(toolCalls, toolResults);
 
         this.history.push({ role: "user", content: toolResults });
       }
@@ -343,6 +420,21 @@ export class SlicelyAgent {
       this.closeTurn();
       emit({ type: "done" });
     }
+  }
+}
+
+/**
+ * Fill in a stub `tool_result` for every call in `calls` that `results` has no
+ * answer for.
+ *
+ * Not an error: nothing went wrong with the tool, the turn ended around it, and
+ * `is_error` would invite the model to apologise for a failure that never
+ * happened. Used on both exit paths — the loop's own, and closeTurn's.
+ */
+function answerEveryCall(calls: Array<{ id: string }>, results: NeutralBlock[]): void {
+  for (const call of calls) {
+    const answered = results.some((r) => r.type === "tool_result" && r.id === call.id);
+    if (!answered) results.push({ type: "tool_result", id: call.id, content: CANCELLED_RESULT });
   }
 }
 

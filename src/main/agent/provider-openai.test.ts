@@ -170,6 +170,72 @@ test("a bare `error` frame and a failed response both raise a classified failure
   );
 });
 
+/**
+ * A turn the token ceiling cut off MID-CALL: the message item finished, the
+ * `function_call` after it did not — it arrives on `.done` with
+ * `status: "incomplete"` and a half-written JSON string for `arguments`.
+ */
+const TRUNCATED_TOOL_CALL =
+  frame({ type: "response.created", sequence_number: 0, response: { id: "resp_2" } }) +
+  frame({ type: "response.output_text.delta", sequence_number: 1, output_index: 0, delta: "Let me check that." }) +
+  frame({
+    type: "response.output_item.done",
+    sequence_number: 2,
+    output_index: 0,
+    item: {
+      id: "msg_2",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Let me check that.", annotations: [] }],
+    },
+  }) +
+  frame({ type: "response.function_call_arguments.delta", sequence_number: 3, item_id: "fc_2", delta: '{"pa' }) +
+  frame({
+    type: "response.output_item.done",
+    sequence_number: 4,
+    output_index: 1,
+    item: {
+      id: "fc_2",
+      call_id: "call_cut",
+      type: "function_call",
+      name: "slice_model",
+      // Truncated JSON — `parseArguments` turns this into `{}`.
+      arguments: '{"pa',
+      status: "incomplete",
+    },
+  }) +
+  frame({
+    type: "response.incomplete",
+    sequence_number: 5,
+    response: {
+      id: "resp_2",
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+    },
+  });
+
+test("a cut-off item is never collected, and the text before it still is", async () => {
+  const deltas: StreamDelta[] = [];
+  const { assistant, toolCalls } = await readTurn(parseSseFrames(chunked(TRUNCATED_TOOL_CALL)), (d) =>
+    deltas.push(d),
+  );
+
+  // THE POINT: an incomplete `function_call` must never be executed. Its
+  // arguments are a truncated string that parses to `{}`, so running it would
+  // slice the wrong file (or nothing) and then hand the model an answer to a
+  // question it never finished asking.
+  assert.deepEqual(toolCalls, []);
+  assert.equal(
+    assistant.some((b) => b.type === "tool_use"),
+    false,
+    "a cut-off call is not part of the turn",
+  );
+  // A truncated answer is still an answer: whatever completed before the cut stays.
+  assert.deepEqual(assistant, [{ type: "text", text: "Let me check that." }]);
+  assert.deepEqual(deltas, [{ type: "text", text: "Let me check that." }]);
+});
+
 test("`[DONE]` and comment lines are not events", async () => {
   const noise = ": keep-alive\n\n" + frame({ type: "response.completed", response: {} }) + "data: [DONE]\n\n";
   const { assistant } = await readTurn(parseSseFrames(chunked(noise)), () => {});
