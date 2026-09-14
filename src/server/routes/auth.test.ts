@@ -153,10 +153,18 @@ async function start(base: string, query = "", sessionCookie?: string): Promise<
   return { session, oauth, state: new URL(location).searchParams.get("state") ?? "" };
 }
 
-async function callback(base: string, s: Started, over: { state?: string; oauth?: string | null } = {}) {
+async function callback(
+  base: string,
+  s: Started,
+  over: { state?: string; oauth?: string | null; error?: string } = {},
+) {
   const state = over.state ?? s.state;
   const oauth = over.oauth === null ? undefined : (over.oauth ?? s.oauth);
-  const resp = await fetch(`${base}/auth/google/callback?code=the-code&state=${encodeURIComponent(state)}`, {
+  // A provider that is reporting an error sends no `code`, so neither do we.
+  const query = over.error
+    ? `error=${encodeURIComponent(over.error)}&state=${encodeURIComponent(state)}`
+    : `code=the-code&state=${encodeURIComponent(state)}`;
+  const resp = await fetch(`${base}/auth/google/callback?${query}`, {
     redirect: "manual",
     headers: { cookie: [s.session, oauth].filter(Boolean).join("; ") },
   });
@@ -346,6 +354,82 @@ test("a tampered state, a missing note and an expired note all fail the same way
       assert.equal(body, "", why);
     }
     assert.deepEqual(accountIds(h.root), [], "a failed sign-in created an account");
+  } finally {
+    await h.close();
+  }
+});
+
+test("a visitor who presses Cancel is put back where they were, quietly", async () => {
+  let profileCalls = 0;
+  const h = await harness({
+    oauth: {
+      providers: [
+        fakeProvider(async () => {
+          profileCalls += 1;
+          return JANE;
+        }),
+      ],
+      // No code was ever issued, so there is nothing to exchange it for: a
+      // callback carrying `?error=` must not touch the network at all.
+      http: async () => {
+        throw new Error("the callback talked to the provider anyway");
+      },
+    },
+  });
+  try {
+    // Google/OIDC says `access_denied`; GitHub says `user_cancelled_authorize`.
+    for (const error of ["access_denied", "user_cancelled_authorize"]) {
+      const s = await start(h.base, "?return_to=%2Fapp");
+      const { resp, body } = await callback(h.base, s, { error });
+      assert.equal(resp.status, 302, error);
+      // NO fragment: changing your mind is not a failure to explain.
+      assert.equal(resp.headers.get("location"), "/app", error);
+      assert.equal(body, "", error);
+      const cleared = resp.headers.getSetCookie().find((c) => c.startsWith(`${OAUTH_COOKIE}=`));
+      assert.ok(cleared, `the note was not cleared (${error})`);
+      assert.match(cleared, /Max-Age=0\b/);
+      assert.equal((await me(h.base, s.session)).signedIn, false, error);
+    }
+
+    // Any OTHER provider error IS something the client says a sentence about.
+    const s = await start(h.base);
+    const { resp, body } = await callback(h.base, s, { error: "temporarily_unavailable" });
+    assert.equal(resp.status, 302);
+    assert.equal(resp.headers.get("location"), "/#auth_error=oauth_failed");
+    assert.equal(body, "");
+
+    assert.equal(profileCalls, 0, "the provider was asked to exchange a code that does not exist");
+    assert.deepEqual(accountIds(h.root), []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a note sealed for one workspace is refused in another", async () => {
+  const h = await harness();
+  try {
+    const mine = await start(h.base, "?return_to=%2Fapp");
+    const someoneElse = await boot(h.base);
+    // The note and the echoed state are both genuine — only the workspace
+    // presenting them is not the one the note was sealed for.
+    const resp = await fetch(
+      `${h.base}/auth/google/callback?code=the-code&state=${encodeURIComponent(mine.state)}`,
+      { redirect: "manual", headers: { cookie: [someoneElse, mine.oauth].join("; ") } },
+    );
+    const body = await resp.text();
+    captured.push(body);
+    assert.equal(resp.status, 302);
+    // The note's own `return_to` still decides where they land — it is ours, and
+    // it was already sealed — with the ordinary failure fragment on the end.
+    assert.equal(resp.headers.get("location"), "/app#auth_error=oauth_failed");
+    assert.equal(body, "");
+    assert.deepEqual(accountIds(h.root), [], "a note from another workspace created an account");
+    assert.equal((await me(h.base, someoneElse)).signedIn, false);
+
+    // And the browser that actually started it still finishes normally.
+    const { resp: ok } = await callback(h.base, mine);
+    assert.equal(ok.headers.get("location"), "/app");
+    assert.equal((await me(h.base, mine.session)).signedIn, true);
   } finally {
     await h.close();
   }

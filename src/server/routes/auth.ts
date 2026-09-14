@@ -23,7 +23,13 @@
 //     `corsGuard` cannot help: a provider-initiated top-level navigation
 //     carries no `Origin`, and corsGuard passes a request with no Origin by
 //     design. So the sealed note is compared with `timingSafeEqual` and the
-//     note is cleared before anything else happens, whatever the outcome.
+//     note is cleared before anything else happens, whatever the outcome. The
+//     note also carries the session it was sealed for, so finishing a sign-in
+//     takes the browser that started it and not merely a copy of its note.
+//
+//  4. A CALLBACK CARRYING `?error=` IS NOT AN EXCHANGE. The visitor pressing
+//     Cancel is the commonest way a sign-in ends, and it ends with them back
+//     where they were and no apology on screen — see `providerRefusal`.
 //
 // The signup counter is charged ONLY for a genuinely new account, and the check
 // happens BEFORE the create — so a refused signup leaves nothing behind at all.
@@ -40,13 +46,7 @@ import { accountExistsFor, balanceMicros, findOrCreateAccount, getAccount, type 
 import { chatAllowance } from "../../main/accounts/meter";
 import { countSignup } from "../../main/accounts/signups";
 import type { AccountView, MeResponse } from "../../shared/types";
-import {
-  clearOauthState,
-  readOauthState,
-  startOauthState,
-  statesMatch,
-  type OauthState,
-} from "../oauth/state";
+import { clearOauthState, readOauthState, startOauthState, statesMatch } from "../oauth/state";
 import { httpFor, OauthError, providerFor, type OauthConfig } from "../oauth/index";
 import { freeCreditCents } from "../oauth/__stub";
 
@@ -68,7 +68,9 @@ export function createAuthRouter(cfg: OauthConfig = {}): Router {
       notFound(res);
       return;
     }
-    const state = startOauthState(res, provider.id, req.query.return_to);
+    // The note is sealed TO THIS WORKSPACE: `/auth` sits behind the same session
+    // middleware `/api` does, so there is always a session id here to seal it to.
+    const state = startOauthState(res, provider.id, req.query.return_to, req.session?.id ?? "");
     redirect(res, provider.authorizeUrl(state));
   });
 
@@ -89,6 +91,26 @@ export function createAuthRouter(cfg: OauthConfig = {}): Router {
       }
       if (!statesMatch(state.state, req.query.state)) {
         throw new OauthError("oauth_failed", "The state the provider echoed is not the one we sealed.");
+      }
+      // The note also has to belong to the browser presenting it. Without this,
+      // a note copied out of someone else's cookie jar (or planted in a visitor's
+      // by anyone who can write cookies for this host) could be completed in a
+      // workspace that never started a sign-in — and the account would bind to
+      // whichever session finished.
+      if (!statesMatch(state.sid, req.session?.id)) {
+        throw new OauthError("oauth_failed", "The sign-in note was sealed for a different workspace.");
+      }
+      // THE PROVIDER MAY BE REPORTING A REFUSAL RATHER THAN A CODE, and then
+      // there is nothing to exchange — asked before any outbound call.
+      const refusal = providerRefusal(req.query.error);
+      if (refusal === "declined") {
+        // Pressing Cancel is not a failure: put them back where they were
+        // standing, with NO `#auth_error` for the client to apologise about.
+        redirect(res, state.returnTo);
+        return;
+      }
+      if (refusal === "failed") {
+        throw new OauthError("oauth_failed", `${provider.label} refused the sign-in: ${errorLabel(req.query.error)}`);
       }
       const raw = await provider.profile(String(req.query.code ?? ""), state, httpFor(cfg));
       if (!raw.emailVerified) {
@@ -214,6 +236,25 @@ function withAuthError(returnTo: string, code: AuthErrorCode): string {
   return `${base || "/"}#auth_error=${code}`;
 }
 
+/** The two spellings of "the visitor pressed Cancel": `access_denied` is
+ *  OAuth 2.0's (and Google's), `user_cancelled_authorize` is GitHub's. */
+const DECLINED = new Set(["access_denied", "user_cancelled_authorize"]);
+
+/** What `?error=` on the callback means: the visitor declined, the provider
+ *  failed some other way, or there is no error and we have a code to exchange. */
+function providerRefusal(raw: unknown): "declined" | "failed" | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  return DECLINED.has(raw) ? "declined" : "failed";
+}
+
+/** A provider's error code, fit to appear in a log line — it arrives as a query
+ *  parameter, so it is a stranger's bytes, and a newline in a log is a forged
+ *  log entry. One short token of the safe alphabet, or nothing. */
+function errorLabel(raw: unknown): string {
+  const cleaned = typeof raw === "string" ? raw.replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 64) : "";
+  return cleaned.length > 0 ? cleaned : "unnamed";
+}
+
 function codeFor(err: unknown): AuthErrorCode {
   if (err instanceof OauthError) return err.code;
   // `email_invalid` folds into `email_blocked`: the address came from the
@@ -236,8 +277,9 @@ function redirect(res: Response, location: string): void {
   res.end();
 }
 
-/** Fall through to the app's own 404, so an unknown provider answers in exactly
- *  the shape every other unknown path does. */
+/** An unknown provider answers here, in exactly the body and code the app's own
+ *  catch-all 404 would have sent — the router is mounted, so a request that
+ *  matched `/auth/:provider/*` never reaches that handler to borrow it. */
 function notFound(res: Response): void {
   res.status(404).json({ error: "Not found.", code: "not_found" });
 }
@@ -254,5 +296,3 @@ function logAuthFailure(req: Request, err: unknown): void {
   const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   console.error(`[auth] ${req.params.provider} sign-in failed (${codeFor(err)}): ${detail}`);
 }
-
-export type { OauthState };

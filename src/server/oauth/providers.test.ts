@@ -55,6 +55,7 @@ function allSet(): void {
 function state(over: Partial<OauthState> = {}): OauthState {
   return {
     provider: "google",
+    sid: "sid-1",
     state: "state-abc",
     verifier: "verifier-xyz",
     nonce: "nonce-123",

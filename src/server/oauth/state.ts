@@ -53,6 +53,10 @@ const PLACEHOLDER = "http://placeholder.invalid";
 
 export interface OauthState {
   provider: string;
+  /** The session this note was sealed for. The callback compares it, so a note
+   *  lifted out of one browser cannot be finished in another: whoever completes
+   *  a sign-in has to be the workspace that started it. */
+  sid: string;
   /** 32 random bytes, base64url. Compared with the provider's echo. */
   state: string;
   /** 64 random bytes, base64url — PKCE, unused by GitHub (see github.ts). */
@@ -68,6 +72,7 @@ export interface OauthState {
  *  is encrypted, base64'd and then percent-encoded into a header. */
 interface StateBlob {
   p: string;
+  sid: string;
   state: string;
   verifier: string;
   nonce: string;
@@ -134,9 +139,10 @@ export function statesMatch(a: string, b: unknown): boolean {
 
 /** Mint a fresh state, seal it into the cookie on `res`, and hand it back so
  *  the caller can build the authorize URL from the same values. */
-export function startOauthState(res: Response, provider: string, returnTo: unknown): OauthState {
+export function startOauthState(res: Response, provider: string, returnTo: unknown, sid: string): OauthState {
   const state: OauthState = {
     provider,
+    sid,
     state: randomBytes(32).toString("base64url"),
     verifier: randomBytes(64).toString("base64url"),
     nonce: randomBytes(16).toString("base64url"),
@@ -145,6 +151,7 @@ export function startOauthState(res: Response, provider: string, returnTo: unkno
   };
   const blob: StateBlob = {
     p: state.provider,
+    sid: state.sid,
     state: state.state,
     verifier: state.verifier,
     nonce: state.nonce,
@@ -172,11 +179,11 @@ export function readOauthState(req: Request): OauthState | undefined {
     return undefined;
   }
   if (!blob || typeof blob !== "object") return undefined;
-  const { p, state, verifier, nonce, returnTo, exp } = blob;
-  if (typeof p !== "string" || typeof state !== "string" || typeof verifier !== "string") return undefined;
-  if (typeof nonce !== "string" || typeof returnTo !== "string" || typeof exp !== "number") return undefined;
-  if (!(exp > Date.now())) return undefined;
-  return { provider: p, state, verifier, nonce, returnTo: safeReturnTo(returnTo), exp };
+  const { p, sid, state, verifier, nonce, returnTo, exp } = blob;
+  if (typeof p !== "string" || typeof sid !== "string" || typeof state !== "string") return undefined;
+  if (typeof verifier !== "string" || typeof nonce !== "string" || typeof returnTo !== "string") return undefined;
+  if (typeof exp !== "number" || !(exp > Date.now())) return undefined;
+  return { provider: p, sid, state, verifier, nonce, returnTo: safeReturnTo(returnTo), exp };
 }
 
 /** Expire the cookie. The attributes must match the ones it was SET with, or a

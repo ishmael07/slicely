@@ -23,6 +23,7 @@ import {
   noStore,
   rateLimiter,
   securityHeaders,
+  trustProxySetting,
   type RateLimitOptions,
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
@@ -105,11 +106,11 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   const app = express();
   app.disable("x-powered-by");
   // Trust `X-Forwarded-*` ONLY when the operator says there really is a proxy
-  // in front of us (Fly/Render/nginx set SLICELY_TRUST_PROXY=1). Trusting it
-  // unconditionally would let any caller dictate req.ip — i.e. hand themselves
-  // a fresh rate-limit bucket per request. security.ts's clientIp() reads the
-  // same variable, so the two can never disagree.
-  app.set("trust proxy", process.env.SLICELY_TRUST_PROXY === "1");
+  // in front of us (Fly/Render/nginx set SLICELY_TRUST_PROXY=1), and then only
+  // ONE hop of it — the policy lives in security.ts next to `clientIp`, which
+  // reads the same variable, so the two can never disagree. See
+  // `trustProxySetting` for why one hop and not the whole chain.
+  app.set("trust proxy", trustProxySetting());
 
   const store = opts.sessionStore ?? new SessionStore();
   const tier = (base: RateLimitOptions, override?: Partial<BucketOverride>) =>

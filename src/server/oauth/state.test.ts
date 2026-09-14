@@ -83,7 +83,7 @@ test("starting a sign-in sets one sealed, short-lived, host-locked cookie", asyn
   let issued: OauthState | undefined;
   const app = express();
   app.get("/start", (req: Request, res: Response) => {
-    issued = startOauthState(res, "google", req.query.return_to);
+    issued = startOauthState(res, "google", req.query.return_to, "sid-1");
     res.status(204).end();
   });
   const { base, close } = await listen(app);
@@ -103,6 +103,10 @@ test("starting a sign-in sets one sealed, short-lived, host-locked cookie", asyn
     assert.ok(issued);
     assert.equal(issued.provider, "google");
     assert.equal(issued.returnTo, "/app");
+    // The workspace the note belongs to travels with it, so the callback can
+    // refuse a note finished in some other browser.
+    assert.equal(issued.sid, "sid-1");
+    assert.ok(!cookie.includes("sid-1"), "the session id leaked into the cookie in the clear");
     // The cookie is ENCRYPTED, not signed: the PKCE verifier is inside it, so
     // neither it nor the state may be readable from the header.
     assert.ok(!cookie.includes(issued.state), "state leaked into the cookie in the clear");
@@ -117,7 +121,7 @@ test("the cookie round-trips, and a tampered, foreign or expired one is simply a
   let issued: OauthState | undefined;
   const app = express();
   app.get("/start", (req: Request, res: Response) => {
-    issued = startOauthState(res, "github", req.query.return_to);
+    issued = startOauthState(res, "github", req.query.return_to, "sid-1");
     res.status(204).end();
   });
   app.get("/read", (req: Request, res: Response) => {
