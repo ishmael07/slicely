@@ -44,6 +44,7 @@ import { createLocalRouter } from "./routes/local";
 import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
 import { createAuthRouter, createMeRouter } from "./routes/auth";
+import { createWaitlistRouter } from "./routes/waitlist";
 import type { OauthConfig } from "./oauth/index";
 import { loadPrintersApi } from "./facades";
 import type { PrinterTestResult, ResolvedPrinter } from "../shared/printers";
@@ -179,6 +180,9 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   // asks who it is before it renders, and on the desktop "nobody" is the honest
   // answer rather than a 404 the client has to special-case.
   api.use(createMeRouter(opts.oauth));
+  // POST /api/waitlist. Hosted only — there is no paid plan to wait for on
+  // somebody's own Mac — and `heavy`, because every call appends to a file.
+  if (isHosted()) api.use(createWaitlistRouter({ limit: heavyLimit }));
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
   api.use(createModelsRouter(undefined, { limit: heavyLimit }));
   api.use(createUploadRouter({ limit: heavyLimit }));
