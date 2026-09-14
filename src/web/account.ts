@@ -13,9 +13,9 @@
 // third-party logo file to load — the buttons are plain words in the app's own
 // type, like every other button here.
 // ─────────────────────────────────────────────────────────────────────────────
-import { account, errorMessage, postJson, refreshAccount, setAccount } from "./api.js";
+import { ApiError, account, codeMessage, errorMessage, postJson, refreshAccount, setAccount } from "./api.js";
 import { buildConnectCard, config } from "./onboarding.js";
-import { byId, make, menu, toast } from "./ui.js";
+import { byId, make, menu, openSheet, toast } from "./ui.js";
 
 // ── signing in ───────────────────────────────────────────────────────────────
 
@@ -182,10 +182,12 @@ function openAccountMenu(): void {
         disabled: true,
       },
       { id: "key", label: "Add your own key…" },
+      { id: "waitlist", label: "Paid plans — coming soon" },
       { id: "signout", label: "Sign out" },
     ],
     (id) => {
       if (id === "key") deps.openAiSettings();
+      if (id === "waitlist") openWaitlist();
       if (id === "signout") void signOut();
     },
   );
@@ -311,6 +313,112 @@ export function markExhausted(): void {
     signedIn: true,
     account: { ...me.account, balanceMicros: 0, balanceLabel: "$0.00", exhausted: true },
   });
+}
+
+// ── the waitlist sheet ───────────────────────────────────────────────────────
+//
+// The one thing Slicely can honestly offer somebody whose free credit is gone
+// and who does not want to paste a key: tell us where to write when there is a
+// paid plan. One sentence, two fields (one of them optional), one button, and a
+// thank-you that replaces the form so it cannot be sent twice.
+
+const WAITLIST_LEAD =
+  "We're building a paid plan with a bigger budget and every model. Leave your email and we'll tell you when it opens — we won't use it for anything else.";
+const WAITLIST_THANKS = "You're on the list. We'll email you once, when it opens.";
+
+let waitlistBody: HTMLElement | undefined;
+
+function buildWaitlistForm(): HTMLFormElement {
+  const form = make("form", "waitlist-form");
+  form.appendChild(make("p", "sheet-hint waitlist-lead", WAITLIST_LEAD));
+
+  const fields = make("div", "fields");
+  const emailField = make("div", "field");
+  const emailLabel = make("label", "", "Email");
+  emailLabel.htmlFor = "waitlistEmail";
+  const email = make("input", "");
+  email.id = "waitlistEmail";
+  email.type = "email";
+  email.name = "email";
+  email.autocomplete = "email";
+  email.placeholder = "you@example.com";
+  emailField.append(emailLabel, email);
+
+  const nameField = make("div", "field");
+  const nameLabel = make("label", "", "Name");
+  nameLabel.htmlFor = "waitlistName";
+  const name = make("input", "");
+  name.id = "waitlistName";
+  name.type = "text";
+  name.name = "name";
+  name.autocomplete = "name";
+  name.placeholder = "Optional";
+  nameField.append(nameLabel, name);
+  fields.append(emailField, nameField);
+
+  const error = make("p", "key-error hidden");
+  error.setAttribute("role", "alert");
+  const submit = make("button", "btn primary", "Add me to the list");
+  submit.type = "submit";
+
+  const actions = make("div", "group-actions");
+  actions.appendChild(submit);
+  form.append(fields, error, actions);
+
+  // Prefill from the account, because the person asking is usually the person
+  // already signed in — and nobody should type their address twice.
+  const me = account();
+  if (me.account?.email) email.value = me.account.email;
+  if (me.account?.name) name.value = me.account.name;
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    error.classList.add("hidden");
+    const address = email.value.trim();
+    if (!address) {
+      error.textContent = "Enter your email address first.";
+      error.classList.remove("hidden");
+      email.focus();
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = "Adding…";
+    void (async () => {
+      try {
+        await postJson("/api/waitlist", { email: address, name: name.value.trim() || undefined });
+        waitlistBody?.replaceChildren(make("p", "waitlist-thanks", WAITLIST_THANKS));
+      } catch (err) {
+        // A refused address is a fact about THIS field, so it is said under the
+        // field rather than thrown across the screen as a toast.
+        error.textContent =
+          (err instanceof ApiError && codeMessage(err.code)) || errorMessage(err, "Couldn't add you to the list.");
+        error.classList.remove("hidden");
+        email.focus();
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Add me to the list";
+      }
+    })();
+  });
+
+  return form;
+}
+
+/** Open the waitlist sheet, freshly built, with the keyboard in the first field
+ *  that still needs an answer. */
+export function openWaitlist(): void {
+  waitlistBody ??= byId<HTMLElement>("waitlistBody");
+  waitlistBody.replaceChildren(buildWaitlistForm());
+  openSheet("waitlist");
+  // The keyboard goes to the first field that still needs an answer — and, when
+  // the account already answered both, to the button, which is all that is left
+  // to do.
+  const fields = [
+    waitlistBody.querySelector<HTMLInputElement>("#waitlistEmail"),
+    waitlistBody.querySelector<HTMLInputElement>("#waitlistName"),
+  ];
+  const empty = fields.find((f) => f && !f.value);
+  (empty ?? waitlistBody.querySelector<HTMLButtonElement>(".waitlist-form .btn"))?.focus();
 }
 
 // ── what the rest of the client asks about the account ───────────────────────

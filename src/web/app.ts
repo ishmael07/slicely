@@ -14,7 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
 import { ApiError, codeMessage, errorMessage, getJson, onAccountChange } from "./api.js";
-import { hasFreeCredit, initAccount, readAuthErrorFromHash, renderAccountPill } from "./account.js";
+import { hasFreeCredit, initAccount, openWaitlist, readAuthErrorFromHash, renderAccountPill } from "./account.js";
 import type { SheetId } from "./ui.js";
 import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toast, toggleSheet } from "./ui.js";
 import {
@@ -146,12 +146,6 @@ initChat({
   onKeyProblem: () => void refreshConfig(),
 });
 
-/** The waitlist for a paid plan. The sheet it opens lands in the next task;
- *  until then the button says what it will do rather than doing nothing. */
-function openWaitlist(): void {
-  toast("Paid plans are coming soon.", "info");
-}
-
 /** Open Settings on the one section that connects a provider, and put the
  *  keyboard on it — where the composer's "Connect" link goes. */
 function openAiSettings(): void {
@@ -182,7 +176,7 @@ byId<HTMLButtonElement>("chatsBtn").addEventListener("click", () => {
 byId<HTMLButtonElement>("jobsBtn").addEventListener("click", () => {
   if (toggleSheet("jobs")) loadJobs();
 });
-for (const id of ["settingsClose", "chatsClose", "jobsClose"]) {
+for (const id of ["settingsClose", "chatsClose", "jobsClose", "waitlistClose"]) {
   byId<HTMLButtonElement>(id).addEventListener("click", () => closeSheets());
 }
 

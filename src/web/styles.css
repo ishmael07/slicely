@@ -476,6 +476,7 @@ a {
 
 .sheet select,
 .sheet input[type="number"],
+.sheet input[type="email"],
 .sheet input[type="text"] {
   width: 100%;
   font-family: var(--font);
@@ -2383,6 +2384,30 @@ button.menu-item:disabled {
 #freeModelNote {
   color: var(--text-dim);
   margin-bottom: var(--sp-1);
+}
+
+/* ── The waitlist sheet ─────────────────────────────────────────────────────
+   One sentence, two fields, one button — the smallest honest thing to offer
+   somebody whose free credit is gone and who does not want to paste a key. The
+   thank-you replaces the form, so it cannot be sent twice. */
+.waitlist-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.waitlist-lead {
+  color: var(--text-dim);
+  max-width: 52ch;
+}
+.waitlist-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.waitlist-thanks {
+  font-size: var(--fs);
+  line-height: 1.5;
+  color: var(--text);
 }
 
 /* ── The end of the free credit ─────────────────────────────────────────────
