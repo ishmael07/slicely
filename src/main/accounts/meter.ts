@@ -28,13 +28,31 @@
 // before the account is even read, so an unpriced model is a paused free tier
 // rather than a call charged at zero. Metering at zero is the one failure mode
 // that silently costs the owner real money.
+//
+// WHICH IS ALSO WHY EVERY NUMBER FROM OUTSIDE IS SANITISED, AND WHY EVERY
+// UNREADABLE NUMBER FAILS CLOSED. A provider SDK that omits a usage field, a
+// half-written counter, a hand-edited account file — each hands this module a
+// `NaN`, and `NaN` is the worst possible value here: it is not > 0, so it
+// silently passes every cap, and once written it reads back out of JSON as
+// `null`, which is not > 0 either. So:
+//
+//   • `sanitizeUsage` floors every token count at zero before it is priced;
+//   • a cost that is not a safe non-negative integer THROWS and writes nothing;
+//   • an unreadable `spend/<day>.json` reads as the whole daily cap, so the free
+//     tier is paused rather than uncapped;
+//   • an unreadable `spentMicros` reads as the whole grant spent (store.ts's
+//     `balanceMicros`), so the account is exhausted rather than unlimited.
+//
+// In every case the failure costs a visitor a refusal and the owner nothing,
+// which is the right way round: the alternative is a corrupt byte on disk
+// turning the kill switch off.
 // ─────────────────────────────────────────────────────────────────────────────
 import { appendFileSync, readFileSync } from "node:fs";
 import { getConfig } from "../config";
 import { centsToMicros, costMicros, priceFor, type TurnUsage } from "../pricing";
 import { spendFile, usageFile, utcDay } from "./paths";
 import {
-  balanceMicros, getAccount, withAccountLock, writeAccount, writeAtomic,
+  balanceMicros, getAccount, safeSpentMicros, withAccountLock, writeAccount, writeAtomic,
   type Account,
 } from "./store";
 
@@ -51,25 +69,72 @@ export interface ChargeResult {
  * The path carries the workdir, so a test that moves `SLICELY_WORKDIR` between
  * cases can never read another case's total out of this map — a cache keyed on
  * "2026-09-14" alone would.
+ *
+ * `null` is a real entry and means CORRUPT: the file is there but its `micros`
+ * is not a usable number, so we do not know what has been spent today. It is
+ * cached like any other answer, because re-parsing the same broken file on every
+ * request would also re-log on every request.
  */
-const dayTotals = new Map<string, number>();
+const dayTotals = new Map<string, number | null>();
 
-/** What has been spent across ALL free accounts on `day`, in µ¢. */
-export function dailySpendMicros(day: string = utcDay()): number {
+/** Corruptions already reported, so a broken counter costs one log line rather
+ *  than one per request for the life of the deploy. */
+const warned = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(`[meter] ${message}`);
+}
+
+/**
+ * What `spend/<day>.json` says, or `null` when it cannot be read as a number.
+ *
+ * A MISSING FILE IS ZERO; A BROKEN FILE IS `null`. The distinction is the whole
+ * point: nobody has spent anything on a day that has not started, but a day
+ * whose counter is unreadable might have spent the entire card, and the two must
+ * not answer the same way.
+ */
+function readDaySpend(day: string): number | null {
   const path = spendFile(day);
   const hit = dayTotals.get(path);
   if (hit !== undefined) return hit;
-  let micros = 0;
+
+  let raw: string | undefined;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { micros?: unknown };
-    if (typeof parsed.micros === "number" && Number.isFinite(parsed.micros) && parsed.micros > 0) {
-      micros = Math.floor(parsed.micros);
+    raw = readFileSync(path, "utf8");
+  } catch {
+    // No file yet — nothing has been spent, which IS the honest reading.
+    dayTotals.set(path, 0);
+    return 0;
+  }
+
+  let value: number | null = null;
+  try {
+    const parsed = JSON.parse(raw) as { micros?: unknown };
+    const micros = parsed?.micros;
+    if (typeof micros === "number" && Number.isFinite(micros) && micros >= 0) {
+      value = Math.floor(micros);
     }
   } catch {
-    /* no file yet, or unreadable — nothing spent is the honest reading */
+    /* value stays null */
   }
-  dayTotals.set(path, micros);
-  return micros;
+  if (value === null) {
+    warnOnce(`${path} is unreadable — free credit is paused for ${day}. Fix or delete the file.`);
+  }
+  dayTotals.set(path, value);
+  return value;
+}
+
+/**
+ * What has been spent across ALL free accounts on `day`, in µ¢.
+ *
+ * A day whose counter is corrupt reads as the whole cap, so every caller — not
+ * just `freeTierPaused` — sees "the day is spent" rather than "nothing spent".
+ */
+export function dailySpendMicros(day: string = utcDay()): number {
+  const value = readDaySpend(day);
+  return value === null ? centsToMicros(getConfig().dailySpendCapCents) : value;
 }
 
 /**
@@ -79,9 +144,14 @@ export function dailySpendMicros(day: string = utcDay()): number {
  * pattern nobody predicted still cannot cost more than `SLICELY_DAILY_SPEND_CAP_CENTS`
  * in a day. `day` is a parameter rather than a clock read so a test can look at
  * tomorrow without mocking time.
+ *
+ * A corrupt counter pauses the day outright rather than via the comparison, so
+ * this stays true even where a cap of 0 makes the arithmetic ambiguous.
  */
 export function freeTierPaused(day: string = utcDay()): boolean {
-  return dailySpendMicros(day) >= centsToMicros(getConfig().dailySpendCapCents);
+  const spent = readDaySpend(day);
+  if (spent === null) return true;
+  return spent >= centsToMicros(getConfig().dailySpendCapCents);
 }
 
 /** Add to the day's global total, atomically and under its own lock — this
@@ -89,10 +159,40 @@ export function freeTierPaused(day: string = utcDay()): boolean {
 async function addDailySpend(day: string, micros: number): Promise<void> {
   await withAccountLock(`spend:${day}`, async () => {
     const path = spendFile(day);
-    const next = dailySpendMicros(day) + micros;
+    const current = readDaySpend(day);
+    // A CORRUPT COUNTER IS LEFT EXACTLY AS IT IS. The day is already paused (see
+    // `freeTierPaused`), and the two alternatives are both worse: adding to a
+    // number we could not read invents a total, and overwriting the file with
+    // this one charge silently clears the pause and forgets the rest of the day.
+    if (current === null) return;
+    const next = current + micros;
     writeAtomic(path, JSON.stringify({ version: 1, micros: next }, null, 2));
     dayTotals.set(path, next);
   });
+}
+
+/**
+ * One token count as a number we may safely multiply by a price: a non-negative
+ * integer, or zero.
+ *
+ * `undefined` (a field the provider omitted), `NaN`, `Infinity` and negatives
+ * all become 0. A NEGATIVE COUNT IS NOT A REFUND: allowing one would let a
+ * single call with `inputTokens: -1e9` hand an account more credit than it was
+ * granted, and the day's global counter along with it.
+ */
+function tokens(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+/** One provider call's usage with every field sanitised — what gets priced, what
+ *  gets charged, and what the ledger records, all the same numbers. */
+function sanitizeUsage(usage: TurnUsage): TurnUsage {
+  return {
+    inputTokens: tokens(usage?.inputTokens),
+    cachedInputTokens: tokens(usage?.cachedInputTokens),
+    cacheWriteTokens: tokens(usage?.cacheWriteTokens),
+    outputTokens: tokens(usage?.outputTokens),
+  };
 }
 
 /**
@@ -108,12 +208,21 @@ async function addDailySpend(day: string, micros: number): Promise<void> {
 export async function chargeAccount(
   accountId: string,
   model: string,
-  usage: TurnUsage,
+  rawUsage: TurnUsage,
 ): Promise<ChargeResult> {
   // Before anything else, and before the lock does any work: a model with no
   // price row is never charged at zero.
   priceFor(model);
+  const usage = sanitizeUsage(rawUsage);
   const micros = costMicros(model, usage);
+  // AND NOTHING IS WRITTEN FOR A COST WE CANNOT REPRESENT. Sanitised tokens
+  // cannot produce a NaN, but they can produce a number past 2^53 — a token
+  // count of MAX_SAFE_INTEGER times a price is no longer an integer, and adding
+  // it to `spentMicros` would corrupt the account's whole arithmetic. Refusing
+  // here is the same rule as an unpriced model: a paused turn, never a bad write.
+  if (!Number.isSafeInteger(micros) || micros < 0) {
+    throw new Error(`refusing to charge an unrepresentable cost for ${model}: ${String(micros)}`);
+  }
   const day = utcDay();
 
   return withAccountLock(accountId, async () => {
@@ -123,7 +232,12 @@ export async function chargeAccount(
     // than inventing a sentence for something no visitor can act on.
     if (!account) throw new Error(`no such account: ${accountId}`);
 
-    account.spentMicros += micros;
+    // A CORRUPT RUNNING TOTAL READS AS THE WHOLE GRANT SPENT. `NaN + micros` is
+    // `NaN`, which JSON writes as `null` and the next read treats as plenty of
+    // credit left — so a single bad byte would make one account unlimited
+    // forever. Failing closed costs that account its remaining credit and costs
+    // the owner nothing, and `balanceMicros` already reports it as exhausted.
+    account.spentMicros = safeSpentMicros(account) + micros;
     account.lastSeenAt = Date.now();
     writeAccount(account);
 
@@ -195,7 +309,10 @@ export async function countChatTurn(accountId: string): Promise<ChatAllowance> {
   });
 }
 
-/** Tests only: forget the cached daily totals, so a new workdir starts clean. */
+/** Tests only: forget the cached daily totals (including the `null` that marks a
+ *  corrupt counter) and which corruptions have been reported, so a new workdir —
+ *  or a file a test has just rewritten — starts clean. */
 export function resetMeterForTests(): void {
   dayTotals.clear();
+  warned.clear();
 }

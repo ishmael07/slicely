@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetConfigForTests } from "../config";
 import { centsToMicros, costMicros, UnpricedModelError, type TurnUsage } from "../pricing";
 import {
-  findOrCreateAccount, getAccount, resetAccountsForTests, writeAccount,
+  balanceMicros, findOrCreateAccount, getAccount, resetAccountsForTests, writeAccount,
   type Account, type SignInProfile,
 } from "./store";
 import {
@@ -184,5 +184,150 @@ test("twenty concurrent charges lose nothing", async () => {
     assert.equal(getAccount(account.id)!.spentMicros, 20_000, "no lost charge");
     assert.equal(ledgerLines().length, 20);
     assert.equal(dailySpendMicros(), 20_000, "and the day's total agrees");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── Fix round 1: nothing a corrupt number can do costs the owner money ───────
+//
+// Every one of these starts from a value that should be impossible — a provider
+// SDK that omitted a field, a hand-edited counter, a half-written file — and
+// asserts the same two things: the owner is never billed for it, and the caps
+// still hold. The failure mode being designed out is a charge of NaN, which
+// writes `null` into the account file and then reads back as "plenty of credit
+// left" forever.
+
+test("a missing cache field is charged as zero, not as NaN", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    const partial = {
+      inputTokens: 1_000,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+    } as unknown as TurnUsage;   // `cachedInputTokens` never arrived
+    const result = await chargeAccount(account.id, "claude-sonnet-5", partial);
+    assert.equal(result.chargedMicros, 200_000, "1,000 input tokens at 200¢/1M");
+    assert.equal(getAccount(account.id)!.spentMicros, 200_000);
+    assert.equal(dailySpendMicros(), 200_000);
+    const line = JSON.parse(ledgerLines()[0]) as Record<string, unknown>;
+    assert.equal(line.cacheRead, 0, "the ledger records the number we charged");
+    assert.equal(line.micros, 200_000);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a negative token count cannot credit an account", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    const result = await chargeAccount(account.id, "claude-sonnet-5", {
+      inputTokens: -1_000_000,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1_000,
+    });
+    assert.equal(result.chargedMicros, 1_000_000, "the output tokens only");
+    assert.ok(getAccount(account.id)!.spentMicros >= 0, "spend is monotonic");
+    assert.equal(getAccount(account.id)!.spentMicros, 1_000_000);
+    assert.equal(dailySpendMicros(), 1_000_000, "and the day's total cannot be wound back");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a NaN token count is charged as zero and never written as NaN", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    const result = await chargeAccount(account.id, "claude-sonnet-5", {
+      inputTokens: Number.NaN,
+      cachedInputTokens: Number.POSITIVE_INFINITY,
+      cacheWriteTokens: Number.NaN,
+      outputTokens: 0,
+    });
+    assert.equal(result.chargedMicros, 0);
+    const stored = readFileSync(join(dir, "accounts", "by-id", `${account.id}.json`), "utf8");
+    assert.ok(!stored.includes("null"), `no NaN reached the account file: ${stored}`);
+    assert.equal(getAccount(account.id)!.spentMicros, 0);
+    assert.equal(chargeAccount.length, 3);   // shape unchanged
+    // And the balance is still the whole grant, not NaN.
+    assert.equal(result.balanceMicros, GRANT);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a cost too large to be an integer is refused before anything is written", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    await assert.rejects(
+      () => chargeAccount(account.id, "claude-sonnet-5", {
+        inputTokens: Number.MAX_SAFE_INTEGER,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 0,
+      }),
+      /cost/i,
+    );
+    assert.equal(getAccount(account.id)!.spentMicros, 0);
+    assert.equal(existsSync(usageFile(utcDay())), false, "no ledger line");
+    assert.equal(existsSync(spendFile(utcDay())), false, "and no day total");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a corrupt spend file reads as the cap reached, not as nothing spent", () => {
+  const dir = freshWorkdir();
+  try {
+    writeFileSync(spendFile(utcDay()), '{"version":1,"micros":null}');
+    resetMeterForTests();
+    assert.equal(freeTierPaused(), true, "an unreadable counter must fail CLOSED");
+    assert.equal(dailySpendMicros(), centsToMicros(500), "and reads as the whole cap");
+
+    // Not JSON at all, and a NaN-ish value, read the same way.
+    for (const junk of ["", "{", '{"micros":"lots"}', '{"micros":-5}']) {
+      writeFileSync(spendFile(utcDay()), junk);
+      resetMeterForTests();
+      assert.equal(freeTierPaused(), true, `"${junk}" must pause the free tier`);
+    }
+    // A missing file is still "nothing spent" — that is the honest reading.
+    rmSync(spendFile(utcDay()), { force: true });
+    resetMeterForTests();
+    assert.equal(freeTierPaused(), false);
+    assert.equal(dailySpendMicros(), 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a charge against a corrupt spend file does not invent a new total", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    writeFileSync(spendFile(utcDay()), '{"micros":"lots"}');
+    resetMeterForTests();
+    await chargeAccount(account.id, "claude-sonnet-5", TINY_USAGE);
+    assert.equal(freeTierPaused(), true, "the day stays paused rather than silently resetting");
+    assert.equal(getAccount(account.id)!.spentMicros, 1_000, "the account is still charged");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a corrupt spentMicros reads as credit exhausted, and a charge repairs it", async () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    const live = getAccount(account.id)!;
+    live.spentMicros = Number.NaN;
+    writeAccount(live);
+    assert.equal(balanceMicros(live), 0, "we do not know what was spent, so nothing is left");
+
+    const result = await chargeAccount(account.id, "claude-sonnet-5", TINY_USAGE);
+    assert.equal(result.exhausted, true);
+    assert.equal(result.balanceMicros, 0);
+    const stored = readFileSync(join(dir, "accounts", "by-id", `${account.id}.json`), "utf8");
+    assert.ok(!stored.includes("null"), `still no NaN in the account file: ${stored}`);
+    assert.ok((JSON.parse(stored) as Account).spentMicros >= GRANT);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a corrupt grantedMicros is no credit either", () => {
+  const dir = freshWorkdir();
+  try {
+    const account = newAccount();
+    account.grantedMicros = Number.POSITIVE_INFINITY;
+    assert.equal(balanceMicros(account), 0, "an infinite grant is a bug, not a jackpot");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

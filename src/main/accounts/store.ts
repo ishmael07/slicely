@@ -208,11 +208,64 @@ export function writeAccount(account: Account): void {
   writeAtomic(accountFile(account.id), JSON.stringify(account, null, 2));
 }
 
+/**
+ * One µ¢ field off disk as a number we may safely do arithmetic with, or
+ * `undefined` when the stored value is not one.
+ *
+ * `NaN` is the value this exists for. JSON has no `NaN`, so a charge that once
+ * went wrong is written as `null` — and `null` is not a number, `NaN` is not
+ * `> 0`, and `NaN - x` is `NaN`. Every comparison an account's caps depend on
+ * would quietly answer "there is credit left".
+ */
+function storedMicros(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Corruptions already reported — one log line per broken account, not one per
+ *  request. */
+const warned = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(`[accounts] ${message}`);
+}
+
+/** What was granted. An unusable stored value reads as NOTHING granted, which is
+ *  the fail-closed direction: the account has no credit rather than infinite. */
+export function safeGrantedMicros(account: Account): number {
+  const granted = storedMicros(account.grantedMicros);
+  if (granted === undefined) {
+    warnOnce(`account ${account.id} has an unusable grantedMicros — treating it as 0.`);
+    return 0;
+  }
+  return granted;
+}
+
+/**
+ * What has been spent, FAILING CLOSED: an unusable total reads as the whole
+ * grant spent, so the account is exhausted rather than unlimited.
+ *
+ * Exported because meter.ts must not add a charge to a number it cannot trust —
+ * it writes this value back plus the charge, which also repairs the file.
+ */
+export function safeSpentMicros(account: Account): number {
+  const spent = storedMicros(account.spentMicros);
+  if (spent === undefined) {
+    warnOnce(`account ${account.id} has an unusable spentMicros — treating its credit as spent.`);
+    return safeGrantedMicros(account);
+  }
+  return spent;
+}
+
 /** What is left to spend: `granted − spent`, floored at zero. The floor is real
  *  — the last call of a turn is charged after it happened, so `spentMicros` can
- *  overshoot `grantedMicros` by at most one call. */
+ *  overshoot `grantedMicros` by at most one call per concurrent turn.
+ *
+ *  Both sides go through the sanitisers above, so a corrupt account file answers
+ *  "no credit" rather than "NaN", which is what every caller compares `<= 0`. */
 export function balanceMicros(account: Account): number {
-  return Math.max(0, account.grantedMicros - account.spentMicros);
+  return Math.max(0, safeGrantedMicros(account) - safeSpentMicros(account));
 }
 
 /** True when this normalised email has already had a grant and given it back.
@@ -355,4 +408,5 @@ export function resetAccountsForTests(): void {
   index = undefined;
   accounts.clear();
   locks.clear();
+  warned.clear();
 }
