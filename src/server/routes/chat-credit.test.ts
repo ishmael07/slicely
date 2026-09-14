@@ -99,6 +99,12 @@ interface HarnessOptions {
   /** Loosen the `chat` bucket — most cases here are about credit, not rate
    *  limits, and the real tier (6 per 2 minutes) would refuse the seventh turn. */
   chatBurst?: number;
+  /** How fast that bucket refills. The default is brisk on purpose, but a case
+   *  that means to see a REFUSAL must outlive its own first request: a capacity-1
+   *  bucket at 100/s is full again 10 ms later, and a full SSE turn under
+   *  full-suite load takes longer than that, so the second request would find a
+   *  refilled bucket and pass 200. Such a case sets this near zero. */
+  chatRefillPerSec?: number;
 }
 
 interface Harness {
@@ -143,7 +149,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     sessionStore: store,
     chatAgentFactory: factory,
     desktopToken: TOKEN,
-    limits: { chat: { capacity: opts.chatBurst ?? 200, refillPerSec: 100 } },
+    limits: { chat: { capacity: opts.chatBurst ?? 200, refillPerSec: opts.chatRefillPerSec ?? 100 } },
   });
   const { base, close } = await listen(app);
   h.base = base;
@@ -544,8 +550,10 @@ test("forty turns are allowed and the forty-first is refused, across two cookies
 
 test("two tabs on one account share one chat rate-limit bucket", async () => {
   // Capacity one, so the SECOND request of the pair is refused if — and only if
-  // — both tabs key on the account rather than on their own session id.
-  const h = await harness({ setup: accountsOn, chatBurst: 1 });
+  // — both tabs key on the account rather than on their own session id. The
+  // refill is set to one token every sixteen minutes so that the first request's
+  // own duration cannot hand the second tab a fresh token.
+  const h = await harness({ setup: accountsOn, chatBurst: 1, chatRefillPerSec: 0.001 });
   try {
     const account = signIn(h);
     const other = await secondCookie(h, account.id);

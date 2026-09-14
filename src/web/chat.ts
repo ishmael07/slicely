@@ -51,8 +51,9 @@ export interface ChatDeps {
   onStatus(status: SlicerStatus): void;
   /** The transcript's empty state. */
   buildEmptyState(): HTMLElement;
-  /** False when no provider key is connected yet, which is the one state the
-   *  composer is switched off in. */
+  /** False when there is neither a key nor free credit — nothing to pay for a
+   *  turn with. The composer stays live either way (a search is free); this only
+   *  decides whether a line that needs the model is sent or refused. */
   canChat(): boolean;
   /** The user asked to connect a provider — open Settings → AI. */
   onConnect(): void;
@@ -78,8 +79,11 @@ let attachTray: HTMLElement;
 let linkRow: HTMLElement;
 let linkInput: HTMLInputElement;
 let chatsList: HTMLElement;
-/** The one line above the composer that explains a switched-off composer. */
+/** The one line above the composer that explains a refused message. */
 let composerNote: HTMLElement;
+/** The composer's own invitation, as index.html writes it — kept so the
+ *  search-only wording can be swapped in and back out again. */
+let chatPlaceholder = "";
 
 // ── transcript state ─────────────────────────────────────────────────────────
 
@@ -522,28 +526,44 @@ function setBusy(b: boolean): void {
   updateSendEnabled();
 }
 
+/** What the box invites when chatting is not available: the free search is the
+ *  one thing that still works, so it says so rather than asking for a message
+ *  nobody can send. The chat wording stays in index.html and is read at init. */
+export const SEARCH_ONLY_PLACEHOLDER = "Search for something to print…";
+
 /**
  * The composer's enabled state, and the one line that explains it.
  *
- * With no provider connected there is nothing to send a message to, so the whole
- * row is switched off rather than left live to fail on press. The explanation is
- * one line above it with one link — and it is left out entirely while the
- * connect card is on screen, which already says the same thing louder.
+ * THE BOX IS NEVER SWITCHED OFF. A free search needs no key and no credit (spec
+ * §1.3: "a visitor who never signs in can still search"), so a signed-out or
+ * spent-out visitor can still type — `submitComposer` decides per line whether
+ * it is a search, which goes to /api/find, or a conversation, which is refused
+ * with the one line above the composer. Attaching a file and pasting a link do
+ * need a turn to act on them, so those two buttons still follow `canChat`.
  */
 export function updateSendEnabled(): void {
   const canChat = deps.canChat();
-  sendBtn.disabled = busy || !canChat || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
-  inputEl.disabled = !canChat;
+  sendBtn.disabled = busy || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
+  inputEl.disabled = false;
+  inputEl.placeholder = canChat ? chatPlaceholder : SEARCH_ONLY_PLACEHOLDER;
   for (const id of ["attachBtn", "linkBtn"]) byId<HTMLButtonElement>(id).disabled = !canChat;
   // The card on screen — the sign-in card, the connect card, the exhausted card
-  // — already says this, louder and with the buttons attached.
+  // — already says this, louder and with the buttons attached. The one exception
+  // is a spent balance: spec §1.2.4 promises that sentence above the composer on
+  // a later visit, and that visit is exactly when the card is up.
+  const spent = creditExhausted();
   const cardShowing =
-    messagesEl.querySelector(".connect") !== null || messagesEl.querySelector(".credit-card") !== null;
+    !spent &&
+    (messagesEl.querySelector(".connect") !== null || messagesEl.querySelector(".credit-card") !== null);
   composerNote.classList.toggle("hidden", canChat || cardShowing);
   if (canChat || cardShowing) return;
-  // Someone who spent their free credit is told what THEY ran out of, not asked
-  // to connect a provider as though they had never started.
-  const spent = creditExhausted();
+  renderComposerNote(spent);
+}
+
+/** The one line above the composer, and its inline Connect link. Someone who
+ *  spent their free credit is told what THEY ran out of, not asked to connect a
+ *  provider as though they had never started. */
+function renderComposerNote(spent: boolean): void {
   composerNote.replaceChildren(
     make(
       "span",
@@ -555,6 +575,14 @@ export function updateSendEnabled(): void {
   connect.type = "button";
   connect.addEventListener("click", () => deps.onConnect());
   composerNote.appendChild(connect);
+}
+
+/** Send was pressed on a line that needs the model, with no key and no credit.
+ *  Nothing goes to the server: the line the composer already has is shown, even
+ *  if a card is up, because a press with no visible answer reads as broken. */
+function refuseChat(): void {
+  renderComposerNote(creditExhausted());
+  composerNote.classList.remove("hidden");
 }
 
 /** A turn said the key is missing or rejected. The message is the whole of the
@@ -740,29 +768,76 @@ function buildAttachmentInstruction(text: string, files: WorkspaceFile[]): strin
     : `${context}This is a ${active.ext} CAD file that may need converting first. Inspect it if possible and explain next steps.`;
 }
 
+// ── where a pressed Send goes ────────────────────────────────────────────────
+
+/** What the composer is looking at when Send is pressed. All four fields are
+ *  read off the DOM by the caller; the decision itself touches nothing. */
+export interface ComposerState {
+  /** The typed line, already trimmed. */
+  text: string;
+  /** Files are staged, so this is a request to do something with them. */
+  hasFiles: boolean;
+  /** The transcript is still empty — see `DeterministicFindOptions.opening`. */
+  opening: boolean;
+  /** A key is connected or there is free credit to spend. */
+  canChat: boolean;
+}
+
+export type ComposerRoute =
+  /** Nothing typed and nothing staged. */
+  | { kind: "empty" }
+  /** A bare search: POST /api/find with this query, no model, no money. */
+  | { kind: "search"; query: string }
+  /** A conversation: run the turn. */
+  | { kind: "chat" }
+  /** A conversation with no way to pay for one: say so, send nothing. */
+  | { kind: "refuse" };
+
+/**
+ * THE CHEAPEST TURN IS THE ONE THAT NEVER HAPPENS. "find me a phone stand" is a
+ * search, not a conversation, and the sourcing layer answers it for free — so it
+ * goes to /api/find and never wakes the model up.
+ *
+ * The search branch is deliberately decided BEFORE `canChat`: a free search needs
+ * no key and no credit, which is the whole point of the route, and it is the one
+ * thing spec §1.3 promises a visitor who never signs in. Only a line that really
+ * does need the model is refused when there is nothing to pay with. Nothing is
+ * routed to search once files are staged (an attachment is a request to do
+ * something with it, not a search).
+ */
+export function routeComposerSubmit(state: ComposerState): ComposerRoute {
+  if (!state.text && !state.hasFiles) return { kind: "empty" };
+  if (!state.hasFiles) {
+    const query = deterministicFind(state.text, { opening: state.opening });
+    if (query !== undefined) return { kind: "search", query };
+  }
+  return state.canChat ? { kind: "chat" } : { kind: "refuse" };
+}
+
 function submitComposer(): void {
   if (busy) return;
   const text = inputEl.value.trim();
   const files = stagedFiles.slice();
-  if (!text && files.length === 0) return;
-
-  // THE CHEAPEST TURN IS THE ONE THAT NEVER HAPPENS. "find me a phone stand" is
-  // a search, not a conversation, and the sourcing layer answers it for free —
-  // so it goes to /api/find and never wakes the model up. Deliberately BEFORE
-  // the canChat() gate: a free search needs no key and no credit, which is the
-  // whole point of the route. Nothing is routed this way once files are staged
-  // (an attachment is a request to do something with it, not a search).
-  const query = files.length === 0 ? deterministicFind(text, { opening: !messagesEl.querySelector(".msg") }) : undefined;
-  if (query !== undefined) {
+  const route = routeComposerSubmit({
+    text,
+    hasFiles: files.length > 0,
+    opening: !messagesEl.querySelector(".msg"),
+    canChat: deps.canChat(),
+  });
+  if (route.kind === "empty") return;
+  if (route.kind === "search") {
     addUserMessage(text);
     inputEl.value = "";
     inputEl.style.height = "auto";
     updateSendEnabled();
-    void runDirectSearch(query);
+    void runDirectSearch(route.query);
+    return;
+  }
+  if (route.kind === "refuse") {
+    refuseChat();
     return;
   }
 
-  if (!deps.canChat()) return;
   clearEmptyState();
 
   const display = files.length > 0
@@ -1106,6 +1181,7 @@ export function initChat(d: ChatDeps): ChatApi {
   deps = d;
   messagesEl = byId<HTMLElement>("messages");
   inputEl = byId<HTMLTextAreaElement>("input");
+  chatPlaceholder = inputEl.placeholder;
   sendBtn = byId<HTMLButtonElement>("send");
   stopBtn = byId<HTMLButtonElement>("stop");
   attachTray = byId<HTMLElement>("attachTray");

@@ -138,6 +138,72 @@ added a custom domain, substitute that origin everywhere** — including in
    and that *Delete my data* removes all of it. The site deploys separately — see
    `site/README.md`.
 
+### After the first real sign-in
+
+Seven steps, run once, on the real key. Spends a few cents of yours. Step 4 is the one that
+can invalidate the free tier's maths — do not skip it.
+
+1. All three ingredients arrived:
+
+   ```bash
+   curl -s https://slicely.fly.dev/api/config | python3 -m json.tool | grep -E 'accountsEnabled|creditCents'
+   fly logs | grep '\[accounts\]'   # only if accountsEnabled is false
+   ```
+
+2. The stranger contrast, before signing in anywhere — 401 for chat, 200 for search:
+
+   ```bash
+   curl -s  https://slicely.fly.dev/api/me                                        # {"signedIn":false}
+   curl -si -X POST https://slicely.fly.dev/api/chat -H 'content-type: application/json' \
+     -d '{"message":"hi"}'  | head -1                                             # 401 signin_required
+   curl -si -X POST https://slicely.fly.dev/api/find -H 'content-type: application/json' \
+     -d '{"query":"phone stand"}' | head -1                                       # 200
+   ```
+
+3. One Google sign-in, in a browser that has never signed in → back on `/` with a `$0.50`
+   pill. Then type one real turn: `find me a phone stand and slice it for PETG`. The
+   "and slice it" matters — a bare find phrase goes to `/api/find` and never wakes the model.
+   (A provider error page instead of the pill means the redirect URI is not registered byte
+   for byte; compare it with `SLICELY_PUBLIC_URL` + `/auth/google/callback`.)
+
+4. **Prompt caching is hitting.** On the second and later lines, `cacheRead` must be
+   non-zero — a zero there means every cost estimate is wrong. Stop and fix it before launch.
+
+   ```bash
+   fly ssh console -C "cat /data/accounts/usage/$(date -u +%F).ndjson"
+   ```
+
+5. Three numbers agree: the ledger's sum, the pill's movement from `$0.50`, and Anthropic's
+   own console usage for that minute. Record it — over 6¢ for that one turn means
+   `cost-budget.test.ts`'s fixture is optimistic.
+
+   ```bash
+   fly ssh console -C "python3 -c \"import json;print(sum(json.loads(l)['micros'] for l in open('/data/accounts/usage/$(date -u +%F).ndjson')))\""
+   ```
+
+6. One BYO turn — paste a real key in Settings → AI and send one message. The count must not
+   grow and the pill must not move: a paying user is never metered.
+
+   ```bash
+   fly ssh console -C "wc -l /data/accounts/usage/$(date -u +%F).ndjson"
+   ```
+
+7. The kill switch, rehearsed. A free-credit turn in between should show the
+   "Free usage is busy today." card.
+
+   ```bash
+   fly secrets set SLICELY_DAILY_SPEND_CAP_CENTS=1   # restarts
+   fly secrets unset SLICELY_DAILY_SPEND_CAP_CENTS   # back to the 500¢ default
+   ```
+
+   Finally, calibrate the token estimate against Anthropic's own tokeniser (needs the real
+   key). Over 15% drift: change the divisor in `src/main/agent/prompt.ts`, never the window
+   in `prompt.test.ts`.
+
+   ```bash
+   ANTHROPIC_API_KEY=sk-ant-… npm run tokens
+   ```
+
 ## What to check after deploy
 
 - **`GET /api/config`** on the deployed URL returns `mode: "hosted"`, `slicerAvailable: true`,

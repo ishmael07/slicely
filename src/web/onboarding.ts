@@ -20,7 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { ProviderId, ProviderInfo } from "../shared/types";
 import { ApiError, del, getJson, putJson, ready } from "./api.js";
-import { buildSigninBlock, hasFreeCredit } from "./account.js";
+import { buildCreditCard, buildSigninBlock, creditExhausted, hasFreeCredit, type CreditCardDeps } from "./account.js";
 import { externalLink, make, toast } from "./ui.js";
 
 /**
@@ -501,6 +501,28 @@ const EXAMPLE_PROMPTS = [
   "Show me a cable clip for a desk",
 ];
 
+export type EmptyStateKind =
+  /** Type something — a key is connected, or there is credit to spend. */
+  | "invitation"
+  /** Signed in, credit gone: the card that says so, and the two ways on. */
+  | "exhausted"
+  /** Nothing to chat with and nothing spent: the first-run card. */
+  | "connect";
+
+/**
+ * Which of the three empty states a visitor gets, as a decision of its own so it
+ * can be checked without a DOM.
+ *
+ * A RELOAD ON AN EMPTY BALANCE IS NOT A FIRST RUN. The connect card falls back to
+ * the key card ("Connect an AI provider to start") for anybody signed in, which
+ * says nothing about the credit they just spent; spec §1.2.4 gives them the card
+ * they had in-session instead, with both ways forward.
+ */
+export function emptyStateKind(o: { hasKey: boolean; freeCredit: boolean; exhausted: boolean }): EmptyStateKind {
+  if (o.hasKey || o.freeCredit) return "invitation";
+  return o.exhausted ? "exhausted" : "connect";
+}
+
 /**
  * The transcript's empty state.
  *
@@ -508,13 +530,15 @@ const EXAMPLE_PROMPTS = [
  * the connect card and nothing else — the three-step tour that used to sit under
  * it described work the user cannot start yet.
  */
-export function buildEmptyState(onExample: (prompt: string) => void): HTMLElement {
-  // Somebody signed in with credit to spend needs no card at all: they can type
-  // straight away, and being shown a way to start when they have already started
-  // is the same noise as the old three-step tour.
-  if (!current.hasKey && !hasFreeCredit()) {
+export function buildEmptyState(onExample: (prompt: string) => void, credit: CreditCardDeps): HTMLElement {
+  const kind = emptyStateKind({
+    hasKey: current.hasKey,
+    freeCredit: hasFreeCredit(),
+    exhausted: creditExhausted(),
+  });
+  if (kind !== "invitation") {
     const first = make("div", "empty onboarding");
-    first.appendChild(buildConnectCard());
+    first.appendChild(kind === "exhausted" ? buildCreditCard("credit_exhausted", credit) : buildConnectCard());
     return first;
   }
 

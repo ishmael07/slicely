@@ -135,7 +135,11 @@ initChat({
   planStagedJob,
   mountSend: attachSendSlot,
   onStatus: applyStatus,
-  buildEmptyState: () => buildEmptyState((prompt) => void sendInstruction(prompt, prompt)),
+  buildEmptyState: () =>
+    buildEmptyState((prompt) => void sendInstruction(prompt, prompt), {
+      onAddKey: openAiSettings,
+      onWaitlist: openWaitlist,
+    }),
   // A key of their own, OR free credit that hasn't run out. Either one pays for
   // the next message.
   canChat: () => hasKey() || hasFreeCredit(),
