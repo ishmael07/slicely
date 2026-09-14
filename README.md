@@ -74,12 +74,31 @@ That's deliberate. Starting a print on a bed that still holds the last part wrec
 
 ---
 
+## Free to try, or bring your own key
+
+**On a hosted Slicely you can just start.** Sign in with Google or GitHub and you
+get a one-time **50¢ of the operator's AI credit** — no card, no trial timer, no
+key to find first: roughly eight to twelve turns, which is enough to find a model,
+slice it and send it to a printer a couple of times over. The header shows what is
+left, every turn is metered against it, and when it runs out Slicely says so and
+offers the two honest options: connect your own key, or join the waitlist for a
+paid plan. Searching is free either way — a plain "find me a phone stand" is
+answered by the sourcing layer, not the model, so it costs nothing and needs no
+account.
+
+Free credit is off unless the operator turns it on (it takes an OAuth client and
+their own API key — see [`docs/DEPLOY.md`](docs/DEPLOY.md)), and it never applies
+to the macOS app, where you are the operator.
+
 ## Bring your own key
 
 Chat runs on **your own Anthropic or OpenAI API key** — either one on its own is
 enough, and you can connect both and switch models freely. Nobody has to trust an
 operator with their conversations, and nobody gets a bill for somebody else's
-prints.
+prints. **A connected key always wins over free credit**: the balance stops being
+touched the moment you connect one, your turns are not metered or written to any
+ledger, and the model picker opens up to everything your key can reach instead of
+the one cheap free model.
 
 - **Get an Anthropic key** at [console.anthropic.com](https://console.anthropic.com)
   → *API keys*, or an **OpenAI key** at
@@ -110,11 +129,16 @@ prints.
   conversation either.
 - **Removing one:** Settings → *AI* → *Remove* on that provider, or *Delete my
   data*, which takes the whole session — chats, models, slices and both keys —
-  with it.
+  with it, and the account record too if you signed in. (Signing in again makes a
+  fresh record with an empty balance: the grant is once per email address, and
+  deleting it retires that address rather than recycling it.)
 - **Running it for yourself?** The `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in your
-  own environment are used as a fallback in desktop mode, and on a server only if
-  you deliberately set `SLICELY_ALLOW_OPERATOR_KEY=1`. Read that row in the table
-  below before you do: it means every visitor's chat is billed to you.
+  own environment are simply used in desktop mode — you are the only user. On a
+  hosted server they mean something narrower: they fund the free credit above, and
+  are spendable **only** by a signed-in account, only up to its grant, only on the
+  free model, and only while the daily ceiling holds. There is no longer any way to
+  hand every visitor an unmetered operator key (`SLICELY_ALLOW_OPERATOR_KEY` is
+  gone); the metered free tier is the safe version of what that flag did.
 
 ---
 
@@ -158,9 +182,8 @@ Type what you want, or paste a link:
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `SLICELY_MODE` | | `hosted` | `hosted` = a shared server anyone can reach (`__Host-` session cookie, LAN discovery and LAN-only printer transports refused, no filesystem access outside a session's own workspace). `desktop` = one person's own machine; Electron sets it. `npm run serve` and Docker default to `hosted`. |
-| `ANTHROPIC_API_KEY` | | — | **Yours**, not your visitors'. Read only in desktop mode, or on a hosted server with `SLICELY_ALLOW_OPERATOR_KEY=1`. Otherwise each user connects their own key in Settings and is billed for their own chat. |
-| `OPENAI_API_KEY` | | — | The same thing for OpenAI, under the same one gate. A key sitting in your environment for some other tool is **not** spent on visitors unless you set the flag below. |
-| `SLICELY_ALLOW_OPERATOR_KEY` | | off | Set to `1` to let a hosted server fall back to your own `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. **Every visitor's chat is then billed to you**, so only for a private deployment or one you intend to pay for. |
+| `ANTHROPIC_API_KEY` | | — | **Yours**, not your visitors'. In desktop mode it is simply used. On a hosted server it **funds the free credit** and nothing else: spendable only by a signed-in account, only up to that account's grant, only on the free model, only while the daily cap holds, and every call metered to `<workdir>/accounts/usage/<day>.ndjson`. Unset = pure bring-your-own-key. (`SLICELY_ALLOW_OPERATOR_KEY`, which used to hand an unmetered key to every visitor, is gone.) |
+| `OPENAI_API_KEY` | | — | The same, for OpenAI. Set either or both; the free model follows whichever exists (Anthropic first). A key sitting in your environment for some other tool is **never** spent by a stranger — a request with no signed-in account and no credit is refused, not funded. |
 | `SLICELY_MASTER_KEY` | ✅ hosted | — | Encrypts every session's stored provider keys at rest (AES-256-GCM). 32 bytes base64: `openssl rand -base64 32`. Rotating it makes stored keys unreadable, so users simply reconnect. Desktop derives one into `userData` instead. |
 | `SLICELY_PORT` | | `3000` | Web server port. |
 | `SLICELY_TRUST_PROXY` | | `0` | Set to `1` **only** behind a reverse proxy you control (Fly, Render, nginx), which makes ONE hop of it trusted: the client address is Fly's `Fly-Client-IP`, else the last `X-Forwarded-For` entry — never the leftmost, which the caller writes. Per-IP rate limits and the session-mint cap depend on that address being honest, so setting it without a proxy lets any caller hand itself a fresh bucket per request. |
@@ -174,8 +197,37 @@ Type what you want, or paste a link:
 | `SMITHSONIAN_API_KEY` | | — | Smithsonian (falls back to a rate-limited shared demo key). |
 | `SLICELY_MODEL` | | `claude-opus-4-8` | Default model; the in-app picker overrides and persists. |
 | `SLICELY_EFFORT` | | `high` | `low`/`medium`/`high`/`xhigh`/`max`. |
+| `SLICELY_MAX_HISTORY_TURNS` | | `12` | How many past turns are resent with the next one. Applies to **every** turn, free or paid — an unbounded history is what makes the twentieth turn cost ten times the first. |
 | `PRUSASLICER_PATH` | | macOS app bundle path | PrusaSlicer binary. |
 | `PRUSASLICER_CONFIG_INI` | | — | Your exported printer/filament config (recommended). |
+
+### Sign-in and free credit (all optional)
+
+Leave every row here unset and Slicely is bring-your-own-key only: no sign-in
+button, no accounts directory, nothing of yours spent. Accounts switch on when
+three things are true at once — an origin, at least one OAuth pair, **and** an owner
+key from the table above — and `/api/config` reports `accountsEnabled`. Miss one and
+the server logs a single `[accounts] accounts are DISABLED …` line at boot saying
+which. Setup steps and the exact callback URLs are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `SLICELY_PUBLIC_URL` | ✅ for sign-in | — | This app's own origin, e.g. `https://slicely.fly.dev`. Every OAuth redirect URI is built from it and never from the `Host` header. Must be a bare `https` origin (plain `http` only on `localhost`) with no path, query or fragment — **a value that can't carry a redirect URI refuses to boot**, because otherwise the mismatch surfaces as Google's error page rather than ours. |
+| `GOOGLE_CLIENT_ID` | | — | Google OAuth client. Redirect URI `<SLICELY_PUBLIC_URL>/auth/google/callback`, scopes `openid email profile`. |
+| `GOOGLE_CLIENT_SECRET` | | — | The other half. **Both** or Google isn't offered. |
+| `GITHUB_CLIENT_ID` | | — | GitHub OAuth App. Callback `<SLICELY_PUBLIC_URL>/auth/github/callback`. |
+| `GITHUB_CLIENT_SECRET` | | — | The other half. **Both** or GitHub isn't offered. |
+| `SLICELY_FREE_CREDIT_CENTS` | | `50` | The one-time grant per person, in cents. Granted once per normalised email address and never regranted — signing out, deleting the session, or coming back on the other provider does not mint a second one. |
+| `SLICELY_DAILY_SPEND_CAP_CENTS` | | `500` | Spent across **everyone** per UTC day. The global kill switch: `0` turns free credit off for everybody without taking the sign-in buttons away, which is what you want if a bill surprises you at 3am. |
+| `SLICELY_FREE_CHATS_PER_DAY` | | `40` | Turns one account may start per UTC day. |
+| `SLICELY_SIGNUPS_PER_IP_PER_DAY` | | `3` | New accounts per hashed address per UTC day. The address is never stored, only `sha256(secret ‖ ip)`. |
+| `SLICELY_FREE_MODEL` | | Sonnet 5 / Luna | Which model free credit runs on. Unset follows whichever owner key is set (Anthropic first). A value that isn't in the catalogue, isn't priced, or has no owner key turns the free tier **off** and says so in the log rather than guessing. |
+| `SLICELY_FREE_MAX_OUTPUT_TOKENS` | | `4000` | Per-call output ceiling on free credit. |
+
+`0` is a real value for the four caps above — it means "none allowed", not "use the
+default" — and it is the only switch that throttles free usage without removing
+sign-in. A negative or a non-number anywhere in this table is a typo and falls back
+to the default.
 
 ---
 

@@ -36,7 +36,8 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
    and never reuse it across environments; losing it means every stored key becomes
    undecryptable. The four sourcing keys are optional — omit any of them and that source
    degrades to "not configured" (Thingiverse, GitHub, MyMiniFactory) or the shared
-   low-rate-limit `DEMO_KEY` (Smithsonian) rather than failing the deploy.
+   low-rate-limit `DEMO_KEY` (Smithsonian) rather than failing the deploy. The sign-in and
+   free-credit secrets are a separate, optional set — see "Set up sign-in" below.
 
 4. **`fly deploy --build-arg SOURCE_COMMIT=$(git rev-parse HEAD)`** — builds the image and
    deploys it. `SOURCE_COMMIT` becomes `SLICELY_SOURCE_COMMIT`, which `/api/config` reports
@@ -62,6 +63,81 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
    `site/index.html` — the two are meant to agree; `site/main.js` warns in the console if
    they don't.
 
+## Set up sign-in (optional — the free tier)
+
+Skip this whole section and you get exactly the app described above: every visitor
+connects their own API key, nothing of yours is ever spent, and no sign-in button appears.
+Do it and a visitor can sign in with Google or GitHub, get **50¢ of your** AI credit once,
+and try Slicely with no card and no key. The numbers are yours to set (`.env.example`'s
+"what the free tier may cost you" block); the defaults bound the worst case at $5/day.
+
+Sign-in needs three things at once — an origin, an OAuth client, and an owner key to fund
+the credit. Miss one and accounts stay off; the server logs one
+`[accounts] accounts are DISABLED …` line at boot saying which.
+
+The URLs below are written out for `https://slicely.fly.dev`. **If you renamed the app or
+added a custom domain, substitute that origin everywhere** — including in
+`SLICELY_PUBLIC_URL`, which is where every redirect URI comes from.
+
+1. **Create the Google OAuth client.** [console.cloud.google.com](https://console.cloud.google.com)
+   → pick or create a project → **APIs & Services** → **OAuth consent screen**: User type
+   **External**, fill in the app name, your support email and the two links
+   (`https://slicely.fly.dev/privacy`, `https://slicely.fly.dev/terms`), and add **only**
+   the `openid`, `email` and `profile` scopes. Those three are non-sensitive, so there is no
+   verification review to wait for. Then **Credentials** → **Create credentials** → **OAuth
+   client ID** → application type **Web application**:
+
+   - Authorised JavaScript origins: `https://slicely.fly.dev`
+   - **Authorised redirect URI: `https://slicely.fly.dev/auth/google/callback`** — exactly
+     that, no trailing slash. It must match byte for byte or Google refuses the callback.
+
+   Copy the client ID and client secret.
+
+2. **Create the GitHub OAuth App.** [github.com/settings/developers](https://github.com/settings/developers)
+   → **OAuth Apps** → **New OAuth App**:
+
+   - Application name: Slicely · Homepage URL: `https://slicely.fly.dev`
+   - **Authorization callback URL: `https://slicely.fly.dev/auth/github/callback`**
+
+   Then **Generate a new client secret** and copy it — GitHub shows it once. (An OAuth App,
+   not a GitHub App: Slicely only reads a verified email address.)
+
+   Either provider on its own is fine. One button is a working sign-in card; both halves of
+   a pair are required for that provider to appear at all.
+
+3. **Set the secrets and redeploy.**
+
+   ```bash
+   fly secrets set \
+     SLICELY_PUBLIC_URL=https://slicely.fly.dev \
+     GOOGLE_CLIENT_ID=… \
+     GOOGLE_CLIENT_SECRET=… \
+     GITHUB_CLIENT_ID=… \
+     GITHUB_CLIENT_SECRET=… \
+     ANTHROPIC_API_KEY=sk-ant-…
+   ```
+
+   `fly secrets set` restarts the machine, which is what picks the values up. Two of these
+   have sharp edges worth reading twice:
+
+   - **`SLICELY_PUBLIC_URL` must be a bare `https://host` origin** — no path, no trailing
+     slash-and-more, no `http://` (except `localhost`, for running the flow locally). Every
+     redirect URI is built by appending to it, and it is deliberately never taken from the
+     `Host` header. Set it to something unusable and **the app refuses to boot** with a
+     message saying so, rather than sending visitors to a callback Google will reject.
+   - **`ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) is what makes the free tier real.** It is
+     spendable only by a signed-in account, only up to that account's grant, only on the
+     cheap free model, and only while the daily ceiling is unspent — every call metered and
+     written to `/data/accounts/usage/<day>.ndjson`. With OAuth configured and no owner key,
+     there is nothing to grant, so the sign-in buttons are withheld and the boot log says
+     why.
+
+4. **Tell your visitors what an account stores.** Sign-in creates a record, so
+   `site/privacy.html` needs a paragraph about it: the email address, display name and
+   monogram (and no provider tokens), the hashed-IP signup limit, the per-turn usage ledger,
+   and that *Delete my data* removes all of it. The site deploys separately — see
+   `site/README.md`.
+
 ## What to check after deploy
 
 - **`GET /api/config`** on the deployed URL returns `mode: "hosted"`, `slicerAvailable: true`,
@@ -75,6 +151,32 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
   pulls `/styles.css`). These are the exact paths `/api/config` advertises as `termsUrl`
   and `privacyUrl` (`src/server/routes/config.ts`), so a 404 here means the About link and
   the onboarding card are broken.
+
+If you set up sign-in, four more — in this order, because each one explains the next:
+
+- **`GET /api/config` shows `accountsEnabled: true`**, with a `signinProviders` array
+  holding one entry per provider you configured and a `freeTier` object naming the model and
+  `creditCents`. `false` here means one of the three ingredients is missing; `fly logs` has
+  the `[accounts] accounts are DISABLED …` line saying which. `signinProviders: []` with
+  `accountsEnabled: false` is the same story, not a separate bug — a button that leads to a
+  password prompt and then no credit is worse than no button.
+- **A real sign-in reaches the app with a `$0.50` pill.** Open the app in a browser that has
+  never signed in, click *Continue with Google* (or GitHub), and you should land back on `/`
+  signed in, with the header pill reading `$0.50` within a second or two. A provider error
+  page instead means the redirect URI is not registered byte for byte — compare it with
+  `SLICELY_PUBLIC_URL` + `/auth/<provider>/callback`.
+- **One turn writes one ledger line.** Send a single chat message, then:
+
+  ```bash
+  fly ssh console -C "tail -3 /data/accounts/usage/$(date -u +%F).ndjson"
+  ```
+
+  One JSON line per model call, each with the model, the token counts and the µ¢ charged,
+  and the pill drops by that much. No file at all means the turn was paid for by a connected
+  key (which is never metered), not that metering is broken.
+- **Nothing before sign-in.** `GET /api/me` answers `{"signedIn": false}` and `POST /api/chat`
+  answers **401** `signin_required` — while `POST /api/find` still answers **200** for a
+  stranger with no key and no account, because a plain search costs no credit.
 
 ### What is served off disk
 
