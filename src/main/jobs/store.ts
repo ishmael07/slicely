@@ -1,6 +1,20 @@
-// Persist jobs to <workdir>/jobs.json. A flat JSON array is plenty for the
-// expected scale (a hobbyist's queue of print jobs, not a database
+// Persist jobs to the AMBIENT SESSION's jobs.json. A flat JSON array is plenty
+// for the expected scale (a hobbyist's queue of print jobs, not a database
 // workload) and keeps this dependency-free.
+//
+// One file per session, not one file per server. A single shared
+// `<workdir>/jobs.json` made every job on the box readable by every visitor:
+// the agent's `job_status` with no arguments listed all of them, `job_status
+// {jobId}` handed back somebody else's plan (and emitted a `job` event, which
+// the chat route records as ownership — so the REST routes then served it too),
+// and `run_job {jobId}` re-sliced a stranger's parts on their behalf. Scoping
+// the FILE removes the whole class: a foreign id is simply not in this
+// session's store, so it reads as "no such job" without anything having to
+// remember to check.
+//
+// For the default session — Electron, and any startup code outside a request —
+// `sessionFile` resolves to the plain workdir, so the path stays exactly
+// `<workdir>/jobs.json` and an existing install keeps its queue.
 //
 // Writes are atomic (write to a sibling temp file, then rename onto the real
 // path) so a crash or power loss mid-write can never leave jobs.json
@@ -17,12 +31,12 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { PrintJob } from "../../shared/jobs";
-import { getConfig } from "../config";
+import { sessionFile } from "../session-context";
 
 function jobsPath(): string {
-  return join(getConfig().workdir, "jobs.json");
+  return sessionFile("jobs.json");
 }
 
 export async function loadJobs(): Promise<PrintJob[]> {

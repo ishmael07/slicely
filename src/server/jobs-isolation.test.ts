@@ -10,6 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "./session";
 import { relocateJobEventGcode } from "./routes/jobs";
+import { runInSession, sessionContext } from "../main/session-context";
+import { saveJobs } from "../main/jobs/store";
+import { executeV2Tool } from "../main/agent/tools-v2";
+import type { PrintJob } from "../shared/jobs";
+import type { AgentEvent } from "../shared/types";
 
 function fakeSession(root: string, id: string): SessionRecord {
   const dir = join(root, id);
@@ -114,6 +119,90 @@ test("job ownership: a session only ever sees the ids it recorded", () => {
     assert.deepEqual(visibleToBob.map((j) => j.id), ["job-b"]);
     // job-c belongs to neither and must be invisible to both.
     assert.ok(!alice.jobIds.has("job-c") && !bob.jobIds.has("job-c"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── The AGENT's job tools, not just the REST routes ──────────────────────────
+//
+// The test above pins the route-level filter, and the route-level filter was
+// the whole defence — which the agent walked straight around. `job_status` with
+// no arguments listed every job on the server; `job_status {jobId}` handed back
+// a stranger's plan AND emitted a `job` event, which routes/chat.ts records in
+// `session.jobIds` — so asking about somebody else's job MADE it yours, and the
+// jobIds-gated routes then served it. `run_job {jobId}` re-sliced their parts.
+//
+// The fix is that the job store is per-session, so a foreign id is not "denied"
+// — it is absent, which is also the answer a made-up id gets. These tests drive
+// the real tool functions, because that is the path that was unguarded.
+
+function fakeJob(id: string): PrintJob {
+  const now = new Date().toISOString();
+  return {
+    id, name: id, createdAt: now, updatedAt: now,
+    status: "planned", plates: [], params: {}, goal: "quality", material: "PLA", notes: [],
+  };
+}
+
+/** An `emit` that applies routes/chat.ts's ownership rule verbatim: a `job`
+ *  event on the stream is exactly what makes a job this session's. */
+function recordingEmit(session: SessionRecord): {
+  emit: (event: AgentEvent) => void;
+  jobEvents: AgentEvent[];
+} {
+  const jobEvents: AgentEvent[] = [];
+  return {
+    jobEvents,
+    emit: (event: AgentEvent) => {
+      if (event.type === "job" && event.job?.id) {
+        jobEvents.push(event);
+        session.jobIds.add(event.job.id);
+      }
+    },
+  };
+}
+
+test("agent job tools: another session's job id is simply not there", async () => {
+  const root = mkdtempSync(join(tmpdir(), "slicely-agent-jobs-"));
+  try {
+    const alice = fakeSession(root, "alice-agent");
+    const bob = fakeSession(root, "bob-agent");
+    const ctx = (s: SessionRecord) => sessionContext(s.id, s.dir);
+
+    await runInSession(ctx(alice), () => saveJobs([fakeJob("job-a")]));
+    await runInSession(ctx(bob), () => saveJobs([fakeJob("job-b")]));
+    alice.jobIds.add("job-a");
+    bob.jobIds.add("job-b");
+
+    const { emit, jobEvents } = recordingEmit(bob);
+
+    // 1. Bob asks about Alice's job by id.
+    const status = await runInSession(ctx(bob), () =>
+      executeV2Tool("job_status", { jobId: "job-a" }, emit),
+    );
+    assert.match(status, /No job with id job-a\./, "must read as not-found, not as denied");
+    assert.equal(jobEvents.length, 0, "no `job` event may reach the stream");
+    assert.ok(!bob.jobIds.has("job-a"), "asking about a job must never make it yours");
+
+    // 2. The bare listing is Bob's own queue, not the server's.
+    const listed = await runInSession(ctx(bob), () => executeV2Tool("job_status", {}, emit));
+    assert.match(listed, /^1 job\(s\)/, `expected exactly one job, got: ${listed}`);
+    assert.match(listed, /id=job-b/);
+    assert.ok(!listed.includes("job-a"), `Alice's job leaked into Bob's listing: ${listed}`);
+
+    // 3. run_job refuses BEFORE anything runs — no slicer, no plates, no
+    //    mutation of Alice's stored job.
+    const ran = await runInSession(ctx(bob), () => executeV2Tool("run_job", { jobId: "job-a" }, emit));
+    assert.match(ran, /No job with id job-a\./);
+    assert.equal(jobEvents.length, 0);
+    assert.ok(!bob.jobIds.has("job-a"));
+
+    // 4. And none of this broke the ordinary case: Alice still sees her own.
+    const own = await runInSession(ctx(alice), () =>
+      executeV2Tool("job_status", { jobId: "job-a" }, () => {}),
+    );
+    assert.match(own, /Job "job-a" — planned/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

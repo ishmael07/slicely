@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,7 @@ const WORKDIR = join(tmpdir(), `slicely-store-test-${Date.now()}-${Math.random()
 process.env.SLICELY_WORKDIR = WORKDIR;
 
 import { getJobById, loadJobs, saveJobs, upsertJob } from "./store";
+import { DEFAULT_SESSION_ID, runInSession, sessionContext } from "../session-context";
 import type { PrintJob } from "../../shared/jobs";
 
 // Every test in this file shares WORKDIR (config.ts's caching leaves no way to
@@ -71,4 +72,60 @@ test("a jobs.json containing a non-array value also starts empty", async () => {
   await writeFile(join(WORKDIR, "jobs.json"), JSON.stringify({ not: "an array" }));
   const jobs = await loadJobs();
   assert.deepEqual(jobs, []);
+});
+
+// ── One store per session ────────────────────────────────────────────────────
+//
+// The store used to be one `<workdir>/jobs.json` for the whole process, which
+// on a shared server meant every visitor's job queue was one file that every
+// other visitor's agent could read, list, and re-run. The file is now the
+// ambient session's — and the default session's file must NOT have moved, or an
+// existing Electron install would silently lose its queue.
+
+test("the default session's jobs.json is still <workdir>/jobs.json — Electron's file does not move", async () => {
+  await saveJobs([fakeJob("electron")]);
+
+  // Not "a file exists somewhere": the exact path v1 wrote, read back raw.
+  const onDisk = JSON.parse(await readFile(join(WORKDIR, "jobs.json"), "utf8")) as PrintJob[];
+  assert.deepEqual(onDisk.map((j) => j.id), ["electron"]);
+
+  // And explicitly inside the default session, which is what Electron's
+  // out-of-request calls resolve to, for the same answer.
+  const viaDefault = await runInSession(sessionContext(DEFAULT_SESSION_ID), () => loadJobs());
+  assert.deepEqual(viaDefault.map((j) => j.id), ["electron"]);
+});
+
+test("each session gets its own jobs.json and cannot see another session's jobs", async () => {
+  const dirA = join(WORKDIR, "sessions", "alice");
+  const dirB = join(WORKDIR, "sessions", "bob");
+  const ctxA = sessionContext("alice", dirA);
+  const ctxB = sessionContext("bob", dirB);
+
+  await saveJobs([fakeJob("electron")]);
+  await runInSession(ctxA, () => saveJobs([fakeJob("job-a")]));
+  await runInSession(ctxB, () => saveJobs([fakeJob("job-b")]));
+
+  // Three separate files, one per session.
+  for (const [dir, id] of [[dirA, "job-a"], [dirB, "job-b"]] as const) {
+    const onDisk = JSON.parse(await readFile(join(dir, "jobs.json"), "utf8")) as PrintJob[];
+    assert.deepEqual(onDisk.map((j) => j.id), [id]);
+  }
+
+  assert.deepEqual((await runInSession(ctxA, () => loadJobs())).map((j) => j.id), ["job-a"]);
+  assert.deepEqual((await runInSession(ctxB, () => loadJobs())).map((j) => j.id), ["job-b"]);
+  assert.deepEqual((await loadJobs()).map((j) => j.id), ["electron"]);
+
+  // A job id from another session is simply absent — the same answer a
+  // made-up id gets, so a lookup cannot confirm the id exists on the server.
+  assert.equal(await runInSession(ctxA, () => getJobById("job-b")), undefined);
+  assert.equal(await runInSession(ctxB, () => getJobById("job-a")), undefined);
+  assert.equal(await runInSession(ctxB, () => getJobById("electron")), undefined);
+
+  // Writing in one session leaves the others untouched.
+  await runInSession(ctxA, () => upsertJob(fakeJob("job-a2")));
+  assert.deepEqual(
+    (await runInSession(ctxA, () => loadJobs())).map((j) => j.id).sort(),
+    ["job-a", "job-a2"],
+  );
+  assert.deepEqual((await runInSession(ctxB, () => loadJobs())).map((j) => j.id), ["job-b"]);
 });

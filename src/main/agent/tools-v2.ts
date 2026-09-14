@@ -709,6 +709,12 @@ export async function executeV2Tool(
     case "run_job": {
       const jobId = input.jobId ? String(input.jobId) : sessionState.lastJobId;
       if (!jobId) return "No job to run — call plan_job first.";
+      // Whose job is this? `getJob` reads THIS session's store, so an id
+      // belonging to another visitor is simply absent — and the answer is the
+      // same "no job with that id" a made-up id gets, which is the point: a
+      // different answer would confirm the id exists somewhere on the server.
+      // Checked before anything runs, so a foreign id never reaches the slicer.
+      if (!(await getJob(jobId))) return `No job with id ${jobId}.`;
       // Plates can also sit in the slice queue behind another visitor's job;
       // withSliceProgress routes that wait to the same spinner.
       const job = await withSliceProgress(
@@ -761,12 +767,20 @@ export async function executeV2Tool(
     case "job_status": {
       const jobId = input.jobId ? String(input.jobId) : sessionState.lastJobId;
       if (!jobId) {
+        // THIS session's jobs — `listJobs` reads the session's own store, so
+        // the bare listing can no longer enumerate the whole server's queue
+        // (which also handed the model other visitors' job ids to then ask
+        // about by name).
         const all = await listJobs();
         if (!all.length) return "No jobs yet.";
         return `${all.length} job(s):\n${all
           .map((j) => `• ${j.name} (id=${j.id}) — ${j.status}, ${j.plates.length} plates`)
           .join("\n")}`;
       }
+      // Same store, same consequence as run_job above: another session's id is
+      // absent, so it gets the ordinary not-found answer and — crucially — no
+      // `job` event, which the chat route would otherwise read as this session
+      // taking ownership of it.
       const job = await getJob(jobId);
       if (!job) return `No job with id ${jobId}.`;
       emit({ type: "job", job });
