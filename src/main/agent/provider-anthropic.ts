@@ -46,12 +46,34 @@ const STREAM_TIMEOUT_MS = 10 * 60_000;
 
 // ── neutral → Anthropic ──────────────────────────────────────────────────────
 
+/** The one cache breakpoint shape Anthropic takes. Frozen so nothing can edit it
+ *  in place and quietly stop matching. */
+const EPHEMERAL = Object.freeze({ type: "ephemeral" as const });
+
+/**
+ * The tools block, with a cache breakpoint on the LAST tool.
+ *
+ * A breakpoint marks the END of a cacheable prefix, so it covers everything
+ * before it — on the first tool it would cache one tool. The render order is
+ * `tools → system → messages` (see `buildAnthropicParams`), so this breakpoint
+ * plus the one on the system block covers the whole static prefix and nothing
+ * volatile, which is the ~90%-off difference the free tier is built on.
+ *
+ * Order is `tools` order and nothing else: the array is mapped, never sorted and
+ * never keyed, because a reordered tools block is a DIFFERENT prefix and a
+ * full-price re-read of all of it.
+ */
 export function toAnthropicTools(tools: ToolSpec[]): Anthropic.Tool[] {
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.schema as Anthropic.Tool["input_schema"],
-  }));
+  const last = tools.length - 1;
+  return tools.map((t, i) => {
+    const tool: Anthropic.Tool = {
+      name: t.name,
+      description: t.description,
+      input_schema: t.schema as Anthropic.Tool["input_schema"],
+    };
+    if (i === last) (tool as { cache_control?: unknown }).cache_control = EPHEMERAL;
+    return tool;
+  });
 }
 
 function toContentParam(block: NeutralBlock): Anthropic.ContentBlockParam {
@@ -74,6 +96,41 @@ function toContentParam(block: NeutralBlock): Anthropic.ContentBlockParam {
 
 export function toAnthropicMessages(messages: NeutralMessage[]): Anthropic.MessageParam[] {
   return messages.map((m) => ({ role: m.role, content: m.content.map(toContentParam) }));
+}
+
+/**
+ * The whole `messages.create` body for one call — a PURE function, so the request
+ * can be asserted without a socket, a key or a fixture server.
+ *
+ * TWO CACHE BREAKPOINTS, AND ONLY TWO. Anthropic renders a request as
+ * `tools → system → messages` and allows four `cache_control` markers; one on the
+ * last tool and one on the system block bracket exactly the static prefix. The
+ * messages never carry one, because they are the part that changes every turn and
+ * a breakpoint there is a cache WRITE with no read to follow it.
+ *
+ * `system` therefore has to be a one-element block array rather than the bare
+ * string it was: there is nowhere to hang `cache_control` on a string. The text
+ * is passed through byte-for-byte — a hit is a prefix match on rendered bytes, so
+ * trimming or normalising here would cost the whole prefix silently.
+ *
+ * Worth the ceremony: the spec's worked turn is 4.71¢ cached against 7.65¢
+ * uncached, which is the difference between 50 cents buying ten real turns and
+ * six.
+ */
+export function buildAnthropicParams(req: StreamRequest): Record<string, unknown> {
+  // Build only the request fields this model actually accepts (no effort on
+  // Haiku, no xhigh on Sonnet, no adaptive thinking pre-4.6).
+  const { outputConfig, thinking } = buildModelRequestParams(req.model, req.effort);
+  const params: Record<string, unknown> = {
+    model: req.model,
+    max_tokens: req.maxOutputTokens,
+    system: [{ type: "text", text: req.system, cache_control: EPHEMERAL }],
+    tools: toAnthropicTools(req.tools),
+    messages: toAnthropicMessages(req.messages),
+  };
+  if (thinking) params.thinking = thinking;
+  if (outputConfig) params.output_config = outputConfig;
+  return params;
 }
 
 // ── Anthropic → neutral ──────────────────────────────────────────────────────
@@ -259,18 +316,7 @@ export const ANTHROPIC_PROVIDER: Provider = {
 
   async stream(req: StreamRequest, emit: StreamEmit): Promise<TurnResult> {
     const client = new Anthropic({ apiKey: req.apiKey });
-    // Build only the request fields this model actually accepts (no effort on
-    // Haiku, no xhigh on Sonnet, no adaptive thinking pre-4.6).
-    const { outputConfig, thinking } = buildModelRequestParams(req.model, req.effort);
-    const params: Record<string, unknown> = {
-      model: req.model,
-      max_tokens: req.maxOutputTokens,
-      system: req.system,
-      tools: toAnthropicTools(req.tools),
-      messages: toAnthropicMessages(req.messages),
-    };
-    if (thinking) params.thinking = thinking;
-    if (outputConfig) params.output_config = outputConfig;
+    const params = buildAnthropicParams(req);
 
     // The signal is the agent's: pressing Stop has to close the socket, not just
     // stop painting the deltas (the tokens are billed either way).
