@@ -60,6 +60,16 @@ export const MODEL_CATALOG: ModelOption[] = [
     supportsAdaptiveThinking: true,
   },
   {
+    id: "claude-sonnet-5",
+    provider: "anthropic",
+    label: "Sonnet 5",
+    blurb: "Balanced and cheap — the model free credit runs on",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: true,
+  },
+  {
     id: "claude-sonnet-4-6",
     provider: "anthropic",
     label: "Sonnet 4.6",
