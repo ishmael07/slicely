@@ -47,6 +47,12 @@ let ssSupportStyle: HTMLSelectElement;
 let ssBrim: HTMLElement;
 let ssBrimWidth: HTMLInputElement;
 
+// Settings → AI: the same model and effort as the composer pills, laid out as a
+// grouped select and a segmented control.
+let ssModel: HTMLSelectElement;
+let ssEffortRow: HTMLElement;
+let ssEffort: HTMLElement;
+
 let sourcesListEl: HTMLElement;
 let aiBody: HTMLElement;
 let dataBody: HTMLElement;
@@ -114,7 +120,7 @@ function openModelMenu(): void {
         id: m.id,
         label: m.label,
         group: providerLabel(m.provider),
-        hint: usable ? m.blurb : `Connect an ${providerLabel(m.provider)} key in Settings → AI`,
+        hint: usable ? m.blurb : `No ${providerLabel(m.provider)} key connected`,
         disabled: !usable,
         active: m.id === current.model && usable,
       };
@@ -131,10 +137,24 @@ function openEffortMenu(): void {
     effortTriggerBtn,
     efforts.map((lvl) => {
       const disabled = effortDisabled(lvl, chosen);
-      return { id: lvl, label: cap(lvl), disabled, active: lvl === current.effort && !disabled };
+      return { id: lvl, label: effortLabel(lvl), disabled, active: lvl === current.effort && !disabled };
     }),
     (id) => void changeSettings({ effort: id as EffortLevel }),
   );
+}
+
+/** Plain words for an effort level, so a segmented control never reads
+ *  "Xhigh". */
+const EFFORT_LABEL: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+function effortLabel(lvl: string): string {
+  return EFFORT_LABEL[lvl] ?? cap(lvl);
 }
 
 function renderModelEffort(): void {
@@ -143,7 +163,56 @@ function renderModelEffort(): void {
   const chosen = models.find((m) => m.id === current.model);
   modelTriggerLabel.textContent = chosen?.label ?? current.model;
   effortTriggerBtn.classList.toggle("hidden", !(chosen?.supportsEffort ?? false));
-  effortTriggerLabel.textContent = current.effort;
+  effortTriggerLabel.textContent = effortLabel(current.effort);
+  renderAiModelFields();
+}
+
+/**
+ * Settings → AI's model and effort controls.
+ *
+ * One select grouped by provider rather than a second dropdown menu, because
+ * this is a form and the rest of the sheet is made of selects. A provider with
+ * no key has its whole group disabled and says why in the group's own label,
+ * which is the one place a `<select>` can carry a hint.
+ */
+function renderAiModelFields(): void {
+  if (!settings || !ssModel) return;
+  const { current, models, efforts } = settings;
+  const connected = new Set(providersWithKeys());
+
+  ssModel.replaceChildren();
+  const seen = new Set<string>();
+  for (const m of models) {
+    if (seen.has(m.provider)) continue;
+    seen.add(m.provider);
+    const usable = connected.has(m.provider);
+    const group = document.createElement("optgroup");
+    group.label = usable ? providerLabel(m.provider) : `${providerLabel(m.provider)} — no key connected`;
+    for (const model of models.filter((x) => x.provider === m.provider)) {
+      const opt = make("option", "", model.label);
+      opt.value = model.id;
+      opt.disabled = !usable;
+      if (model.id === current.model) opt.selected = true;
+      group.appendChild(opt);
+    }
+    ssModel.appendChild(group);
+  }
+
+  const chosen = models.find((m) => m.id === current.model);
+  ssEffortRow.classList.toggle("hidden", !(chosen?.supportsEffort ?? false));
+  ssEffort.replaceChildren();
+  for (const lvl of efforts) {
+    const disabled = effortDisabled(lvl, chosen);
+    const b = make("button", "", effortLabel(lvl));
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.disabled = disabled;
+    const on = lvl === current.effort && !disabled;
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    if (on) b.classList.add("active");
+    b.onclick = () => void changeSettings({ effort: lvl });
+    ssEffort.appendChild(b);
+  }
 }
 
 async function changeSettings(patch: Partial<{ model: string; effort: EffortLevel }>): Promise<void> {
@@ -170,8 +239,10 @@ function fillSelect(sel: HTMLSelectElement, options: { value: string; label: str
 function renderSegment(host: HTMLElement, current: FeatureMode, onPick: (mode: FeatureMode) => void): void {
   host.replaceChildren();
   for (const mode of ["auto", "on", "off"] as FeatureMode[]) {
-    const b = make("button", "", mode);
+    const b = make("button", "", cap(mode));
     b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", mode === current ? "true" : "false");
     if (mode === current) b.classList.add("active");
     b.onclick = () => onPick(mode);
     host.appendChild(b);
@@ -302,7 +373,7 @@ function renderDataSection(): void {
     make(
       "p",
       "sheet-hint",
-      "Deletes your session: the connected key, saved chats, printer connections and every file in your workspace.",
+      "Everything Slicely holds for you lives in one session: your key, chats, printer connections and files.",
     ),
   );
   const btn = make("button", "btn ghost small danger", "Delete my data");
@@ -339,7 +410,10 @@ function renderDataSection(): void {
  *  section stays hidden rather than claiming one is connected. */
 export function renderAccount(): void {
   byId<HTMLElement>("aiGroup").classList.toggle("hidden", !configLoaded());
-  if (configLoaded()) renderAiSection(aiBody);
+  if (configLoaded()) {
+    renderAiSection(aiBody);
+    renderAiModelFields();
+  }
   renderDataSection();
   renderAboutSection(aboutBody);
 }
@@ -368,6 +442,9 @@ export function initSettings(d: SettingsDeps): SettingsApi {
   ssSupportStyle = byId<HTMLSelectElement>("ssSupportStyle");
   ssBrim = byId<HTMLElement>("ssBrim");
   ssBrimWidth = byId<HTMLInputElement>("ssBrimWidth");
+  ssModel = byId<HTMLSelectElement>("ssModel");
+  ssEffortRow = byId<HTMLElement>("ssEffortRow");
+  ssEffort = byId<HTMLElement>("ssEffort");
   sourcesListEl = byId<HTMLElement>("sourcesList");
   aiBody = byId<HTMLElement>("aiBody");
   dataBody = byId<HTMLElement>("dataBody");
@@ -375,6 +452,8 @@ export function initSettings(d: SettingsDeps): SettingsApi {
 
   // Each trigger opens its own menu; ui.ts's menu() owns closing it (outside
   // click, Escape, Tab) and returning focus.
+  ssModel.addEventListener("change", () => void changeSettings({ model: ssModel.value }));
+
   modelTriggerBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     openModelMenu();

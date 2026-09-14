@@ -15,7 +15,7 @@
 import type { SlicerStatus } from "../shared/types";
 import { ApiError, errorMessage, getJson } from "./api.js";
 import type { SheetId } from "./ui.js";
-import { byId, closeSheets, initUi, make, onSheetChange, toggleSheet } from "./ui.js";
+import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toggleSheet } from "./ui.js";
 import {
   clearTranscript,
   initChat,
@@ -30,12 +30,13 @@ import { applyMode, attachSendSlot, initPrinters, refreshPrinters } from "./prin
 import { initSettings, loadSources, planOptions, renderAccount, renderPreferences } from "./settings.js";
 import {
   buildEmptyState,
-  buildKeyPrompt,
   config,
+  focusFirstConnect,
   hasKey,
   initConsent,
   loadConfig,
   onConfigChange,
+  refreshConfig,
 } from "./onboarding.js";
 
 // ── shell elements ───────────────────────────────────────────────────────────
@@ -134,8 +135,22 @@ initChat({
   onStatus: applyStatus,
   buildEmptyState: () => buildEmptyState((prompt) => void sendInstruction(prompt, prompt)),
   canChat: hasKey,
-  buildKeyPrompt,
+  onConnect: openAiSettings,
+  // A turn that reported a missing or rejected key knows something this page
+  // does not, so the account is re-read rather than guessed at.
+  onKeyProblem: () => void refreshConfig(),
 });
+
+/** Open Settings on the one section that connects a provider, and put the
+ *  keyboard on it — where the composer's "Connect" link goes. */
+function openAiSettings(): void {
+  openSheet("settings");
+  renderAccount();
+  renderPreferences();
+  void refreshPrinters();
+  void loadSources();
+  focusFirstConnect(byId<HTMLElement>("aiBody"));
+}
 
 // Sheets: one header button each, one close button each.
 byId<HTMLButtonElement>("settingsBtn").addEventListener("click", () => {

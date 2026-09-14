@@ -65,8 +65,8 @@
         </div>
       </header>
 
-      <!-- Settings sheet: model/effort live in the composer, this sheet holds
-           slice defaults + printer connections + model sources. -->
+      <!-- Settings sheet: AI (keys, model, effort), slice defaults, printer
+           connections and model sources. -->
       <div id="scrim" class="scrim hidden"></div>
 
       <div
@@ -82,16 +82,25 @@
           <button class="sheet-close" id="settingsClose" aria-label="Close settings">&times;</button>
         </div>
 
-        <!-- Slicely runs on the user's own Anthropic or OpenAI key: this is where it is
-             connected, replaced or removed. The card itself is built by
-             onboarding.ts so the transcript's first-run step and this section
-             are literally the same component. -->
+        <!-- Slicely runs on the user's own Anthropic or OpenAI key: this is the
+             one place it is connected, replaced or removed. One row per
+             provider, then the model and effort those keys pay for. -->
         <section class="group" id="aiGroup">
           <div class="group-head">
             <h3>AI</h3>
-            <p>Slicely runs on your own Anthropic or OpenAI API key — either one is enough.</p>
+            <p>Your key is encrypted, sent only to its own provider, and billed by them.</p>
           </div>
           <div id="aiBody" class="ai-body"></div>
+          <div class="fields">
+            <div class="field">
+              <label for="ssModel">Model</label>
+              <div class="select-wrap"><select id="ssModel"></select></div>
+            </div>
+            <div class="field stack" id="ssEffortRow">
+              <label id="ssEffortLabel">Effort</label>
+              <div class="seg" id="ssEffort" role="radiogroup" aria-labelledby="ssEffortLabel"></div>
+            </div>
+          </div>
         </section>
 
         <!-- A printer PROFILE drives slicing (bed size, nozzle). It is separate
@@ -101,7 +110,7 @@
         <section class="group">
           <div class="group-head">
             <h3>Your printer</h3>
-            <p>Sets bed size and nozzle so estimates are right. No connection needed.</p>
+            <p>Sets bed size and nozzle so estimates are right — no connection needed.</p>
           </div>
           <div class="fields">
             <div class="field">
@@ -152,7 +161,7 @@
             </div>
             <div class="field">
               <label>Supports</label>
-              <div class="seg" id="ssSupports" role="group" aria-label="Supports"></div>
+              <div class="seg" id="ssSupports" role="radiogroup" aria-label="Supports"></div>
             </div>
             <div class="field" id="ssStyleRow">
               <label for="ssSupportStyle">Support style</label>
@@ -160,7 +169,7 @@
             </div>
             <div class="field">
               <label>Brim</label>
-              <div class="seg" id="ssBrim" role="group" aria-label="Brim"></div>
+              <div class="seg" id="ssBrim" role="radiogroup" aria-label="Brim"></div>
             </div>
             <div class="field">
               <label for="ssBrimWidth">Brim width</label>
@@ -175,7 +184,7 @@
         <section class="group">
           <div class="group-head">
             <h3>Send to printer</h3>
-            <p>Optional. Lets Slicely send finished files straight to a machine.</p>
+            <p>Optional — lets Slicely send finished files straight to a machine.</p>
           </div>
           <div id="printerList" class="printer-list"></div>
           <div class="group-actions">
@@ -205,8 +214,8 @@
             <button class="btn primary" id="pSave">Connect printer</button>
           </div>
           <p id="multiUserNote" class="note hidden">
-            This is a shared server, so it can't reach printers on your home network. Add a cloud printer
-            (Prusa Connect or Bambu Cloud) instead.
+            A shared server can't reach printers on your home network — add a cloud printer (Prusa Connect or
+            Bambu Cloud) instead.
           </p>
         </section>
 
@@ -222,7 +231,6 @@
         <section class="group">
           <div class="group-head">
             <h3>Data</h3>
-            <p>Everything Slicely holds for you lives in one session on the server.</p>
           </div>
           <div id="dataBody" class="data-body"></div>
         </section>
@@ -290,6 +298,9 @@
           <button class="btn primary" id="linkGo">Go</button>
         </div>
         <div id="attachTray" class="attach-tray hidden"></div>
+        <!-- The one line that explains a switched-off composer. Filled in by
+             chat.ts; hidden whenever a key is connected. -->
+        <div id="composerNote" class="composer-note hidden"></div>
         <div class="composer-bar">
           <div class="picker-anchor">
             <button
@@ -339,7 +350,7 @@
             id="input"
             rows="1"
             aria-label="Ask Slicely for something to print"
-            placeholder="Ask, paste a link, or drop an STL to slice…"
+            placeholder="Ask for something to print…"
           ></textarea>
           <button id="send" title="Send" aria-label="Send">
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" aria-hidden="true">

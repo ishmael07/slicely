@@ -43,11 +43,14 @@ export interface ChatDeps {
   onStatus(status: SlicerStatus): void;
   /** The transcript's empty state. */
   buildEmptyState(): HTMLElement;
-  /** False when no provider key is connected yet: chatting is impossible, though
-   *  search and paste-a-link still work without one. */
+  /** False when no provider key is connected yet, which is the one state the
+   *  composer is switched off in. */
   canChat(): boolean;
-  /** Something needs a key — returns the card to drop into the transcript. */
-  buildKeyPrompt(code: string): HTMLElement;
+  /** The user asked to connect a provider — open Settings → AI. */
+  onConnect(): void;
+  /** A turn came back saying the key is missing or rejected, so whatever this
+   *  module believes about the account is out of date. */
+  onKeyProblem(): void;
 }
 
 export interface ChatApi {
@@ -65,6 +68,8 @@ let attachTray: HTMLElement;
 let linkRow: HTMLElement;
 let linkInput: HTMLInputElement;
 let chatsList: HTMLElement;
+/** The one line above the composer that explains a switched-off composer. */
+let composerNote: HTMLElement;
 
 // ── transcript state ─────────────────────────────────────────────────────────
 
@@ -442,9 +447,9 @@ export function handleAgentEvent(raw: AgentEvent | Record<string, unknown>): voi
       renderAgentAction(event as unknown as { label: string; kind: string; href?: string; hint?: string });
       break;
     case "error":
-      // A key problem is not a message to read and move on from — it is the one
-      // thing standing between the user and an answer, so the card comes with it.
-      if (event.code === "no_key" || event.code === "key_rejected") promptForKey(event.code, event.message);
+      // A key problem says so once and points at Settings; it no longer drops a
+      // card into the transcript on every turn.
+      if (event.code === "no_key" || event.code === "key_rejected") reportKeyProblem(event.code, event.message);
       else renderTurnError(codeMessage(event.code) ?? event.message);
       break;
     case "done":
@@ -468,29 +473,41 @@ function setBusy(b: boolean): void {
   updateSendEnabled();
 }
 
+/**
+ * The composer's enabled state, and the one line that explains it.
+ *
+ * With no provider connected there is nothing to send a message to, so the whole
+ * row is switched off rather than left live to fail on press. The explanation is
+ * one line above it with one link — and it is left out entirely while the
+ * connect card is on screen, which already says the same thing louder.
+ */
 export function updateSendEnabled(): void {
-  sendBtn.disabled = busy || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
-  // Never disabled for want of a key: search and paste-a-link work without one,
-  // and a dead button explains nothing. Pressing it opens the key card instead.
-  const label = deps.canChat() ? "Send" : "Connect a key to chat";
-  sendBtn.title = label;
-  sendBtn.setAttribute("aria-label", label);
+  const canChat = deps.canChat();
+  sendBtn.disabled = busy || !canChat || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
+  inputEl.disabled = !canChat;
+  for (const id of ["attachBtn", "linkBtn"]) byId<HTMLButtonElement>(id).disabled = !canChat;
+  const cardShowing = messagesEl.querySelector(".connect") !== null;
+  composerNote.classList.toggle("hidden", canChat || cardShowing);
+  if (!canChat && !cardShowing && composerNote.childElementCount === 0) {
+    composerNote.appendChild(make("span", "", "Connect an AI provider to chat."));
+    const connect = make("button", "link-btn", "Connect");
+    connect.type = "button";
+    connect.addEventListener("click", () => deps.onConnect());
+    composerNote.appendChild(connect);
+  }
 }
 
-/** Drop the key card into the transcript and point the user at it. */
-function promptForKey(code: string, message?: string): void {
+/** A turn said the key is missing or rejected. The message is the whole of the
+ *  report — the composer state and Settings are where it gets fixed. */
+function reportKeyProblem(code: string, message?: string): void {
   endBotBubble();
-  if (message) renderError(message);
-  mount(deps.buildKeyPrompt(code));
-  messagesEl.querySelector<HTMLInputElement>(".key-prompt .key-input")?.focus();
+  renderTurnError(codeMessage(code) ?? message ?? "Connect an AI provider in Settings to chat.");
+  deps.onKeyProblem();
 }
 
 async function runTurn(instruction: string): Promise<void> {
   if (busy) return;
-  if (!deps.canChat()) {
-    promptForKey("no_key");
-    return;
-  }
+  if (!deps.canChat()) return;
   setBusy(true);
   endBotBubble();
   currentAbort = new AbortController();
@@ -500,7 +517,7 @@ async function runTurn(instruction: string): Promise<void> {
     if ((err as Error).name === "AbortError") {
       /* the user pressed Stop — nothing to report */
     } else if (err instanceof ApiError && (err.code === "no_key" || err.code === "key_rejected")) {
-      promptForKey(err.code, err.message);
+      reportKeyProblem(err.code, err.message);
     } else {
       renderTurnError(errorMessage(err));
     }
@@ -665,10 +682,7 @@ function submitComposer(): void {
   const text = inputEl.value.trim();
   const files = stagedFiles.slice();
   if (!text && files.length === 0) return;
-  if (!deps.canChat()) {
-    promptForKey("no_key");
-    return;
-  }
+  if (!deps.canChat()) return;
   clearEmptyState();
 
   const display = files.length > 0
@@ -892,6 +906,7 @@ export function initChat(d: ChatDeps): ChatApi {
   linkRow = byId<HTMLElement>("linkRow");
   linkInput = byId<HTMLInputElement>("linkInput");
   chatsList = byId<HTMLElement>("chatsList");
+  composerNote = byId<HTMLElement>("composerNote");
   const attachBtn = byId<HTMLButtonElement>("attachBtn");
   const fileInput = byId<HTMLInputElement>("fileInput");
   const linkBtn = byId<HTMLButtonElement>("linkBtn");
