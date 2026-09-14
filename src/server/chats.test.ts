@@ -9,7 +9,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { loadChats, saveChats, newChat, appendTurn, titleFrom, summarise } from "./chats";
+import { createApp } from "./index";
+import { SessionStore } from "./session";
 
 function withDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "slicely-chats-"));
@@ -96,4 +101,119 @@ test("the store is bounded, so a long-lived session cannot grow forever", () => 
   assert.ok(chat.turns.length <= 200, "turns within one chat are bounded too");
   // The most recent turns are the ones kept.
   assert.equal(chat.turns[chat.turns.length - 1].text, "m299");
+});
+
+// ── Task D7: a GET never has a side effect ───────────────────────────────────
+//
+// `GET /api/chats/:id` used to switch the session's ACTIVE chat and reload the
+// model's memory from it. That made an ordinary read — something a browser
+// prefetcher, a link preview, a `<link rel=prefetch>`, or any cross-origin
+// `<img src>` can trigger without the user meaning anything by it — silently
+// rewrite the state of the conversation the user was actually in. Reading is
+// now read-only; switching is an explicit POST.
+async function chatsApp(): Promise<{
+  base: string;
+  cookie: string;
+  sessionId: string;
+  store: SessionStore;
+  close: () => Promise<void>;
+}> {
+  const root = mkdtempSync(join(tmpdir(), "slicely-chats-http-"));
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const server: Server = createServer(createApp({ sessionStore: store }));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+
+  // One request to mint the session, then reuse its cookie for everything.
+  const first = await fetch(`${base}/api/chats`);
+  const raw = first.headers.get("set-cookie");
+  assert.ok(raw, "the first API call should mint a session cookie");
+  const cookie = raw.split(";")[0];
+  const sessionId = cookie.slice(cookie.indexOf("=") + 1).split(".")[0];
+  assert.ok(store.get(sessionId), "the cookie should name a live session record");
+
+  return {
+    base,
+    cookie,
+    sessionId,
+    store,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      store.stopSweep();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("reading a chat does not switch to it; activating it does", async () => {
+  const app = await chatsApp();
+  const { base, cookie, sessionId, store } = app;
+  const headers = { cookie, "Content-Type": "application/json" };
+  try {
+    const mk = async (): Promise<string> => {
+      const resp = await fetch(`${base}/api/chats`, { method: "POST", headers, body: "{}" });
+      assert.equal(resp.status, 200);
+      const body = (await resp.json()) as { chat: { id: string } };
+      return body.chat.id;
+    };
+    const a = await mk();
+    const b = await mk();
+
+    // Make `a` the active chat again, so switching to `b` would be observable.
+    const back = await fetch(`${base}/api/chats/${a}/activate`, { method: "POST", headers, body: "{}" });
+    assert.equal(back.status, 200);
+    assert.equal(store.get(sessionId)?.activeChatId, a);
+
+    // THE READ: it answers with the chat and changes nothing.
+    const read = await fetch(`${base}/api/chats/${b}`, { headers: { cookie } });
+    assert.equal(read.status, 200);
+    const readBody = (await read.json()) as { id: string; turns: unknown[] };
+    assert.equal(readBody.id, b);
+    assert.ok(Array.isArray(readBody.turns));
+    assert.equal(
+      store.get(sessionId)?.activeChatId,
+      a,
+      "a GET must not move the session's active chat",
+    );
+
+    // THE WRITE: an explicit POST is what switches.
+    const act = await fetch(`${base}/api/chats/${b}/activate`, { method: "POST", headers, body: "{}" });
+    assert.equal(act.status, 200);
+    assert.equal((await act.json() as { id: string }).id, b);
+    assert.equal(store.get(sessionId)?.activeChatId, b);
+
+    // A chat that isn't this session's is a plain 404 from both verbs.
+    const missingRead = await fetch(`${base}/api/chats/nope`, { headers: { cookie } });
+    assert.equal(missingRead.status, 404);
+    assert.equal(((await missingRead.json()) as { code?: string }).code, "not_found");
+    const missingAct = await fetch(`${base}/api/chats/nope/activate`, { method: "POST", headers, body: "{}" });
+    assert.equal(missingAct.status, 404);
+  } finally {
+    await app.close();
+  }
+});
+
+test("printer discovery is a POST — the GET is gone", async () => {
+  const app = await chatsApp();
+  const { base, cookie } = app;
+  try {
+    // A LAN scan spends seconds of mDNS/SSDP time and mutates nothing the
+    // caller owns, but it is exactly the kind of expensive side effect a GET
+    // must not carry: it was reachable from any page's <img src>.
+    const gone = await fetch(`${base}/api/printers/discover`, { headers: { cookie } });
+    assert.equal(gone.status, 404, "GET /api/printers/discover must no longer exist");
+
+    // The POST exists. Hosted mode (the test default) refuses LAN discovery
+    // with its own code, which is proof enough that the route is wired.
+    const post = await fetch(`${base}/api/printers/discover`, {
+      method: "POST",
+      headers: { cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 10 }),
+    });
+    assert.equal(post.status, 403);
+    assert.equal(((await post.json()) as { code?: string }).code, "forbidden_in_hosted_mode");
+  } finally {
+    await app.close();
+  }
 });

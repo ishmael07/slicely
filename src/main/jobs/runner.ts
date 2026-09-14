@@ -42,8 +42,18 @@ export function requestCancel(jobId: string): void {
   cancelledJobs.add(jobId);
 }
 
-function isCancelled(jobId: string): boolean {
+/** True when a cancellation has been requested for `jobId`.
+ *
+ *  The set above is PROCESS-WIDE — it has to be, because it is how one request
+ *  reaches the runner loop of another — which is exactly why `cancelJob` in
+ *  ./index.ts proves the job belongs to the calling session before adding to
+ *  it. Exported so that rule can be tested from the outside. */
+export function isCancelRequested(jobId: string): boolean {
   return cancelledJobs.has(jobId);
+}
+
+function isCancelled(jobId: string): boolean {
+  return isCancelRequested(jobId);
 }
 
 /** Injectable for tests: the default slices for real via PrusaSlicer.

@@ -230,10 +230,15 @@ test("SLICELY_MODE=hosted disables LAN discovery without ever calling the façad
   const prev = process.env.SLICELY_MODE;
   try {
     process.env.SLICELY_MODE = "hosted";
-    const resp = await fetch(`${base}/api/printers/discover`);
-    const data = (await resp.json()) as { error: string };
+    const resp = await fetch(`${base}/api/printers/discover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = (await resp.json()) as { error: string; code?: string };
     assert.equal(resp.status, 403);
     assert.match(data.error, /disabled/i);
+    assert.equal(data.code, "forbidden_in_hosted_mode");
   } finally {
     if (prev === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prev;
@@ -280,7 +285,11 @@ test("SLICELY_MODE=desktop allows LAN discovery through to the façade", async (
   const prev = process.env.SLICELY_MODE;
   try {
     process.env.SLICELY_MODE = "desktop";
-    const resp = await fetch(`${base}/api/printers/discover`);
+    const resp = await fetch(`${base}/api/printers/discover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 5 }),
+    });
     assert.equal(resp.status, 200);
     assert.deepEqual(await resp.json(), []);
   } finally {

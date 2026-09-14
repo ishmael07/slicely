@@ -50,14 +50,21 @@ export async function listJobs(): Promise<PrintJob[]> {
 }
 
 export async function cancelJob(id: string): Promise<void> {
+  // OWNERSHIP FIRST. `getJobById` reads the AMBIENT SESSION's jobs.json
+  // (store.ts), so a job id belonging to somebody else is simply absent and
+  // this is a no-op — the same answer a made-up id gets. The check has to come
+  // before `requestCancel`, because that set is process-wide: calling it first
+  // meant any visitor who could guess or leak a job id could stop a stranger's
+  // print job mid-run, and the cancellation would stick (the runner checks the
+  // set at every plate boundary) even though the read below then bailed out.
+  const job = await getJobById(id);
+  if (!job) return;
   // Signal an in-flight runJob (in THIS process) to stop at the next plate
   // boundary, and — for a job that isn't actively slicing right now (e.g.
   // still "planned", or a run that already ended in a different process
   // lifetime) — mark it cancelled directly so the persisted state is
   // correct even if no runner is listening.
   requestCancel(id);
-  const job = await getJobById(id);
-  if (!job) return;
   if (job.status !== "slicing" && job.status !== "printing") {
     job.status = "cancelled";
     job.updatedAt = new Date().toISOString();

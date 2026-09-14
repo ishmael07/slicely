@@ -13,6 +13,8 @@ const WORKDIR = join(tmpdir(), `slicely-store-test-${Date.now()}-${Math.random()
 process.env.SLICELY_WORKDIR = WORKDIR;
 
 import { getJobById, loadJobs, saveJobs, upsertJob } from "./store";
+import { cancelJob } from "./index";
+import { isCancelRequested } from "./runner";
 import { DEFAULT_SESSION_ID, runInSession, sessionContext } from "../session-context";
 import type { PrintJob } from "../../shared/jobs";
 
@@ -128,4 +130,41 @@ test("each session gets its own jobs.json and cannot see another session's jobs"
     ["job-a", "job-a2"],
   );
   assert.deepEqual((await runInSession(ctxB, () => loadJobs())).map((j) => j.id), ["job-b"]);
+});
+
+// ── Cancelling is scoped too (Extra E1) ──────────────────────────────────────
+//
+// `cancelJob` used to call `requestCancel(id)` FIRST and only then look the job
+// up. The lookup is session-scoped, but the cancellation set is process-wide
+// and is consulted by the runner at every plate boundary — so a visitor who
+// guessed or was leaked a job id could stop a stranger's print mid-run, and the
+// stop stuck even though the lookup immediately afterwards found nothing.
+
+test("cancelJob ignores a job id this session does not own, without touching the process-wide cancel set", async () => {
+  const ctxA = sessionContext("cancel-alice", join(WORKDIR, "sessions", "cancel-alice"));
+  const ctxB = sessionContext("cancel-bob", join(WORKDIR, "sessions", "cancel-bob"));
+
+  const mine = fakeJob("cancel-mine");
+  const theirs = fakeJob("cancel-theirs");
+  await runInSession(ctxA, () => saveJobs([mine]));
+  await runInSession(ctxB, () => saveJobs([theirs]));
+
+  // Alice tries to cancel Bob's job.
+  await runInSession(ctxA, () => cancelJob("cancel-theirs"));
+  assert.equal(
+    isCancelRequested("cancel-theirs"),
+    false,
+    "a foreign job id must never reach requestCancel — the set is process-wide",
+  );
+  // And Bob's persisted job is untouched.
+  assert.equal((await runInSession(ctxB, () => getJobById("cancel-theirs")))?.status, "planned");
+
+  // A made-up id is the same no-op.
+  await runInSession(ctxA, () => cancelJob("cancel-never-existed"));
+  assert.equal(isCancelRequested("cancel-never-existed"), false);
+
+  // Alice cancelling HER OWN job still works, and still persists.
+  await runInSession(ctxA, () => cancelJob("cancel-mine"));
+  assert.equal(isCancelRequested("cancel-mine"), true);
+  assert.equal((await runInSession(ctxA, () => getJobById("cancel-mine")))?.status, "cancelled");
 });

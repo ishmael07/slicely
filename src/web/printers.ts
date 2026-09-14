@@ -573,7 +573,8 @@ async function discoverPrintersAction(): Promise<void> {
   discoverBtn.textContent = "Scanning…";
   discoveredEl.replaceChildren(skeleton(2));
   try {
-    const found = await getJson<DiscoveredPrinterLite[]>("/api/printers/discover");
+    // POST, not GET: a LAN scan is a side effect (see routes/printers.ts).
+    const found = await postJson<DiscoveredPrinterLite[]>("/api/printers/discover", {});
     renderDiscovered(found);
     if (found.length === 0) {
       // "Nothing found" is usually not a failure — most budget printers have no

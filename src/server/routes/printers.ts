@@ -93,22 +93,32 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     }
   });
 
+  // A POST, not a GET (Task D7). Discovery is seconds of mDNS/SSDP traffic
+  // sprayed across whatever network the server is on — an expensive, externally
+  // visible side effect. As a GET it was reachable from any other page on the
+  // internet (`<img src="https://slicely.app/api/printers/discover">`) and from
+  // anything that speculatively fetches links, none of which meant to start a
+  // network scan. It is also not idempotent in any useful sense, so a cache or
+  // a prefetcher had no business replaying it.
+  //
   // Order matters: this literal route must be registered before the
-  // parameterized "/printers/:id/status" below, or Express would try to
+  // parameterized "/printers/:id/..." routes below, or Express would try to
   // treat "discover" as an :id.
-  router.get("/printers/discover", async (req: Request, res: Response) => {
+  router.post("/printers/discover", async (req: Request, res: Response) => {
     if (isMultiUser()) {
       res.status(403).json({
         error:
           "LAN discovery is disabled on a hosted/multi-user server — a datacenter's network isn't your printer's network. Add a cloud connection (Prusa Connect / Bambu Cloud) instead.",
+        code: "forbidden_in_hosted_mode",
       });
       return;
     }
-    const timeoutMs = typeof req.query.timeoutMs === "string" ? Number(req.query.timeoutMs) : undefined;
+    const raw = (req.body ?? {}).timeoutMs;
+    const timeoutMs = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : undefined;
     try {
       res.json(await api.discoverPrinters(Number.isFinite(timeoutMs) ? timeoutMs : undefined));
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "discovery failed" });
+      fail(res, err, "discovery failed", 502);
     }
   });
 

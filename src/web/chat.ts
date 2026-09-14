@@ -738,8 +738,12 @@ async function importFromUrl(url: string, label: string): Promise<void> {
 /** Reopen a saved conversation: redraw its turns and continue it. */
 export async function openChat(id: string): Promise<void> {
   try {
-    const chat = await getJson<{ id: string; title: string; turns: Array<{ role: string; text: string }> }>(
-      `/api/chats/${encodeURIComponent(id)}`,
+    // POST /activate, not GET: opening a chat DOES change what the session is
+    // working on (its active chat and the model's memory), so it is a write.
+    // The response body is the same one the read-only GET returns.
+    const chat = await postJson<{ id: string; title: string; turns: Array<{ role: string; text: string }> }>(
+      `/api/chats/${encodeURIComponent(id)}/activate`,
+      {},
     );
     clearTranscript();
     for (const t of chat.turns) {
