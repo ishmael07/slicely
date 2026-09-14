@@ -80,7 +80,7 @@ export const V2_TOOLS: ToolSpec[] = [
           type: "array",
           items: { type: "string" },
           description:
-            "2-4 other wordings for the DISTINCTIVE part of the request, searched at the same time and pooled: sites match keywords, not meaning, so a \"buff pikachu\" may be titled \"swole pikachu\". Never reword a brand or proper name.",
+            "2-4 other wordings for the DISTINCTIVE part of the request, searched at the same time and pooled: sites match keywords, not meaning, so a \"buff pikachu\" may be titled \"swole pikachu\". Never reword a brand or proper name. Use when the request names a quality, not a specific thing.",
         },
         sources: {
           type: "array",
@@ -177,7 +177,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "plan_job",
     description:
-      "Plan a large multi-part print: orient each part, resolve requested colours against the filament actually loaded, group parts to minimise swaps, and pack them across as many plates as needed. Use it for more than one part, copies, or more than one colour. It does not slice — call run_job.",
+      "Plan a large multi-part print: orient each part, resolve requested colours against the filament actually loaded, group parts to minimise swaps, and pack them across as many plates as needed. Use it for more than one part, copies, more than one colour, or when the parts won't fit one bed. It does not slice — call run_job.",
     schema: {
       type: "object",
       properties: {
@@ -223,7 +223,7 @@ export const V2_TOOLS: ToolSpec[] = [
           type: "array",
           items: { type: "string" },
           description:
-            "Colours BOTTOM-FIRST to give ONE part several colours without painting it: equal bands, a filament swap at each boundary, so it works on any printer. A swap affects the whole plate. For different PARTS, set each part's colourHex.",
+            "Colours BOTTOM-FIRST to give ONE part several colours without painting it: equal bands, a filament swap at each boundary, so it works on any printer. A swap affects the whole plate, so prefer a plate with just that part. For different PARTS, set each part's colourHex.",
         },
         groupByColour: {
           type: "boolean",
@@ -237,7 +237,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "run_job",
     description:
-      "Slice every plate of a planned job in order, reporting per-plate metrics; one failed plate does not stop the rest. Call plan_job first.",
+      "Slice every plate of a planned job in order, reporting per-plate metrics; one failed plate does not stop the rest. Call plan_job first. When it finishes, offer to send the plates to the printer.",
     schema: {
       type: "object",
       properties: { jobId: { type: "string", description: "From plan_job. Omit for the most recent." } },
@@ -257,7 +257,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "split_model",
     description:
-      "Split ONE file into its separate solid pieces, so each becomes an ordinary part that can take its own colour and orientation. Use it when a model looks like several pieces, or the user wants different colours on different areas. A single connected solid is reported unchanged.",
+      "Split ONE file into its separate solid pieces, so each becomes an ordinary part that can take its own colour and orientation. Use it when a model looks like several pieces, or the user wants different colours on different areas. A single connected solid is reported unchanged — otherwise use colourBands, or hand it to PrusaSlicer for painting.",
     schema: {
       type: "object",
       properties: {

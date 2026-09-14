@@ -346,7 +346,7 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "slice_and_open",
     description:
-      "Slice headlessly for accurate metrics, then open the FINISHED G-code in PrusaSlicer's read-only viewer. Only when the user explicitly wants to see the finished result or the toolpaths — a plain \"open it\" is open_in_slicer. Same settings as slice_model.",
+      "Slice headlessly for accurate metrics, then open the FINISHED G-code in PrusaSlicer's read-only viewer. Only when the user explicitly wants to see the finished result or the toolpaths — a plain \"open it\" is open_in_slicer. Same settings as slice_model. For a multi-plate job it opens plate 1; the other plates are sliced too and open from their own panels.",
     schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
