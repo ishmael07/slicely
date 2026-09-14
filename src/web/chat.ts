@@ -13,7 +13,7 @@ import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, UploadResult } 
 import type { PrintJob } from "../shared/jobs";
 import type { SearchOutcome, UrlResolution } from "../shared/sourcing";
 import type { JobPanel, WireJob, WireJobEvent } from "./jobs.js";
-import { ApiError, del, getJson, postForm, postJson, streamSse } from "./api.js";
+import { ApiError, codeMessage, del, errorMessage, getJson, postForm, postJson, streamSse } from "./api.js";
 import {
   buildCards,
   buildSourcesNote,
@@ -443,7 +443,7 @@ export function handleAgentEvent(raw: AgentEvent | Record<string, unknown>): voi
       // A key problem is not a message to read and move on from — it is the one
       // thing standing between the user and an answer, so the card comes with it.
       if (event.code === "no_key" || event.code === "key_rejected") promptForKey(event.code, event.message);
-      else renderTurnError(event.message);
+      else renderTurnError(codeMessage(event.code) ?? event.message);
       break;
     case "done":
       endBotBubble();
@@ -500,7 +500,7 @@ async function runTurn(instruction: string): Promise<void> {
     } else if (err instanceof ApiError && (err.code === "no_key" || err.code === "key_rejected")) {
       promptForKey(err.code, err.message);
     } else {
-      renderTurnError((err as Error).message || String(err));
+      renderTurnError(errorMessage(err));
     }
   } finally {
     setBusy(false);
@@ -626,7 +626,7 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
       renderError(`Not accepted: ${data.rejected.join(", ")}`);
     }
   } catch (err) {
-    renderError((err as Error).message || "Upload failed", () => void uploadFiles(list));
+    renderError(errorMessage(err, "Upload failed."), () => void uploadFiles(list));
   }
 }
 
@@ -722,7 +722,7 @@ async function resolveLink(url: string): Promise<void> {
     }
   } catch (err) {
     chip.remove();
-    renderError((err as Error).message || "Couldn't resolve that link.", () => void resolveLink(trimmed));
+    renderError(errorMessage(err, "Couldn't resolve that link."), () => void resolveLink(trimmed));
   }
 }
 
@@ -742,7 +742,7 @@ async function runDirectSearch(query: string): Promise<void> {
     if (note) mount(note);
   } catch (err) {
     chip.remove();
-    renderError((err as Error).message || "Search failed.", () => void runDirectSearch(query));
+    renderError(errorMessage(err, "Search failed."), () => void runDirectSearch(query));
   }
 }
 
@@ -763,7 +763,7 @@ async function importFromUrl(url: string, label: string): Promise<void> {
       `I imported a model from a link. Its exact path on the server is: ${result.localPath}. Treat it as my active model, inspect it, and recommend slicing settings.`,
     );
   } catch (err) {
-    renderError((err as Error).message || "Import failed.", () => void importFromUrl(url, label));
+    renderError(errorMessage(err, "Import failed."), () => void importFromUrl(url, label));
   }
 }
 
@@ -791,7 +791,7 @@ export async function openChat(id: string): Promise<void> {
     closeSheets();
     scrollToBottom();
   } catch (err) {
-    renderError((err as Error).message || "Couldn't open that chat.");
+    renderError(errorMessage(err, "Couldn't open that chat."));
   }
 }
 
@@ -843,9 +843,7 @@ export async function refreshChats(): Promise<void> {
       chatsList.appendChild(row);
     }
   } catch (err) {
-    chatsList.replaceChildren(
-      errorCard((err as Error).message || "Couldn't load your chats.", () => void refreshChats()),
-    );
+    chatsList.replaceChildren(errorCard(errorMessage(err, "Couldn't load your chats."), () => void refreshChats()));
   }
 }
 
@@ -860,7 +858,7 @@ async function deleteChat(chat: ChatSummary): Promise<void> {
   try {
     await del(`/api/chats/${encodeURIComponent(chat.id)}`);
   } catch (err) {
-    toast((err as Error).message || "Couldn't delete that chat.", "error");
+    toast(errorMessage(err, "Couldn't delete that chat."), "error");
   }
   await refreshChats();
 }
@@ -872,7 +870,7 @@ async function startNewChat(): Promise<void> {
     showEmptyState();
     closeSheets();
   } catch (err) {
-    renderError((err as Error).message || "Couldn't start a new chat.", () => void startNewChat());
+    renderError(errorMessage(err, "Couldn't start a new chat."), () => void startNewChat());
   }
 }
 

@@ -8,7 +8,7 @@
 // printer is actually armed for unattended auto-start.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { PrinterConnection, PrinterStatus } from "../shared/printers";
-import { del, getJson, postJson } from "./api.js";
+import { del, errorMessage, getJson, postJson } from "./api.js";
 import { byId, confirmDialog, errorCard, isSheetOpen, make, skeleton, toast } from "./ui.js";
 
 export interface PrintersDeps {
@@ -139,7 +139,7 @@ async function sendGcode(printerId: string, gcodeId: string, start: boolean, btn
     toast(result.message, result.ok ? "success" : "error");
   } catch (err) {
     btn.textContent = "✗ Failed";
-    toast((err as Error).message || "Couldn't send to the printer.", "error");
+    toast(errorMessage(err, "Couldn't send to the printer."), "error");
   } finally {
     setTimeout(() => {
       // The panel this button lives in can be replaced while the send is in
@@ -191,7 +191,7 @@ export async function refreshPrinters(): Promise<void> {
     emitPrintersChanged();
   } catch (err) {
     printerListEl.replaceChildren(
-      errorCard((err as Error).message || "Couldn't load your printers.", () => void refreshPrinters()),
+      errorCard(errorMessage(err, "Couldn't load your printers."), () => void refreshPrinters()),
     );
   }
 }
@@ -296,7 +296,7 @@ async function setArmed(printer: PrinterConnection, cb: HTMLInputElement): Promi
   try {
     await postJson(`/api/printers/${encodeURIComponent(printer.id)}/autostart`, { armed });
   } catch (err) {
-    toast((err as Error).message || "Couldn't change auto-start.", "error");
+    toast(errorMessage(err, "Couldn't change auto-start."), "error");
   }
   await refreshPrinters();
 }
@@ -320,7 +320,7 @@ async function testPrinterAction(id: string, btn: HTMLButtonElement): Promise<vo
     const r = await postJson<{ ok: boolean; message: string }>(`/api/printers/${encodeURIComponent(id)}/test`, {});
     toast(r.message, r.ok ? "success" : "error");
   } catch (err) {
-    toast((err as Error).message || "Test failed.", "error");
+    toast(errorMessage(err, "Test failed."), "error");
   } finally {
     btn.textContent = original;
     btn.disabled = false;
@@ -335,7 +335,7 @@ async function controlPrinterAction(id: string, action: "pause" | "resume" | "ca
     });
     toast(r.message, r.ok ? "success" : "error");
   } catch (err) {
-    toast((err as Error).message || "Control failed.", "error");
+    toast(errorMessage(err, "Control failed."), "error");
   }
   await refreshPrinters();
 }
@@ -359,7 +359,7 @@ async function removePrinterAction(printer: PrinterConnection): Promise<void> {
       }
     }
   } catch (err) {
-    toast((err as Error).message || "Couldn't remove printer.", "error");
+    toast(errorMessage(err, "Couldn't remove printer."), "error");
   }
   await refreshPrinters();
 }
@@ -375,18 +375,47 @@ interface DriverInfo {
 
 let driverCatalog: DriverInfo[] = [];
 
+/** The drivers to actually offer: everything, minus the folder/SD-card
+ *  transport on a shared server, where there is no local disk of the user's
+ *  to write into (see applyMode()'s note about cloud printers instead). */
+function visibleDrivers(): DriverInfo[] {
+  return deps.multiUser() ? driverCatalog.filter((d) => d.transport !== "file") : driverCatalog;
+}
+
+/** Rebuild the Type <select> from `driverCatalog`, honouring the current
+ *  mode. Re-run whenever the catalog loads AND whenever the mode becomes
+ *  known/changes (applyMode()), since either can arrive after the other. */
+function populateTransportOptions(): void {
+  const wanted = pTransport.value;
+  pTransport.replaceChildren();
+  for (const d of visibleDrivers()) {
+    const opt = make("option", "", d.label);
+    opt.value = d.transport;
+    pTransport.appendChild(opt);
+  }
+  const stillThere = visibleDrivers().some((d) => d.transport === wanted);
+  if (stillThere) pTransport.value = wanted;
+  renderSecretFields();
+}
+
 export async function loadDrivers(): Promise<void> {
   try {
     driverCatalog = await getJson<DriverInfo[]>("/api/printers/drivers");
+    pSave.disabled = false;
+    populateTransportOptions();
+  } catch (err) {
+    // A bare catch here used to leave the add-printer form silently empty —
+    // "Add manually" opened onto a form with no printer types and no
+    // explanation why. Say so, and offer the one thing that might fix it.
+    driverCatalog = [];
     pTransport.replaceChildren();
-    for (const d of driverCatalog) {
-      const opt = make("option", "", d.label);
-      opt.value = d.transport;
-      pTransport.appendChild(opt);
-    }
-    renderSecretFields();
-  } catch {
-    /* printers subsystem unavailable — the add-printer form stays empty */
+    pHostRow.classList.add("hidden");
+    pFolderRow.classList.add("hidden");
+    pTransportHint.textContent = "";
+    pSave.disabled = true;
+    pSecretsFields.replaceChildren(
+      errorCard(errorMessage(err, "Couldn't load printer types."), () => void loadDrivers()),
+    );
   }
 }
 
@@ -497,7 +526,7 @@ async function connectPrinter(): Promise<void> {
     pFolder.value = "";
     await refreshPrinters();
   } catch (err) {
-    toast((err as Error).message || "Couldn't add that printer.", "error");
+    toast(errorMessage(err, "Couldn't add that printer."), "error");
   } finally {
     pSave.disabled = false;
     pSave.textContent = original;
@@ -584,7 +613,7 @@ async function discoverPrintersAction(): Promise<void> {
       toast("No networked printers found. See the note below.", "error");
     }
   } catch (err) {
-    const message = (err as Error).message || "Discovery unavailable.";
+    const message = errorMessage(err, "Discovery unavailable.");
     discoveredEl.replaceChildren(errorCard(message, () => void discoverPrintersAction()));
     toast(message, "error");
   } finally {
@@ -594,11 +623,16 @@ async function discoverPrintersAction(): Promise<void> {
 }
 
 /** A shared server cannot reach a printer on the user's LAN, so the scan button
- *  and the explanation swap places. Called again whenever the mode is known. */
+ *  and the explanation swap places, and the folder/SD-card transport (which
+ *  writes to a disk on THIS machine, not the visitor's) disappears from the
+ *  picker. Called again whenever the mode is known — which can resolve after
+ *  the driver catalog already loaded, so the transport list is rebuilt here
+ *  too rather than only once in loadDrivers(). */
 export function applyMode(): void {
   const multiUser = deps.multiUser();
   multiUserNote.classList.toggle("hidden", !multiUser);
   discoverBtn.classList.toggle("hidden", multiUser);
+  if (driverCatalog.length > 0) populateTransportOptions();
 }
 
 export function initPrinters(d: PrintersDeps): PrintersApi {
