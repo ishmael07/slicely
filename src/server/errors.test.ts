@@ -69,6 +69,21 @@ test("Anthropic's own failures become the user's next action, not a 500", () => 
   assert.equal(otherBadRequest.body.error, "Something went wrong.");
 });
 
+test("the copy names no provider — the same sentence has to be true for either key", () => {
+  // Slicely accepts a key from more than one provider now, and this module no
+  // longer knows which one a given session is using. Naming Anthropic in the
+  // copy would be wrong for half the users and is not information anyone can
+  // act on: the fix is the same either way, and it is in Settings.
+  for (const err of [
+    new Anthropic.AuthenticationError(401, undefined, "invalid x-api-key", new Headers()),
+    new Anthropic.RateLimitError(429, undefined, "slow down", new Headers()),
+    new Anthropic.BadRequestError(400, undefined, "your credit balance is too low", new Headers()),
+  ]) {
+    const { body } = toWire(err);
+    assert.doesNotMatch(body.error, /Anthropic|OpenAI|Claude|GPT/i, `branded copy: ${body.error}`);
+  }
+});
+
 // ── sendScrubbed: keep our own wording, lose our own paths ───────────────────
 
 /** The two things `sendScrubbed` uses off a Response, recorded. */

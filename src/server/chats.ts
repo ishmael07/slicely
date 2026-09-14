@@ -28,8 +28,10 @@ export interface ChatRecord {
   createdAt: number;
   updatedAt: number;
   turns: ChatTurn[];
-  /** The agent's own history, opaque here — shape belongs to the SDK. */
-  agentHistory: unknown[];
+  /** The agent's own history, opaque here — shape belongs to the agent, which
+   *  tags it with the provider that produced it. Older files hold a bare array
+   *  (the v1 Anthropic shape), which importHistory still accepts. */
+  agentHistory: unknown;
 }
 
 /** Chats kept per session. Older ones are dropped rather than growing forever. */

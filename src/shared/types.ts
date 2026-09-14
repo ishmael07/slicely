@@ -275,6 +275,16 @@ export const IPC = {
 /** A reasoning-effort tier the user can pick. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * An AI provider a user can connect a key to.
+ *
+ * Lives here rather than beside the provider implementations because it is on
+ * the wire: /api/config lists providers, /api/key names one, and every model in
+ * /api/settings says which one it needs. The implementations are in
+ * main/agent/provider-*.ts, and nothing client-side imports those.
+ */
+export type ProviderId = "anthropic" | "openai";
+
 /** Tri-state for supports/brim in the user's saved defaults:
  *   - "auto": let Slicely decide from the model's real geometry (recommended).
  *   - "on":   always generate them, regardless of geometry.

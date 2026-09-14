@@ -33,7 +33,7 @@ function withTempDir<T>(prefix: string, run: (dir: string) => T): T {
 test("a key is stored encrypted and only readable inside its own session", () => {
   withTempDir("uk-a-", (dirA) => withTempDir("uk-b-", (dirB) => {
   runInSession(sessionContext("A", dirA), () => {
-    setUserApiKey(GOOD);
+    setUserApiKey("anthropic", GOOD);
     assert.equal(getUserApiKey(), GOOD);
     assert.equal(userKeyHint(), "…" + GOOD.slice(-4));
     const onDisk = readFileSync(join(dirA, "secrets.json"), "utf8");
@@ -54,8 +54,8 @@ test("a key is stored encrypted and only readable inside its own session", () =>
 test("malformed keys are rejected before anything is written", () => {
   withTempDir("uk-c-", (dir) => {
     runInSession(sessionContext("C", dir), () => {
-      assert.throws(() => setUserApiKey("sk-ant-oat01-" + "x".repeat(40)), /format|Anthropic API key/i);
-      assert.throws(() => setUserApiKey("hello"), /format|Anthropic API key/i);
+      assert.throws(() => setUserApiKey("anthropic", "sk-ant-oat01-" + "x".repeat(40)), /API key|subscription token/i);
+      assert.throws(() => setUserApiKey("anthropic", "hello"), /API key|subscription token/i);
       assert.equal(getUserApiKey(), undefined);
     });
   });
@@ -81,7 +81,7 @@ test("disconnecting beats the operator fallback — 'no' means no", () => {
       runInSession(sessionContext("D", dir), () => {
         assert.equal(getUserApiKey(), undefined, "and it survives a cache drop");
         // Connecting a key again lifts the disconnect.
-        setUserApiKey(GOOD);
+        setUserApiKey("anthropic", GOOD);
         assert.equal(getUserApiKey(), GOOD);
       });
     } finally {
@@ -148,7 +148,7 @@ test("the operator's key is never described by its last four characters", () => 
         assert.doesNotMatch(String(userKeyHint()), /9xyz/);
 
         // A key the user actually connected is still identified the usual way.
-        setUserApiKey(GOOD);
+        setUserApiKey("anthropic", GOOD);
         assert.equal(userKeyHint(), "…" + GOOD.slice(-4));
       });
     } finally {
@@ -165,7 +165,7 @@ test("a session's own key always wins over the operator's", () => {
     process.env.ANTHROPIC_API_KEY = OPERATOR;
     try {
       runInSession(sessionContext("H", dir), () => {
-        setUserApiKey(GOOD);
+        setUserApiKey("anthropic", GOOD);
         assert.equal(getUserApiKey(), GOOD, "the visitor pays for their own chat");
       });
     } finally {
@@ -178,9 +178,9 @@ test("a session's own key always wins over the operator's", () => {
 test("secrets.json is replaced atomically, leaving no temp files behind", () => {
   withTempDir("uk-e-", (dir) => {
     runInSession(sessionContext("E", dir), () => {
-      setUserApiKey(GOOD);
+      setUserApiKey("anthropic", GOOD);
       clearUserApiKey();
-      setUserApiKey(GOOD);
+      setUserApiKey("anthropic", GOOD);
     });
     const stray = readdirSync(dir).filter((f) => f.endsWith(".tmp"));
     assert.deepEqual(stray, [], `no .tmp litter: ${stray.join(", ")}`);
