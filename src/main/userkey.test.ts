@@ -102,10 +102,12 @@ test("disconnecting beats the operator fallback — 'no' means no", () => {
 
 // ── who pays for chat ───────────────────────────────────────────────────────
 // The operator's key is a loaded gun on a public server: every visitor's chat
-// bills the person who deployed it. Reading the standard variable name is only
-// safe because the name is not the permission — the flag is.
+// would bill the person who deployed it. So in hosted mode this module never
+// reaches for it at all — the owner's key is spendable there only through a
+// signed-in, metered account (see main/agent/funding.ts). Reading the standard
+// variable name is safe here because the name is not the permission: the MODE is.
 
-test("a hosted server ignores the operator's ANTHROPIC_API_KEY unless it opts in", () => {
+test("a hosted server never spends the operator's ANTHROPIC_API_KEY, flag or no flag", () => {
   withTempDir("uk-f-", (dir) => {
     const OPERATOR = "sk-ant-api03-" + "f".repeat(40);
     process.env.SLICELY_MODE = "hosted";
@@ -121,20 +123,19 @@ test("a hosted server ignores the operator's ANTHROPIC_API_KEY unless it opts in
         assert.equal(userKeyHint(), undefined);
       });
 
-      // The explicit opt-in, and only the exact value.
-      for (const bad of ["0", "", "true", "yes"]) {
-        process.env.SLICELY_ALLOW_OPERATOR_KEY = bad;
+      // SLICELY_ALLOW_OPERATOR_KEY IS RETIRED (accounts + free tier, Task A4).
+      // It used to be the one door through which any visitor could spend the
+      // owner's key, with no per-user limit and no accounting. No spelling of it
+      // reopens that door — "1" included. A hosted visitor reaches the owner's
+      // key only through resolveTurnFunding(), signed in, with a balance.
+      for (const value of ["0", "", "true", "yes", "1"]) {
+        process.env.SLICELY_ALLOW_OPERATOR_KEY = value;
         disposeSessionUserKey("F");
         runInSession(sessionContext("F", dir), () => {
-          assert.equal(getUserApiKey(), undefined, `"${bad}" is not the opt-in`);
+          assert.equal(getUserApiKey(), undefined, `"${value}" buys nothing — the flag is gone`);
+          assert.equal(userKeyHint(), undefined);
         });
       }
-
-      process.env.SLICELY_ALLOW_OPERATOR_KEY = "1";
-      disposeSessionUserKey("F");
-      runInSession(sessionContext("F", dir), () => {
-        assert.equal(getUserApiKey(), OPERATOR, "the flag is what grants it");
-      });
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
@@ -279,10 +280,14 @@ test("the operator fallback is per provider, under the same one gate", () => {
         assert.equal(getUserApiKey("anthropic"), undefined);
       });
 
-      process.env.SLICELY_ALLOW_OPERATOR_KEY = "1";
+      // The gate is now the MODE, not a flag (Task A4): desktop is the one place
+      // the operator and the user are the same human, so it is the one place this
+      // module falls back at all. Hosted spends the owner's key only through a
+      // metered account — see main/agent/funding.ts.
+      process.env.SLICELY_MODE = "desktop";
       disposeSessionUserKey("S");
       runInSession(sessionContext("S", dir), () => {
-        assert.equal(getUserApiKey("openai"), OP_OPENAI, "the same flag grants both");
+        assert.equal(getUserApiKey("openai"), OP_OPENAI, "the same one gate covers both");
         assert.equal(getUserApiKey("anthropic"), OP_ANTHROPIC);
         // And the operator's key is never described by its last four characters.
         assert.equal(userKeyHint("openai"), "this server's key");
