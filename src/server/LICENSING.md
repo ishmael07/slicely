@@ -90,3 +90,11 @@ If a future change makes any of the three links above stop being true — the
 commit stops being baked in, the About panel loses the link, the repository
 goes private — the compliance argument goes with it. Treat that as a blocking
 regression, not a cosmetic one.
+
+---
+
+**Decision 2026-09-12: comply by publishing.** The repository stays public, and
+the running build says which commit it is: `/api/config` returns
+`sourceCommit`, and both the site footer and the app's Settings → About link to
+that commit's source. There is no second option on the table — not relicensing,
+not dropping PrusaSlicer, not hiding the fact that a network service runs it.

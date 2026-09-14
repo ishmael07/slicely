@@ -1,10 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Printer CRUD + control, backed by the v2 printers façade (src/main/
-// printers). The one thing this layer adds on top of the façade: the
-// SLICELY_MULTI_USER guard (see security.ts) that refuses LAN discovery and
-// LAN-only transports when this is a hosted, shared server — and routing
-// "send to printer" through this session's OWN gcode-id registry so a client
-// can never hand the printer driver an arbitrary server filesystem path.
+// printers). The one thing this layer adds on top of the façade: the hosted-mode
+// guard (`isMultiUser()` in security.ts, which is `SLICELY_MODE === "hosted"` —
+// there is no separate multi-user switch) that refuses LAN discovery and
+// LAN-only transports when this is a shared server — and routing "send to
+// printer" through this session's OWN gcode-id registry so a client can never
+// hand the printer driver an arbitrary server filesystem path.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import type { Request, Response } from "express";

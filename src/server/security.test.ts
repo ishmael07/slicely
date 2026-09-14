@@ -246,6 +246,47 @@ test("SLICELY_MODE=hosted disables LAN discovery without ever calling the façad
   }
 });
 
+test("SLICELY_MULTI_USER is retired: it neither turns the guard on nor off", async () => {
+  // The old switch was a second, independent source of truth for "is this a
+  // shared server?", and two switches for one fact drift: a deploy could be
+  // `hosted` with discovery still open, or `desktop` with it closed. `isMultiUser`
+  // is now `isHosted()` and nothing else reads the old variable — so setting it
+  // must change nothing in either direction.
+  const app = express();
+  app.use(express.json());
+  const stub = unusedPrinterApi();
+  (stub as { discoverPrinters: PrintersApi["discoverPrinters"] }).discoverPrinters = async () => [];
+  app.use("/api", createPrintersRouter(stub));
+  const { base, close } = await listen(app);
+  const prevMode = process.env.SLICELY_MODE;
+  const prevLegacy = process.env.SLICELY_MULTI_USER;
+  const discover = () =>
+    fetch(`${base}/api/printers/discover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  try {
+    // Desktop + the old switch "on": still allowed. (It used to be refused.)
+    process.env.SLICELY_MODE = "desktop";
+    process.env.SLICELY_MULTI_USER = "1";
+    assert.equal((await discover()).status, 200, "the retired variable must not close a desktop server");
+
+    // Hosted + the old switch "off": still refused.
+    process.env.SLICELY_MODE = "hosted";
+    delete process.env.SLICELY_MULTI_USER;
+    assert.equal((await discover()).status, 403, "hosted is decided by SLICELY_MODE alone");
+    process.env.SLICELY_MULTI_USER = "0";
+    assert.equal((await discover()).status, 403, "the retired variable must not open a hosted server");
+  } finally {
+    if (prevMode === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prevMode;
+    if (prevLegacy === undefined) delete process.env.SLICELY_MULTI_USER;
+    else process.env.SLICELY_MULTI_USER = prevLegacy;
+    await close();
+  }
+});
+
 test("SLICELY_MODE=hosted refuses the folder transport with its own code, façade untouched", async () => {
   // "Save to a folder" on a hosted server means the OPERATOR's disk, which the
   // visitor can neither see nor collect a file from — so it is refused before
