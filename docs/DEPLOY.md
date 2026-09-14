@@ -70,7 +70,7 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
   key rather than erroring, and accept a real key via `PUT /api/key`.
 - **Upload → slice → gcode** — upload a model, slice it, download the resulting G-code. This
   exercises the extracted PrusaSlicer binary end to end, which nothing short of a real
-  request can confirm (see "Not verified locally" below).
+  request can confirm (see "Verified in CI, not on a laptop" below).
 - **`GET /terms` and `GET /privacy`** — both should be 200 `text/html`, styled (the page
   pulls `/styles.css`). These are the exact paths `/api/config` advertises as `termsUrl`
   and `privacyUrl` (`src/server/routes/config.ts`), so a 404 here means the About link and
@@ -142,24 +142,23 @@ for every slice is pure overhead you can drop. Bypass the wrapper by pointing
 or with `fly secrets set PRUSASLICER_PATH=/opt/prusaslicer/AppRun`, and confirm a slice still
 succeeds afterward.
 
-## Not verified locally
+## Verified in CI, not on a laptop
 
-Docker was not installed on the machine this Dockerfile was written on, so `docker build`
-was never run against it. Everything checkable without Docker was checked instead: the
-PrusaSlicer release-asset resolution query (against the live GitHub API), that every `COPY`
-source path exists, that `npm run build` produces the exact files the runtime stage copies,
-and that every environment variable the Dockerfile/`fly.toml` set has a real reader in
-`src/`. What that leaves genuinely unverified, and must be confirmed on the **first real**
-`fly deploy` (or a local `docker build` on a machine that has Docker):
+Docker is not installed on the machine this Dockerfile was written on, so it is proven by
+GitHub Actions instead: `.github/workflows/backend.yml` builds this exact image on every
+push to `slicely-v3`, `launch/**` and `main`, starts it in hosted mode, and runs
+`.github/scripts/smoke.sh` inside it — `/healthz`, `/api/config` (`mode: "hosted"`,
+`slicerAvailable: true`, the right `sourceCommit`), `/terms` and `/privacy`, the PrusaSlicer
+CLI under the `xvfb-run` wrapper as the runtime user, and a real upload → slice → G-code
+download with a path-traversal refusal at the end. The image is about 1 GB, almost all of it
+the extracted PrusaSlicer 2.8.1 AppImage (2.9.x has no Linux AppImage — see the Dockerfile's
+`ARG PRUSASLICER_VERSION` comment).
 
-- That the image actually builds — the apt package set resolves, the AppImage extracts
-  cleanly, and `/opt/prusaslicer/slicer.sh --help` (the `xvfb-run -a AppRun` wrapper) exits 0
-  inside the container.
-- That the extracted PrusaSlicer 2.8.1 binary (not 2.9.x — see the Dockerfile's `ARG
-  PRUSASLICER_VERSION` comment: PrusaSlicer stopped publishing a Linux AppImage as of
-  2.9.0, moving to Flathub instead, so no 2.9.x release has one) actually runs on
-  `node:20-bookworm-slim`'s glibc — the "newer-distros" build was chosen on the assumption
-  that Debian 12 (bookworm) counts as new enough, but nothing short of running it confirms
-  that.
-- That slicing a real model through it produces valid G-code end to end (the "upload → slice
-  → gcode" check above).
+What CI cannot see, and is worth a glance on the **first real** `fly deploy`:
+
+- Ownership of `/data` on the mounted Fly volume (the container runs as `slicely`, uid
+  10001; the volume must be writable by it).
+- That the app's public URL serves `/`, `/app.css` and `/fonts/*` behind Fly's proxy with
+  `SLICELY_TRUST_PROXY=1`, and that the `__Host-` cookie is set (needs HTTPS, which Fly
+  terminates for you).
+
