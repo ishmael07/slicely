@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# The Mac app's DMG, built on demand.
+#
+# `workflow_dispatch` only, on purpose: the Mac build is not part of proving the
+# backend, it costs a macOS runner (10× the minutes of a Linux one), and the
+# launch decision is an UNSIGNED build (no Developer ID, no notarization — see
+# the app's "How to open.txt", which electron-builder ships inside the DMG).
+# So no identity is imported here and CSC_IDENTITY_AUTO_DISCOVERY is off, which
+# is what keeps electron-builder from hunting for a certificate in the keychain
+# and failing the build when it finds none.
+# ─────────────────────────────────────────────────────────────────────────────
+name: mac
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dmg:
+    name: build unsigned DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      # `dist:mac` runs the build itself, then electron-builder with
+      # scripts/electron-builder.config.cjs (universal dmg, notarize: false).
+      - name: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:mac
+
+      - name: What landed in release/
+        run: ls -lh release/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slicely-dmg
+          path: |
+            release/*.dmg
+            release/*.blockmap
+          if-no-files-found: error

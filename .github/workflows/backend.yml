@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# The hosted backend, proven on every push.
+#
+# docs/DEPLOY.md's "Not verified locally" section lists what could not be
+# checked on the machine this was written on, because it had no Docker: that the
+# image builds, that PrusaSlicer 2.8.1's extracted AppImage runs on
+# node:20-bookworm-slim, and that a slice succeeds end to end. This workflow is
+# that machine. The `docker` job is the one that matters — `test` is the cheap
+# fast-fail in front of it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: backend
+
+on:
+  push:
+    branches: [slicely-v3, "launch/**", main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push supersedes the first: the docker job downloads a ~300MB
+# AppImage, and two of those racing is pure waste.
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20, because that is what both Dockerfile stages run
+      # (node:20-bookworm-slim) — CI must not typecheck against a different
+      # major than production executes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: npm run typecheck
+        run: npm run typecheck
+
+      - name: npm run build
+        run: npm run build
+
+      # `test:only` (not `test`) because `test` re-runs the build we just did.
+      - name: npm run test:only
+        run: npm run test:only
+
+  docker:
+    name: image + container smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # `load: true` / `push: false`: the image stays on this runner for the
+      # smoke test and is never published anywhere. SOURCE_COMMIT is passed the
+      # way `fly deploy` passes it, so /api/config's `sourceCommit` can be
+      # asserted against a known value instead of just being non-empty.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: slicely:ci
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size
+        run: "docker image ls slicely:ci --format 'IMAGE SIZE {{.Size}} ({{.ID}})'"
+
+      - name: Smoke test the container
+        run: bash .github/scripts/smoke.sh slicely:ci "${{ github.sha }}"
