@@ -30,6 +30,7 @@
 import type { EffortLevel, ProviderId } from "../../shared/types";
 import { MODEL_CATALOG } from "../settings";
 import { ANTHROPIC_PROVIDER } from "./provider-anthropic";
+import { OPENAI_PROVIDER } from "./provider-openai";
 
 /** One piece of a conversation, in the only shapes the loop knows about. */
 export type NeutralBlock =
@@ -133,7 +134,7 @@ export interface Provider {
 }
 
 /** Every provider Slicely can chat through. Order is UI order. */
-export const PROVIDERS: readonly Provider[] = [ANTHROPIC_PROVIDER];
+export const PROVIDERS: readonly Provider[] = [ANTHROPIC_PROVIDER, OPENAI_PROVIDER];
 
 /** The provider a user gets when nothing says otherwise — and the one an
  *  untagged (pre-provider-seam) saved chat is assumed to have come from. */

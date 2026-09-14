@@ -79,6 +79,45 @@ export const MODEL_CATALOG: ModelOption[] = [
     supportsMax: false,
     supportsAdaptiveThinking: false,
   },
+  // ── OpenAI ────────────────────────────────────────────────────────────────
+  // All three take the full effort range (none…max on the 5.6 family; astra
+  // rejects only "none", which Slicely never sends). Adaptive thinking is an
+  // Anthropic parameter and does not apply.
+  //
+  // Terra is the OpenAI default rather than the flagship: same 1.05M context and
+  // 128K max output as astra, five times cheaper in and four times cheaper out.
+  // In a tool loop, where the whole history is re-billed as input every turn,
+  // that is the difference between a user's key lasting a month and a week.
+  {
+    id: "gpt-5.6-terra",
+    provider: "openai",
+    label: "GPT-5.6 Terra",
+    blurb: "Balanced OpenAI pick — cheap enough for long tool loops",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: false,
+  },
+  {
+    id: "gpt-5.6-luna",
+    provider: "openai",
+    label: "GPT-5.6 Luna",
+    blurb: "Cheapest OpenAI option — fast, lighter reasoning",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: false,
+  },
+  {
+    id: "gpt-6-astra",
+    provider: "openai",
+    label: "GPT-6 Astra",
+    blurb: "OpenAI's most capable — for the hardest problems",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: false,
+  },
 ];
 
 export const EFFORT_LEVELS: EffortLevel[] = [

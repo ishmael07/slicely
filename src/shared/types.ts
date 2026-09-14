@@ -285,6 +285,16 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
  */
 export type ProviderId = "anthropic" | "openai";
 
+/** One provider as /api/config describes it. The KEY ITSELF never appears — only
+ *  whether this session has one and the four-character hint that identifies it. */
+export interface ProviderInfo {
+  id: ProviderId;
+  /** How to name it in the UI, e.g. "OpenAI". */
+  label: string;
+  hasKey: boolean;
+  keyHint?: string;
+}
+
 /** Tri-state for supports/brim in the user's saved defaults:
  *   - "auto": let Slicely decide from the model's real geometry (recommended).
  *   - "on":   always generate them, regardless of geometry.
@@ -339,6 +349,9 @@ export interface PrintPreferences {
 /** A model the UI offers in its picker, with capability flags for the UI. */
 export interface ModelChoice {
   id: string;
+  /** Which provider answers for it — i.e. which key it needs. The picker groups
+   *  on this and disables the models of a provider with no key connected. */
+  provider: ProviderId;
   label: string;
   blurb: string;
   supportsEffort: boolean;

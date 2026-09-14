@@ -16,7 +16,7 @@ import { runInSession, sessionContext } from "../session-context";
 import { setUserApiKey } from "../userkey";
 import { resetKeyVaultForTests } from "../keyvault";
 import { SlicelyAgent } from "./agent";
-import type { AgentEvent } from "../../shared/types";
+import type { AgentEvent, ProviderId } from "../../shared/types";
 import type { Provider, StreamRequest, TurnResult } from "./provider";
 import { getProvider } from "./provider";
 
@@ -43,12 +43,12 @@ async function withTempDir(prefix: string, run: (dir: string) => Promise<void>):
 /** A provider that replays a scripted list of turns and records what it was
  *  asked for. `getProvider("anthropic")` supplies the parts a fake need not
  *  reimplement (key pattern, help copy). */
-function fakeProvider(turns: TurnResult[]): Provider & { seen: StreamRequest[] } {
-  const real = getProvider("anthropic");
+function fakeProvider(turns: TurnResult[], id: ProviderId = "anthropic"): Provider & { seen: StreamRequest[] } {
+  const real = getProvider(id);
   const seen: StreamRequest[] = [];
   let i = 0;
   return {
-    id: "anthropic",
+    id,
     label: real.label,
     keyPattern: real.keyPattern,
     keyHelp: real.keyHelp,
@@ -180,6 +180,73 @@ test("reset forgets the conversation, so the next turn starts clean", async () =
       agent.reset();
       await agent.send("second", () => {});
       assert.equal(provider.seen[1].messages.length, 1, "a reset chat sends only the new question");
+    });
+  });
+});
+
+test("switching provider mid-chat starts a fresh conversation, and says so", async () => {
+  // A history holds reasoning blobs and tool ids only their own provider can
+  // read, so replaying an Anthropic conversation at OpenAI is a 400 at best and
+  // a silently wrong conversation at worst. The reset is deliberate; the user is
+  // told, because they are about to notice the assistant has forgotten
+  // everything.
+  await withTempDir("agent-switch-", async (dir) => {
+    const anthropic = fakeProvider([
+      { assistant: [{ type: "text", text: "claude here" }], toolCalls: [] },
+    ]);
+    const openai = fakeProvider([{ assistant: [{ type: "text", text: "gpt here" }], toolCalls: [] }], "openai");
+
+    await runInSession(sessionContext("switch", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      setUserApiKey("openai", "sk-proj-" + "o".repeat(40));
+
+      let model = "claude-opus-4-8";
+      const agent = new SlicelyAgent({
+        resolveProvider: () => (model.startsWith("claude") ? anthropic : openai),
+      });
+      await agent.send("first", () => {});
+      assert.equal((agent.exportHistory() as { provider: string }).provider, "anthropic");
+
+      model = "gpt-5.6-terra";
+      const events: AgentEvent[] = [];
+      await agent.send("second", (e) => events.push(e));
+
+      // The new provider got ONLY the new question.
+      assert.equal(openai.seen.length, 1);
+      assert.equal(openai.seen[0].messages.length, 1);
+      assert.deepEqual(openai.seen[0].messages[0].content, [{ type: "text", text: "second" }]);
+      // And the history now belongs to the new provider.
+      assert.equal((agent.exportHistory() as { provider: string }).provider, "openai");
+
+      const said = events
+        .filter((e): e is AgentEvent & { type: "text" } => e.type === "text")
+        .map((e) => e.text)
+        .join("");
+      assert.match(said, /OpenAI/);
+      assert.match(said, /fresh conversation/i);
+    });
+  });
+});
+
+test("a model whose provider has no key fails as no_key, with the provider named", async () => {
+  await withTempDir("agent-nokey-", async (dir) => {
+    const openai = fakeProvider([], "openai");
+    await runInSession(sessionContext("nokey2", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      // The agent is constructed while an Anthropic model is chosen...
+      let model = "claude-opus-4-8";
+      const anthropic = fakeProvider([{ assistant: [{ type: "text", text: "hi" }], toolCalls: [] }]);
+      const agent = new SlicelyAgent({
+        resolveProvider: () => (model.startsWith("claude") ? anthropic : openai),
+      });
+      // ...and the model changes to one this session has no key for.
+      model = "gpt-5.6-terra";
+      const events: AgentEvent[] = [];
+      await agent.send("go", (e) => events.push(e));
+      const failure = events.find((e) => e.type === "error");
+      assert.equal(failure?.type === "error" && failure.code, "no_key");
+      assert.match(failure?.type === "error" ? failure.message : "", /OpenAI/);
+      assert.equal(openai.seen.length, 0, "nothing was sent without a key");
     });
   });
 });

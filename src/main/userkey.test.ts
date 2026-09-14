@@ -5,15 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { runInSession, sessionContext } from "./session-context";
-import { getUserApiKey, setUserApiKey, clearUserApiKey, userKeyHint, disposeSessionUserKey } from "./userkey";
+import {
+  getUserApiKey,
+  setUserApiKey,
+  clearUserApiKey,
+  userKeyHint,
+  hasAnyUserApiKey,
+  disposeSessionUserKey,
+} from "./userkey";
 import { resetKeyVaultForTests } from "./keyvault";
 
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
-// The developer's own .env (loaded by config.ts) may carry an ANTHROPIC_API_KEY
-// and the operator flag; a hosted-mode test must never see either.
+// The developer's own .env (loaded by config.ts) may carry a provider key and
+// the operator flag; a hosted-mode test must never see either. A real
+// OPENAI_API_KEY in particular must never be reachable from a test.
 delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENAI_API_KEY;
 delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
 resetKeyVaultForTests();
 
@@ -184,5 +193,110 @@ test("secrets.json is replaced atomically, leaving no temp files behind", () => 
     });
     const stray = readdirSync(dir).filter((f) => f.endsWith(".tmp"));
     assert.deepEqual(stray, [], `no .tmp litter: ${stray.join(", ")}`);
+  });
+});
+
+// ── two providers, two keys ──────────────────────────────────────────────────
+// A user may connect Anthropic, OpenAI, or both. The two must be completely
+// independent: connecting one cannot disturb the other, and disconnecting one
+// must not disconnect the other or silently reinstate it from the operator's
+// environment.
+
+const OPENAI_GOOD = "sk-proj-" + "o".repeat(40);
+
+test("the two providers' keys are stored, hinted and cleared independently", () => {
+  withTempDir("uk-p-", (dir) => {
+    runInSession(sessionContext("P", dir), () => {
+      setUserApiKey("anthropic", GOOD);
+      setUserApiKey("openai", OPENAI_GOOD);
+      assert.equal(getUserApiKey("anthropic"), GOOD);
+      assert.equal(getUserApiKey("openai"), OPENAI_GOOD);
+      assert.equal(userKeyHint("anthropic"), "…" + GOOD.slice(-4));
+      assert.equal(userKeyHint("openai"), "…" + OPENAI_GOOD.slice(-4));
+      assert.equal(hasAnyUserApiKey(), true);
+
+      // Both live in the one encrypted file, neither in plaintext.
+      const onDisk = readFileSync(join(dir, "secrets.json"), "utf8");
+      assert.ok(!onDisk.includes(GOOD));
+      assert.ok(!onDisk.includes(OPENAI_GOOD));
+      const parsed = JSON.parse(onDisk) as Record<string, unknown>;
+      assert.equal(typeof parsed.anthropicKey, "string");
+      assert.equal(typeof parsed.openaiKey, "string");
+
+      // Disconnecting one leaves the other exactly as it was.
+      clearUserApiKey("openai");
+      assert.equal(getUserApiKey("openai"), undefined);
+      assert.equal(getUserApiKey("anthropic"), GOOD, "the other key must survive");
+      assert.equal(hasAnyUserApiKey(), true, "one key is still a key");
+    });
+    // And it survives a cache drop, which is what proves the tombstone is on disk.
+    disposeSessionUserKey("P");
+    runInSession(sessionContext("P", dir), () => {
+      assert.equal(getUserApiKey("openai"), undefined);
+      assert.equal(getUserApiKey("anthropic"), GOOD);
+    });
+  });
+});
+
+test("the default provider is anthropic, so every old caller keeps working", () => {
+  withTempDir("uk-q-", (dir) => {
+    runInSession(sessionContext("Q", dir), () => {
+      setUserApiKey("anthropic", GOOD);
+      assert.equal(getUserApiKey(), GOOD);
+      assert.equal(userKeyHint(), "…" + GOOD.slice(-4));
+      clearUserApiKey();
+      assert.equal(getUserApiKey(), undefined);
+      assert.equal(hasAnyUserApiKey(), false);
+    });
+  });
+});
+
+test("an Anthropic key is not accepted as an OpenAI key, or the other way round", () => {
+  withTempDir("uk-r-", (dir) => {
+    runInSession(sessionContext("R", dir), () => {
+      assert.throws(() => setUserApiKey("openai", GOOD), /Anthropic key/i);
+      assert.throws(() => setUserApiKey("anthropic", OPENAI_GOOD), /Anthropic API key/i);
+      // An Admin key would only ever produce a confusing 401 at chat time.
+      assert.throws(() => setUserApiKey("openai", "sk-admin-" + "a".repeat(40)), /Admin/i);
+      assert.equal(hasAnyUserApiKey(), false, "nothing was stored");
+    });
+  });
+});
+
+test("the operator fallback is per provider, under the same one gate", () => {
+  withTempDir("uk-s-", (dir) => {
+    const OP_ANTHROPIC = "sk-ant-api03-" + "s".repeat(40);
+    const OP_OPENAI = "sk-proj-" + "s".repeat(40);
+    process.env.SLICELY_MODE = "hosted";
+    process.env.ANTHROPIC_API_KEY = OP_ANTHROPIC;
+    process.env.OPENAI_API_KEY = OP_OPENAI;
+    delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
+    try {
+      runInSession(sessionContext("S", dir), () => {
+        // A stray OPENAI_API_KEY in a hosted environment — for a script, a
+        // sibling service, a copied .env — must not be spent on visitors either.
+        assert.equal(getUserApiKey("openai"), undefined);
+        assert.equal(getUserApiKey("anthropic"), undefined);
+      });
+
+      process.env.SLICELY_ALLOW_OPERATOR_KEY = "1";
+      disposeSessionUserKey("S");
+      runInSession(sessionContext("S", dir), () => {
+        assert.equal(getUserApiKey("openai"), OP_OPENAI, "the same flag grants both");
+        assert.equal(getUserApiKey("anthropic"), OP_ANTHROPIC);
+        // And the operator's key is never described by its last four characters.
+        assert.equal(userKeyHint("openai"), "this server's key");
+
+        // An explicit disconnect of ONE still beats the fallback for that one.
+        clearUserApiKey("openai");
+        assert.equal(getUserApiKey("openai"), undefined);
+        assert.equal(getUserApiKey("anthropic"), OP_ANTHROPIC);
+      });
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
+      process.env.SLICELY_MODE = "hosted";
+    }
   });
 });

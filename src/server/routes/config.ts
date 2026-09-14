@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/config — the one call the client makes before it can render
-// anything: which mode this server runs in, whether THIS session has an
-// Anthropic key connected, whether a slicer exists here at all, and the legal /
-// source links the page footer needs.
+// anything: which mode this server runs in, which AI providers a key can be
+// connected to and whether THIS session has each one, whether a slicer exists
+// here at all, and the legal / source links the page footer needs.
 //
 // It replaces two older hacks: the client probing a privileged endpoint and
 // reading the 403 as "multi-user", and Electron's env-derived `ConfigState`.
@@ -20,7 +20,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfig } from "../../main/config";
 import { getMode, isHosted } from "../../main/mode";
-import { getUserApiKey, userKeyHint } from "../../main/userkey";
+import { getUserApiKey, hasAnyUserApiKey, userKeyHint } from "../../main/userkey";
+import { PROVIDERS, providerForModel } from "../../main/agent/provider";
+import { getSettings } from "../../main/settings";
+import type { ProviderInfo } from "../../shared/types";
 
 /** Repo root from this file's compiled location (`dist/server/routes/`) — the
  *  same three levels up from `src/server/routes/`, so it resolves either way. */
@@ -30,8 +33,15 @@ const DEFAULT_REPO_URL = "https://github.com/ishmael07/slicely";
 
 export interface ConfigResponse {
   mode: "hosted" | "desktop";
+  /** Does this session have a usable key for ANY provider? A user with only an
+   *  OpenAI key is not a user without a key, so this is not per-provider. */
   hasKey: boolean;
+  /** The hint for the ACTIVE model's provider — the key that would pay for the
+   *  next message. Undefined when that provider has no key, even if the other
+   *  one does. */
   keyHint?: string;
+  /** Every provider a key can be connected to, in UI order. */
+  providers: ProviderInfo[];
   multiUser: boolean;
   slicerAvailable: boolean;
   sourceCommit: string;
@@ -103,12 +113,19 @@ export function createConfigRouter(): Router {
   sourceCommit();
 
   router.get("/config", (_req: Request, res: Response) => {
+    const active = providerForModel(getSettings().model).id;
     const body: ConfigResponse = {
       mode: getMode(),
-      hasKey: Boolean(getUserApiKey()),
-      // The hint is the ONLY thing about the key that ever crosses the wire:
-      // four characters, so a user can tell which key is connected.
-      keyHint: userKeyHint(),
+      hasKey: hasAnyUserApiKey(),
+      // The hint is the ONLY thing about a key that ever crosses the wire: four
+      // characters, so a user can tell which key is connected.
+      keyHint: userKeyHint(active),
+      providers: PROVIDERS.map((p) => ({
+        id: p.id,
+        label: p.label,
+        hasKey: Boolean(getUserApiKey(p.id)),
+        keyHint: userKeyHint(p.id),
+      })),
       multiUser: isHosted(),
       slicerAvailable: slicerAvailable(),
       sourceCommit: sourceCommit(),

@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { WireError, sendScrubbed, stripPaths, toWire } from "./errors";
 import type { Response } from "express";
 import { NoApiKeyError, KeyFormatError } from "../main/userkey";
+import { openAiErrorFrom } from "../main/agent/provider-openai";
 
 test("stripPaths replaces absolute server paths with a placeholder", () => {
   assert.equal(stripPaths("/Users/it/Slicely-data/sessions/abc/uploads/x.stl failed"), "<file> failed");
@@ -129,4 +130,30 @@ test("sendScrubbed falls back when there is nothing to say, and defers to a Wire
   sendScrubbed(wire.res, new WireError(404, "No such printer.", "not_found"), "ignored", 422);
   assert.equal(wire.sent.status, 404);
   assert.deepEqual(wire.sent.body, { error: "No such printer.", code: "not_found" });
+});
+
+// ── the OpenAI provider's failures reach the same codes ─────────────────────
+
+test("OpenAI's failures map to the same wire codes, through the same funnel", () => {
+  const openai = (status: number, body: unknown) => toWire(openAiErrorFrom(status, JSON.stringify(body)));
+
+  const rejected = openai(401, { error: { message: "Incorrect API key provided: sk-proj-SECRET", code: "invalid_api_key" } });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.body.code, "key_rejected");
+  assert.ok(!rejected.body.error.includes("SECRET"), "upstream prose is logged, not relayed");
+
+  const limited = openai(429, { error: { message: "Rate limit reached", code: "rate_limit_exceeded" } });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.code, "rate_limited");
+
+  // The bring-your-own-key trap: a quota 429 is NOT a rate limit. Retrying it
+  // forever cannot restore access — the account needs topping up.
+  const broke = openai(429, { error: { message: "You exceeded your quota", code: "insufficient_quota" } });
+  assert.equal(broke.status, 402);
+  assert.equal(broke.body.code, "billing");
+
+  // A request-shape bug of OURS, and an outage at OpenAI, are both generic 500s
+  // rather than a wrong instruction to the user.
+  assert.equal(openai(400, { error: { message: "Unknown parameter: 'foo'" } }).status, 500);
+  assert.equal(openai(503, { error: { message: "overloaded" } }).status, 500);
 });
