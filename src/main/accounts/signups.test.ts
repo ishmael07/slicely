@@ -76,3 +76,18 @@ test("the counts survive a restart — the salt and the file are both on disk", 
     assert.deepEqual(countSignup("1.2.3.4"), { allowed: false, used: 3, limit: 3 });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the salt is persisted on a workdir that has never held an account", () => {
+  const dir = freshWorkdir();
+  try {
+    // NOTHING has asked paths.ts for a path yet, so `<workdir>/accounts/` does
+    // not exist. The salt must still land on disk: a salt that silently fails to
+    // persist means a fresh one every restart, and a daily cap that resets with
+    // the process is not a cap.
+    const first = hashIp("203.0.113.9");
+    const saltFile = join(dir, "accounts", ".signup-salt");
+    assert.ok(readFileSync(saltFile, "utf8").trim().length === 64, "64 hex characters on disk");
+    resetSignupsForTests();
+    assert.equal(hashIp("203.0.113.9"), first, "and the next process reads the same salt");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

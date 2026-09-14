@@ -110,6 +110,9 @@ async function main() {
 // Source:    ${SOURCES.join("\n//            ")}
 // Generated: ${new Date().toISOString().slice(0, 10)}
 // Regenerate: node scripts/gen-disposable-domains.mjs
+// Licence:   the upstream list is CC0-1.0 (public domain dedication), so it is
+//            redistributable here with no further condition:
+//            https://github.com/disposable-email-domains/disposable-email-domains/blob/main/LICENCE
 //
 // Committed as data rather than taken as a dependency: no install step, no
 // boot-time fetch, and no breakage the day the upstream repo moves. See the

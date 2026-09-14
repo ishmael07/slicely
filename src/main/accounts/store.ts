@@ -32,9 +32,11 @@
 // spend total) is serialised. It is keyed on an arbitrary string so meter.ts can
 // take `spend:<day>` out of the same map without a second lock table.
 // ─────────────────────────────────────────────────────────────────────────────
-import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync,
+} from "node:fs";
 import { randomBytes } from "node:crypto";
-import { accountFile, indexFile, utcDay } from "./paths";
+import { accountFile, byIdDir, indexFile, utcDay } from "./paths";
 
 export type AccountProvider = "google" | "github";
 
@@ -116,12 +118,19 @@ function emptyIndex(): AccountIndex {
 /**
  * The index, off disk on first use.
  *
- * A MALFORMED FILE IS REPLACED, NOT THROWN ON. The index is a derived cache of
- * what the `by-id/` files already say; a hand-edited or half-written one must
- * not brick sign-in for everybody. The cost of rebuilding from empty is that a
- * returning visitor gets a second account — and `retired` is the list that
- * keeps even that from minting a second grant, which is why it lives here
- * rather than being inferred.
+ * A MALFORMED OR MISSING FILE IS REBUILT, NOT THROWN ON. The index is a derived
+ * cache of what the `by-id/` files already say, so a hand-edited or half-written
+ * one must not brick sign-in for everybody — and it must not double-grant
+ * either. `findOrCreateAccount` writes the ACCOUNT FILE FIRST and the index
+ * second precisely so this rebuild is possible: a crash between the two leaves
+ * the account file as the only record, and reading `by-id/` back finds it again
+ * rather than handing the same person a second fifty cents.
+ *
+ * WHAT A REBUILD CANNOT RECOVER IS `retired`, which is the one thing in here that
+ * is NOT derived — a deleted account leaves no file to read it off. Losing
+ * `index.json` therefore reopens the delete-and-resignup path for anyone who had
+ * already deleted. That is why the index is written atomically like everything
+ * else, and why this is a repair rather than a design.
  */
 function loadIndex(): AccountIndex {
   if (index) return index;
@@ -138,10 +147,30 @@ function loadIndex(): AccountIndex {
       return index;
     }
   } catch {
-    /* no file yet, or unreadable — an empty index is the honest reading */
+    /* no file, or unreadable — rebuild from the account files below */
   }
-  index = emptyIndex();
+  index = rebuildIndex();
   return index;
+}
+
+/** The two lookup maps, read back out of `by-id/`. `retired` cannot be rebuilt —
+ *  see `loadIndex`. */
+function rebuildIndex(): AccountIndex {
+  const next = emptyIndex();
+  let names: string[];
+  try {
+    names = readdirSync(byIdDir());
+  } catch {
+    return next;   // nothing has ever been written here
+  }
+  for (const name of names) {
+    const match = /^([0-9a-f]{32})\.json$/.exec(name);
+    const account = match ? getAccount(match[1]) : undefined;
+    if (!account) continue;
+    next.byProviderUser[`${account.provider}:${account.providerUserId}`] = account.id;
+    next.byEmail[account.normalizedEmail] = account.id;
+  }
+  return next;
 }
 
 function isRecord(v: unknown): v is Record<string, string> {
@@ -259,8 +288,9 @@ export function safeSpentMicros(account: Account): number {
 }
 
 /** What is left to spend: `granted − spent`, floored at zero. The floor is real
- *  — the last call of a turn is charged after it happened, so `spentMicros` can
- *  overshoot `grantedMicros` by at most one call per concurrent turn.
+ *  — a call is charged after it happened, so `spentMicros` can overshoot
+ *  `grantedMicros` by one call PER CONCURRENT TURN (see agent/funding.ts's
+ *  `freeFunding`), not by one call.
  *
  *  Both sides go through the sanitisers above, so a corrupt account file answers
  *  "no credit" rather than "NaN", which is what every caller compares `<= 0`. */
@@ -343,6 +373,11 @@ export function findOrCreateAccount(profile: SignInProfile, grantMicros: number)
     chatDay: utcDay(now),
     chatCount: 0,
   };
+  // THE ACCOUNT FILE FIRST, THE INDEX SECOND, and that order is the whole of the
+  // crash story. A crash in between leaves an account file no index points at,
+  // which `loadIndex`'s rebuild finds again — so the same person is not granted
+  // twice. The other order would leave an index entry naming a file that does not
+  // exist, which `getAccount` reads as "no account", which grants again.
   writeAccount(account);
   writeIndex({
     ...idx,
@@ -353,29 +388,37 @@ export function findOrCreateAccount(profile: SignInProfile, grantMicros: number)
 }
 
 /**
- * Remove an account and retire its email.
+ * Remove an account and retire its email — what "delete my data" does to the
+ * person's record (spec §1.5).
  *
- * Both index entries go, the normalised email joins `retired` (deduped), the
- * file is deleted and the cache entry dropped. The retirement is the point: the
- * ledger lines stay (they are the owner's audit trail and name no person), but
- * the 50 cents is spent whether or not the record survives.
+ * Both index entries go, every normalised email that pointed at this id joins
+ * `retired` (deduped), the file is deleted and the cache entry dropped. The
+ * retirement is the point: the ledger lines stay (they are the owner's audit
+ * trail and name no person), but the 50 cents is spent whether or not the record
+ * survives.
+ *
+ * RETIRED FROM THE REVERSE INDEX, NOT ONLY FROM THE ACCOUNT FILE. The file may be
+ * unreadable — that is one of the reasons somebody would be deleting it — and
+ * retiring nothing in that case turns "delete my data" back into the coupon
+ * generator `retired` exists to prevent. The index knows which addresses resolved
+ * to this id, which is exactly the set that must not be granted again.
  */
 export function deleteAccount(id: string): void {
   const account = getAccount(id);
   const idx = loadIndex();
   const byProviderUser = { ...idx.byProviderUser };
   const byEmail = { ...idx.byEmail };
+  const retired = new Set(idx.retired);
   for (const [key, value] of Object.entries(byProviderUser)) {
     if (value === id) delete byProviderUser[key];
   }
   for (const [key, value] of Object.entries(byEmail)) {
-    if (value === id) delete byEmail[key];
+    if (value !== id) continue;
+    delete byEmail[key];
+    retired.add(key);
   }
-  const retired = [...idx.retired];
-  if (account && !retired.includes(account.normalizedEmail)) {
-    retired.push(account.normalizedEmail);
-  }
-  writeIndex({ version: 1, byProviderUser, byEmail, retired });
+  if (account) retired.add(account.normalizedEmail);
+  writeIndex({ version: 1, byProviderUser, byEmail, retired: [...retired] });
   accounts.delete(id);
   rmSync(accountFile(id), { force: true });
 }

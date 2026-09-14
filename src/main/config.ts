@@ -15,9 +15,21 @@ function envStr(name: string, fallback = ""): string {
   return v && v.trim().length > 0 ? v.trim() : fallback;
 }
 
-function envInt(name: string, fallback: number): number {
+/**
+ * An integer from the environment, or `fallback`.
+ *
+ * `min` DEFAULTS TO 1 BECAUSE ZERO IS USUALLY A BROKEN APP: a slicer
+ * concurrency, an output-token ceiling or a history depth of nothing is a typo,
+ * and falling back to the default is kinder than starting a server that cannot
+ * do anything. But for the four free-tier caps zero is a POLICY — "grant
+ * nothing", "spend nothing today", "no new accounts from one address", "no free
+ * chats" — and it is the only kill switch the owner has that does not also take
+ * sign-in away with it. Those four pass `min: 0`. A negative is still nonsense
+ * everywhere and still falls back.
+ */
+function envInt(name: string, fallback: number, min = 1): number {
   const n = Number.parseInt(envStr(name), 10);
-  return Number.isFinite(n) && n >= 1 ? n : fallback;
+  return Number.isFinite(n) && n >= min ? n : fallback;
 }
 
 /**
@@ -105,12 +117,12 @@ export function getConfig(): SlicelyConfig {
     prusaSlicerPath: envStr("PRUSASLICER_PATH", DEFAULT_PRUSA_MAC),
     prusaConfigIni: envStr("PRUSASLICER_CONFIG_INI"),
     maxSlices: envInt("SLICELY_MAX_SLICES", 2),
-    freeCreditCents: envInt("SLICELY_FREE_CREDIT_CENTS", 50),
+    freeCreditCents: envInt("SLICELY_FREE_CREDIT_CENTS", 50, 0),   // 0 is a real value: the kill switch
     freeModel: envStr("SLICELY_FREE_MODEL"),
     freeMaxOutputTokens: envInt("SLICELY_FREE_MAX_OUTPUT_TOKENS", 4000),
-    freeChatsPerDay: envInt("SLICELY_FREE_CHATS_PER_DAY", 40),
-    signupsPerIpPerDay: envInt("SLICELY_SIGNUPS_PER_IP_PER_DAY", 3),
-    dailySpendCapCents: envInt("SLICELY_DAILY_SPEND_CAP_CENTS", 500),
+    freeChatsPerDay: envInt("SLICELY_FREE_CHATS_PER_DAY", 40, 0),   // 0 is a real value: the kill switch
+    signupsPerIpPerDay: envInt("SLICELY_SIGNUPS_PER_IP_PER_DAY", 3, 0),   // 0 is a real value: the kill switch
+    dailySpendCapCents: envInt("SLICELY_DAILY_SPEND_CAP_CENTS", 500, 0),   // 0 is a real value: the kill switch
     maxHistoryTurns: envInt("SLICELY_MAX_HISTORY_TURNS", 12),
     publicUrl: envStr("SLICELY_PUBLIC_URL"),
     workdir,

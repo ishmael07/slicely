@@ -10,11 +10,17 @@
 //
 // THE ORDER OF THE CHECKS IS THE POLICY (spec §10.4) and it is deliberate:
 //
-//   1. THE USER'S OWN KEY WINS, ALWAYS. Someone who pasted their own key is
-//      paying their own bill: they are never metered, never capped, never told
-//      about credit, and their model choice stands. Checking this first is also
-//      what keeps the free tier from quietly becoming the default for people who
-//      have already paid.
+//   1. THE USER'S OWN KEY WINS, ALWAYS — FOR ANY PROVIDER. Someone who pasted
+//      their own key is paying their own bill: they are never metered, never
+//      capped, never told about credit. Checking this first is also what keeps
+//      the free tier from quietly becoming the default for people who have
+//      already paid. And "any provider" is the whole of it: if their key is an
+//      OpenAI one while their stored model choice is an Anthropic one, the thing
+//      that gives way is the MODEL, not the payer — the effective model becomes
+//      that provider's default and `modelSwitchedFrom` says so, so the client can
+//      tell them. Falling back to owner credit there would be exactly the wrong
+//      way round: it would meter someone who is holding a key, and owner credit
+//      exists for people who have none.
 //   2. NO FREE TIER AND NO KEY is today's product, unchanged — `NoApiKeyError`,
 //      409 `no_key`, "connect a key". Desktop always lands here.
 //   3. THEN, AND ONLY THEN, the account: signed in, not blocked, the day not
@@ -26,7 +32,8 @@
 // otherwise run the owner's Anthropic key against a model the owner is not
 // paying for — or, worse, one with no price row. On free credit the model, the
 // effort and the output ceiling are all the free tier's, and `PATCH /api/settings`
-// refuses to change them (routes/settings.ts).
+// refuses to change them (routes/settings.ts). On a key of their own only the
+// model can move, and only to the provider they hold a key for.
 //
 // THE OWNER'S KEY IS READ HERE AND ALMOST NOWHERE ELSE. `process.env.ANTHROPIC_API_KEY`
 // and `OPENAI_API_KEY` appear in exactly two places in `src/main`: userkey.ts's
@@ -45,13 +52,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { getConfig } from "../config";
 import { isHosted } from "../mode";
-import { getSettings, modelOption, type EffortLevel } from "../settings";
+import { getSettings, modelOption, MODEL_CATALOG, type EffortLevel } from "../settings";
 import { getUserApiKey, NoApiKeyError } from "../userkey";
 import { formatMoney, isPriced, type TurnUsage } from "../pricing";
 import { balanceMicros, getAccount, type Account } from "../accounts/store";
 import { chargeAccount, chatAllowance, freeTierPaused } from "../accounts/meter";
 import { WireError } from "../../server/errors";
-import { getProvider, providerForModel, type Provider } from "./provider";
+import { getProvider, providerForModel, PROVIDERS, type Provider } from "./provider";
 import type { ProviderId } from "../../shared/types";
 
 /** The free tier as configured. Every field is a per-DEPLOY fact, so the whole
@@ -158,10 +165,21 @@ export type FundingSource = "user" | "free";
 
 export interface TurnFunding {
   source: FundingSource;
+  /** Whose API this turn will actually talk to. Follows `apiKey` and `model`,
+   *  never the visitor's stored choice — see `ownKeyForTurn`. */
+  provider: ProviderId;
   apiKey: string;
   model: string;
   effort: EffortLevel;
   maxOutputTokens: number;
+  /** The model the visitor had SELECTED, when it is not the one being run.
+   *
+   *  Set only on the BYO path, and only when their key is for another provider:
+   *  "you picked Sonnet 5, your key is an OpenAI one, so this turn ran on GPT-5.6
+   *  Terra" is a sentence the client has to be able to say, or the answer appears
+   *  to come from a model they did not choose with nothing to explain it. Nothing
+   *  in the agent loop reads it. */
+  modelSwitchedFrom?: string;
   /** Throws `WireError(402, …, "credit_exhausted")` when the balance ran out.
    *  A no-op for source "user". Called before every provider call. */
   guard(): void;
@@ -188,8 +206,10 @@ export interface FundingContext {
 export function resolveTurnFunding(ctx: FundingContext): TurnFunding {
   const settings = getSettings();
   const active = providerForModel(settings.model);
-  const own = getUserApiKey(active.id);
-  if (own) return userFunding(own, settings.model, settings.effort, active);
+  const own = ownKeyForTurn(settings.model);
+  if (own) {
+    return userFunding(own.apiKey, own.model, settings.effort, own.provider, own.switchedFrom);
+  }
 
   const free = freeTierInfo();
   if (!free || !accountsEnabled(ctx.oauthConfigured)) {
@@ -226,19 +246,62 @@ export function resolveTurnFunding(ctx: FundingContext): TurnFunding {
   return freeFunding(account, free);
 }
 
+/**
+ * The user's own key and the model it can actually run, or `undefined` when they
+ * hold no key at all.
+ *
+ * THE SELECTED MODEL'S PROVIDER FIRST — that is the ordinary case and it changes
+ * nothing. Only when there is no key for it does this look at the other
+ * providers, and a hit there switches the model rather than the payer: a person
+ * holding a key is paying their own bill, so metering them against the owner's
+ * fifty cents would bill the owner for somebody who had already paid, and would
+ * hand them a free-tier model instead of one their key could run anyway.
+ *
+ * `switchedFrom` is set only on that second branch, and is what the client shows.
+ */
+function ownKeyForTurn(model: string): {
+  apiKey: string;
+  provider: Provider;
+  model: string;
+  switchedFrom?: string;
+} | undefined {
+  const selected = providerForModel(model);
+  const direct = getUserApiKey(selected.id);
+  if (direct) return { apiKey: direct, provider: selected, model };
+
+  for (const provider of PROVIDERS) {
+    if (provider.id === selected.id) continue;
+    const key = getUserApiKey(provider.id);
+    if (key) {
+      return { apiKey: key, provider, model: defaultModelFor(provider.id), switchedFrom: model };
+    }
+  }
+  return undefined;
+}
+
+/** A provider's default model: the first catalogue entry that is theirs, which is
+ *  also the first one the picker offers, so the switch lands somewhere the user
+ *  would recognise rather than on whatever happens to be cheapest. */
+function defaultModelFor(provider: ProviderId): string {
+  return MODEL_CATALOG.find((m) => m.provider === provider)?.id ?? MODEL_CATALOG[0].id;
+}
+
 /** The BYO path: their key, their model, their provider's ceiling, no meter. */
 function userFunding(
   apiKey: string,
   model: string,
   effort: EffortLevel,
   provider: Provider,
+  switchedFrom?: string,
 ): TurnFunding {
   return {
     source: "user",
+    provider: provider.id,
     apiKey,
     model,
     effort,
     maxOutputTokens: provider.maxOutputTokens,
+    ...(switchedFrom && switchedFrom !== model ? { modelSwitchedFrom: switchedFrom } : {}),
     guard: () => undefined,
     onUsage: async () => undefined,
     balance: () => undefined,
@@ -254,9 +317,14 @@ function userFunding(
  * call of THIS turn and cannot be confused by a concurrent turn in another tab
  * (whose charges are serialised by the account lock either way).
  *
- * It may go slightly negative in between: the last call of a turn is charged
- * after it has already happened, bounded by one call's `maxOutputTokens`. The
- * floor is applied where it is visible — on display, and on the next `guard()`.
+ * It may go slightly negative in between: a call is charged only after it has
+ * already happened, so the overshoot is ONE CALL PER CONCURRENT TURN — not one
+ * call. Two tabs that both clear `guard()` on the last of the credit each spend
+ * a call before either charge lands, and the pre-flight in `resolveTurnFunding`
+ * is a read, so three tabs overshoot by three. Bounded by `maxOutputTokens`
+ * times however many turns one account can have in flight, which is what the
+ * per-account rate-limit bucket (`acct:<id>`) keeps small. The floor is applied
+ * where it is visible — on display, and on the next `guard()`.
  */
 function freeFunding(account: Account, free: FreeTierInfo): TurnFunding {
   const provider = getProvider(modelOption(free.model)?.provider ?? "anthropic");
@@ -268,6 +336,7 @@ function freeFunding(account: Account, free: FreeTierInfo): TurnFunding {
   let balance = balanceMicros(account);
   return {
     source: "free",
+    provider: provider.id,
     apiKey,
     model: free.model,
     effort: free.effort,

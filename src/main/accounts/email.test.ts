@@ -49,3 +49,22 @@ test("throwaway domains are refused and real ones are not", () => {
   }
   assert.equal(isDisposableDomain("MAILINATOR.COM"), true, "case must not be a bypass");
 });
+
+test("a subdomain of a throwaway domain is a throwaway domain", () => {
+  // The whole business model of a throwaway provider is wildcard subdomains:
+  // mailinator hands out `anything.mailinator.com`, so matching the exact string
+  // only is a one-character bypass.
+  for (const d of ["sub.mailinator.com", "a.b.mailinator.com", "SUB.Mailinator.COM",
+                   "inbox.10minutemail.com"]) {
+    assert.equal(isDisposableDomain(d), true, d);
+  }
+  // But only as a SUFFIX, and never down to a public suffix on its own — a walk
+  // that stopped at one label would make every `.com` address disposable.
+  // LABELS, not substrings: the match walks dot-separated suffixes, so a name
+  // that merely CONTAINS a listed one is not one. (`notmailinator.com` is not in
+  // this list — it is a genuine upstream entry in its own right.)
+  for (const d of ["mailinator.com.example", "my-mailinator.com", "mailinator.example",
+                   "com", "co.uk", "mail.cam.ac.uk", "mail.google.com", "eng.mit.edu"]) {
+    assert.equal(isDisposableDomain(d), false, d);
+  }
+});

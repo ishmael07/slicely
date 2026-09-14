@@ -119,8 +119,29 @@ export function normalizeEmail(raw: unknown): NormalizedEmail {
  *  array is ~8,800 entries and every sign-in asks it a question. */
 export const DISPOSABLE_DOMAINS: ReadonlySet<string> = new Set(DISPOSABLE_DOMAIN_LIST);
 
-/** True when this domain only ever hands out temporary inboxes. Lowercased
- *  first, because case must never be a way around the list. */
+/**
+ * True when this domain only ever hands out temporary inboxes.
+ *
+ * MATCHED AS A SUFFIX, NOT AS A STRING. Wildcard subdomains are how these
+ * services work — mailinator delivers `anything.mailinator.com` to the same
+ * public inbox — so an exact-match check is bypassed by typing one extra label.
+ * Every suffix is asked about, from the whole domain down to the last two labels.
+ *
+ * TWO IS WHERE IT STOPS, and that is the safety rail rather than an optimisation:
+ * a walk that went down to one label would ask whether "com" is disposable, and
+ * one bad entry in a generated 8,800-line list would then refuse every address on
+ * a whole TLD. Nothing in the list is a public suffix (the generator's
+ * ALWAYS_ALLOWED set is about the other direction), but this is the check that
+ * makes it not matter.
+ *
+ * Lowercased and de-dotted first, because neither case nor a trailing root dot
+ * may be a way around the list.
+ */
 export function isDisposableDomain(domain: string): boolean {
-  return DISPOSABLE_DOMAINS.has(domain.trim().toLowerCase());
+  const clean = domain.trim().toLowerCase().replace(/\.+$/, "");
+  const labels = clean.split(".");
+  for (let i = 0; i + 2 <= labels.length; i += 1) {
+    if (DISPOSABLE_DOMAINS.has(labels.slice(i).join("."))) return true;
+  }
+  return false;
 }

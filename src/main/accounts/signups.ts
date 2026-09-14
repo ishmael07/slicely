@@ -29,7 +29,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfig } from "../config";
-import { accountsRoot, signupsFile, utcDay } from "./paths";
+import { accountsRoot, ensureDir, signupsFile, utcDay } from "./paths";
 import { writeAtomic } from "./store";
 
 /** Cached by path, not globally: a test that moves `SLICELY_WORKDIR` must never
@@ -59,6 +59,12 @@ function salt(): Buffer {
   }
   const fresh = randomBytes(32);
   try {
+    // `accountsRoot()` does NOT create its own directory — only the per-file
+    // accessors do, and the salt lives at the root next to `index.json` rather
+    // than in a subdirectory. Without this the very first `hashIp` on a fresh
+    // workdir fails to persist and falls through to a per-process salt, which is
+    // a daily signup cap that resets on every restart.
+    ensureDir(accountsRoot());
     writeFileSync(path, fresh.toString("hex"), { mode: 0o600 });
   } catch {
     /* worst case: a fresh salt per process start, so the day's counts reset */

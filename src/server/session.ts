@@ -32,6 +32,7 @@
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import {
   chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  type Stats,
 } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep, isAbsolute } from "node:path";
@@ -49,6 +50,7 @@ import { disposeSessionState } from "../main/agent/state";
 import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
 import { disposeSessionPrinters } from "../main/printers/registry";
+import { deleteAccount } from "../main/accounts/store";
 import { clientIp, TokenBuckets } from "./security";
 import { sendError, stripPaths, WireError } from "./errors";
 
@@ -671,8 +673,10 @@ export class SessionStore {
     if (isDesktop()) return undefined;
     if (!/^[0-9a-f]{32}$/.test(id)) return undefined;
     const dir = join(this.root, id);
+    let info: Stats;
     try {
-      if (!statSync(dir).isDirectory()) return undefined;
+      info = statSync(dir);
+      if (!info.isDirectory()) return undefined;
     } catch {
       // No directory: the session was swept, or the disk is new. Minting a fresh
       // one is the right answer, and `materialize` must NOT run — it would
@@ -680,6 +684,13 @@ export class SessionStore {
       return undefined;
     }
     const record = this.materialize(id, dir);
+    // AN ADOPTED SESSION IS AS OLD AS ITS WORKSPACE. `materialize` stamps
+    // `createdAt = now`, which is right for a session being created and wrong for
+    // one being recognised: a deploy would otherwise re-date every visitor to the
+    // moment of the restart, and anything that ever reads a session's age (a
+    // retention sweep, a metric, a support question) would see a wave of new
+    // arrivals that never happened.
+    record.createdAt = directoryBornAt(info, record.createdAt);
     const accountId = readSessionAccountId(dir);
     if (accountId) record.accountId = accountId;
     return record;
@@ -813,6 +824,16 @@ export class SessionStore {
     const s = this.sessions.get(id);
     if (!s) return;
 
+    // AND THE ACCOUNT, BEFORE EITHER BRANCH. Spec §1.5: "delete my data" also
+    // deletes the Slicely account, and the Settings copy promises exactly that
+    // ("Free credit isn't granted twice, so signing in again won't give you a new
+    // balance"). It has to happen here rather than inside `clearPersonalData`,
+    // which only ever runs on the DESKTOP — and accounts are hosted-only, so the
+    // hosted branch below is the one that matters. The account lives in
+    // `<workdir>/accounts/`, outside the directory that branch removes, so
+    // deleting the directory would leave the record and the balance behind.
+    deleteBoundAccount(s);
+
     // DESKTOP: the session's directory is `app.getPath("userData")` — Electron's
     // own cookie jar, cache and local storage live in there, next to the user's
     // models. "Delete my data" must therefore delete DATA, not the folder: the
@@ -912,6 +933,57 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
 }
 
 /**
+ * Delete the ACCOUNT this session is signed in as — the other half of "delete my
+ * data" (spec §1.5).
+ *
+ * `deleteAccount` removes the record and RETIRES the normalised email, which is
+ * what keeps the button from being a coupon generator: signing in again gets a
+ * working account with a zero balance, which is the sentence the UI promises.
+ *
+ * GUARDED ON THE BINDING, AND THAT GUARD IS LOAD-BEARING. Asking anything under
+ * `main/accounts/` for a path CREATES `<workdir>/accounts/` (see paths.ts), and
+ * on the desktop the workdir is the user's Electron userData directory. A session
+ * with no `accountId` — every desktop session, and every hosted visitor who never
+ * signed in — must therefore not reach this call at all.
+ *
+ * A failure is swallowed: the rest of the deletion is the part the visitor can
+ * see, and refusing to delete their files because an index write failed would be
+ * the worse outcome. It is logged, because a grant that outlives its account is
+ * the owner's problem to notice.
+ */
+function deleteBoundAccount(session: SessionRecord): void {
+  const accountId = session.accountId;
+  if (!accountId) return;
+  delete session.accountId;
+  try {
+    deleteAccount(accountId);
+  } catch (err) {
+    console.warn(`[session] could not delete account ${accountId}:`, err);
+  }
+}
+
+/**
+ * When the workspace at `info` was created, in epoch ms — the best available
+ * answer to "how old is this session?" for one being adopted after a restart.
+ *
+ * `birthtimeMs` is the real thing where the filesystem records it (APFS, ext4 via
+ * statx). Where it does not, Node reports 0 or the ctime, so this falls back to
+ * `mtimeMs` — the session directory's own mtime, which changes only when an entry
+ * is added or removed at its top level and is therefore still no later than the
+ * workspace's first write. Anything implausible (0, a clock in the future) falls
+ * back to `fallback`, which is the caller's "now".
+ */
+function directoryBornAt(info: Stats, fallback: number): number {
+  const now = Date.now();
+  for (const candidate of [info.birthtimeMs, info.mtimeMs]) {
+    if (Number.isFinite(candidate) && candidate > 0 && candidate <= now) {
+      return Math.floor(candidate);
+    }
+  }
+  return fallback;
+}
+
+/**
  * Every file the top level of a session directory can hold, and which side of
  * "delete my data" it falls on. This is the complete census — one line per
  * writer in the codebase:
@@ -923,7 +995,7 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
  * | `jobs.json`             | main/jobs/store.ts          | **goes** — a readable index of every model, plate and output |
  * | `printer-secrets.json`  | main/printers/registry.ts   | **goes** — encrypted printer credentials, which site/privacy.html promises to delete by name |
  * | `printers.json`         | main/printers/registry.ts   | **goes** — the printer *connections* (names, hostnames, IPs on the user's LAN). Both the Settings copy and privacy.html promise "printer connections", and HOSTED already deletes them with the whole directory; leaving them on the desktop made the same button mean two different things, and left a printer list whose credentials had just been deleted out from under it. registry.ts starts from an empty store when the file is missing, so the app keeps working. |
- * | `account.json`          | this file                   | **goes** — which account this browser is signed in as. The account itself (and its credit) lives in `<workdir>/accounts/` and is NOT deleted: signing back in finds the same balance, which is the point of keying the grant on an email rather than on a session. Deleting the binding is deleting the link between this workspace and a person, which is what a visitor is asking for. |
+ * | `account.json`          | this file                   | **goes** — which account this browser is signed in as. THE ACCOUNT GOES TOO, but not from here: `destroy` calls `deleteBoundAccount` before either branch, because the record lives in `<workdir>/accounts/`, outside this directory. Spec §1.5, and the copy the Settings sheet shows — the normalised email is retired, so signing in again works and brings no new balance with it. |
  * | `chats`                 | nothing (a historical name) | **goes** — kept on the list because an old install may have one |
  * | `settings.json`         | main/settings.ts            | stays — slicing preferences, promised by neither copy line, and the app's own defaults |
  * | `master.key`            | main/keyvault.ts            | stays — it protects nothing once the two secrets files are gone, and deleting it would re-key the install for no gain |
@@ -1067,8 +1139,14 @@ const MINTING_ROUTES = new Set([
  * likely to be new. They are PATTERNS rather than set entries because the
  * provider is a route parameter; `/auth/google/bogus` still matches nothing and
  * is refused, so this widens the gate by two routes, not by a prefix.
+ *
+ * THE PROVIDERS ARE NAMED, not `[a-z]+`. Four routes may mint, and they are the
+ * four that exist. A class would keep matching after somebody adds a route under
+ * `/auth/<something>/start` for a reason that has nothing to do with signing in
+ * — and a security gate should widen when a person edits it, not when a router
+ * grows. Keep this in step with src/server/oauth/'s provider list.
  */
-const MINTING_PATTERNS = [/^GET \/auth\/[a-z]+\/(start|callback)$/];
+const MINTING_PATTERNS = [/^GET \/auth\/(google|github)\/(start|callback)$/];
 
 /**
  * True when `req` is one of the calls that may create a workspace.

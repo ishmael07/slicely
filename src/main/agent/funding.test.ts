@@ -8,7 +8,9 @@ import { resetConfigForTests } from "../config";
 import { resetKeyVaultForTests } from "../keyvault";
 import { runInSession, sessionContext } from "../session-context";
 import { disposeSessionSettings, updateSettings, MODEL_CATALOG } from "../settings";
-import { disposeSessionUserKey, getUserApiKey, setUserApiKey, NoApiKeyError } from "../userkey";
+import {
+  clearUserApiKey, disposeSessionUserKey, getUserApiKey, setUserApiKey, NoApiKeyError,
+} from "../userkey";
 import { centsToMicros, type TurnUsage } from "../pricing";
 import { WireError } from "../../server/errors";
 import {
@@ -377,5 +379,59 @@ test("an OpenAI key-holder still gets their own model and their own bill", async
     assert.equal(funding.apiKey, USER_OPENAI);
     assert.equal(funding.model, "gpt-6-astra");
     assert.equal(funding.maxOutputTokens, 32_000, "OpenAI's ceiling, which counts reasoning too");
+  });
+});
+
+// ── Fix round 1: a key for ANY provider is still the user paying ─────────────
+
+test("a signed-in user with an OpenAI key and an Anthropic model selected pays their own bill", async () => {
+  await fresh(async () => {
+    process.env.ANTHROPIC_API_KEY = OWNER_ANTHROPIC;   // the owner's credit exists
+    const account = signedIn();                        // and they have 50¢ of it
+    setUserApiKey("openai", USER_OPENAI);
+    updateSettings({ model: "claude-sonnet-5", effort: "high" });
+
+    const funding = resolveTurnFunding({ accountId: account.id, oauthConfigured: true });
+    assert.equal(funding.source, "user", "a key is a key, whoever's provider it is for");
+    assert.equal(funding.provider, "openai");
+    assert.equal(funding.apiKey, USER_OPENAI);
+    assert.equal(funding.model, "gpt-5.6-terra", "OpenAI's default, since their key cannot run Sonnet");
+    assert.equal(funding.modelSwitchedFrom, "claude-sonnet-5", "and the client is told what happened");
+    assert.equal(funding.effort, "high", "their own effort choice stands");
+    assert.equal(funding.maxOutputTokens, 32_000, "OpenAI's ceiling, not the free tier's 4,000");
+
+    await funding.onUsage(SPEC_USAGE);
+    assert.equal(getAccount(account.id)!.spentMicros, 0, "the owner's credit is untouched");
+    assert.equal(funding.balance(), undefined, "so there is no credit event to emit");
+    assert.equal(existsSync(usageFile(utcDay())), false, "and no ledger line");
+  });
+});
+
+test("a key for the selected model's own provider switches nothing", async () => {
+  await fresh(() => {
+    setUserApiKey("anthropic", USER_ANTHROPIC);
+    updateSettings({ model: "claude-opus-4-8" });
+    const funding = resolveTurnFunding({ oauthConfigured: true });
+    assert.equal(funding.source, "user");
+    assert.equal(funding.provider, "anthropic");
+    assert.equal(funding.model, "claude-opus-4-8");
+    assert.equal(funding.modelSwitchedFrom, undefined, "nothing to tell the client about");
+  });
+});
+
+test("owner credit is only for someone with no key at all", async () => {
+  await fresh(() => {
+    process.env.ANTHROPIC_API_KEY = OWNER_ANTHROPIC;
+    const account = signedIn();
+    // Both directions of the switch, and then neither key.
+    setUserApiKey("openai", USER_OPENAI);
+    updateSettings({ model: "claude-sonnet-5" });
+    assert.equal(resolveTurnFunding({ accountId: account.id, oauthConfigured: true }).source, "user");
+
+    clearUserApiKey("openai");   // disconnect
+    const free = resolveTurnFunding({ accountId: account.id, oauthConfigured: true });
+    assert.equal(free.source, "free", "now, and only now, the owner pays");
+    assert.equal(free.provider, "anthropic");
+    assert.equal(free.model, "claude-sonnet-5");
   });
 });

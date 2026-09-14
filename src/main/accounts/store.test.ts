@@ -159,3 +159,44 @@ test("concurrent charges under the lock land exactly once each", async () => {
     assert.equal(getAccount(account.id)!.spentMicros, 20_000, "no lost update");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a missing index.json is rebuilt from the account files, so nobody is granted twice", () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    const other = findOrCreateAccount(
+      profile({ providerUserId: "222", email: "sam@example.com", normalizedEmail: "sam@example.com" }),
+      GRANT,
+    ).account;
+
+    // A crash between the account write and the index write — or a hand-deleted
+    // index — leaves the by-id/ files as the only truth. They are enough.
+    rmSync(indexFile(), { force: true });
+    resetAccountsForTests();
+
+    const again = findOrCreateAccount(profile(), GRANT);
+    assert.equal(again.account.id, account.id, "found by rebuilding from by-id/");
+    assert.equal(again.granted, false, "and NOT granted a second fifty cents");
+    assert.equal(again.account.grantedMicros, GRANT, "still the one grant it always had");
+    assert.equal(accountExistsFor("sam@example.com"), true, "every account file is indexed, not just one");
+    assert.equal(getAccount(other.id)!.id, other.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("deleting an account retires its email even when the account file is unreadable", () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    // The file is gone, or unreadable: the index still knows which email pointed
+    // at this id, and that is the thing that must be retired.
+    rmSync(accountFile(account.id), { force: true });
+    resetAccountsForTests();
+
+    deleteAccount(account.id);
+    assert.equal(isRetired("janedoe@gmail.com"), true, "the reverse index is enough to retire by");
+    assert.equal(accountExistsFor("janedoe@gmail.com"), false);
+    const again = findOrCreateAccount(profile(), GRANT);
+    assert.equal(again.granted, false);
+    assert.equal(again.account.grantedMicros, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

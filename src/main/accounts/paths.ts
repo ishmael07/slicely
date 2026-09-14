@@ -29,8 +29,12 @@ export function accountsRoot(): string {
 }
 
 /** `mkdir -p` on first use, then hand the directory back. Cheap and idempotent,
- *  the same way getConfig() treats the workdir itself. */
-function ensureDir(dir: string): string {
+ *  the same way getConfig() treats the workdir itself.
+ *
+ *  Exported because signups.ts keeps `.signup-salt` at the root of this
+ *  directory rather than in a subdirectory, and so has no path accessor of its
+ *  own to create it. */
+export function ensureDir(dir: string): string {
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
@@ -39,9 +43,15 @@ function ensureDir(dir: string): string {
   return dir;
 }
 
+/** `<root>/by-id` — one JSON file per account, and the only non-derived record
+ *  of a person. store.ts reads the directory back to rebuild a lost index. */
+export function byIdDir(): string {
+  return ensureDir(join(accountsRoot(), "by-id"));
+}
+
 /** `<root>/by-id/<id>.json` — one account. */
 export function accountFile(id: string): string {
-  return join(ensureDir(join(accountsRoot(), "by-id")), `${id}.json`);
+  return join(byIdDir(), `${id}.json`);
 }
 
 /** `<root>/index.json` — the two lookup maps plus the retired list. */

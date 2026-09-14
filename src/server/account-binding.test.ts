@@ -14,6 +14,12 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import type { Express, Request, Response } from "express";
 import { createApp } from "./index";
+import { resetConfigForTests } from "../main/config";
+import { centsToMicros } from "../main/pricing";
+import {
+  findOrCreateAccount, getAccount, isRetired, resetAccountsForTests,
+  type SignInProfile,
+} from "../main/accounts/store";
 import {
   SessionStore,
   SESSION_PERSONAL_FILES,
@@ -25,6 +31,15 @@ import {
 } from "./session";
 
 const ACCOUNT = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+/** One verified sign-in, the same person every time. */
+const PROFILE: SignInProfile = {
+  provider: "google",
+  providerUserId: "107812345",
+  email: "Jane.Doe@gmail.com",
+  normalizedEmail: "janedoe@gmail.com",
+  name: "Jane Doe",
+};
 const OTHER_ACCOUNT = "0123456789abcdef0123456789abcdef";
 
 function tmpRoot(): string {
@@ -349,9 +364,17 @@ test("account.json is personal data, and DELETE /api/session removes it", async 
   const root = tmpRoot();
   const desktopDir = join(root, "desktop");
   const prev = process.env.SLICELY_MODE;
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
   // DESKTOP, because that is the branch where "delete my data" works by NAME:
   // a hosted session's whole directory goes, which takes the file trivially.
   process.env.SLICELY_MODE = "desktop";
+  // And a workdir of our own, because `destroy` also deletes the bound ACCOUNT
+  // and `main/accounts/paths.ts` creates its directory as a side effect of being
+  // asked for a path. Without this the test writes into the developer's real
+  // `~/Slicely-data`.
+  process.env.SLICELY_WORKDIR = root;
+  resetConfigForTests();
+  resetAccountsForTests();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, desktopDir, sweepIntervalMs: 0 });
   const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent, desktopToken: "tok" });
   const { base, close } = await listen(app);
@@ -376,6 +399,120 @@ test("account.json is personal data, and DELETE /api/session removes it", async 
     store.stopSweep();
     if (prev === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prev;
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    resetAccountsForTests();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── Fix round 1: the account goes with the data, and a restart keeps its age ──
+
+test("delete my data deletes the ACCOUNT, and signing in again gets no new grant", async () => {
+  const root = tmpRoot();
+  const savedWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.SLICELY_WORKDIR = root;
+  resetConfigForTests();
+  resetAccountsForTests();
+  const store = new SessionStore({
+    sessionsRoot: join(root, "sessions"), secretDir: root, sweepIntervalMs: 0,
+  });
+  try {
+    const { session } = store.getOrCreate(
+      { headers: {}, protocol: "http" } as unknown as Request,
+      { setHeader: () => undefined } as unknown as Response,
+    );
+    const { account, granted } = findOrCreateAccount(PROFILE, centsToMicros(50));
+    assert.equal(granted, true, "the first sign-in is granted");
+    bindAccountToSession(session, account.id);
+
+    await store.destroy(session.id);
+
+    assert.equal(getAccount(account.id), undefined, "the account record is gone");
+    assert.equal(isRetired("janedoe@gmail.com"), true, "and the email is retired");
+
+    // Spec §1.5, and the sentence the UI promises: signing in again works, and
+    // brings no money with it.
+    const again = findOrCreateAccount(PROFILE, centsToMicros(50));
+    assert.equal(again.granted, false, "free credit is not granted twice");
+    assert.equal(again.account.grantedMicros, 0);
+    assert.notEqual(again.account.id, account.id, "it is a new, empty record");
+  } finally {
+    store.stopSweep();
+    if (savedWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = savedWorkdir;
+    resetConfigForTests();
+    resetAccountsForTests();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("only google and github may mint on a sign-in link", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(probeApp(store));
+  try {
+    // `[a-z]+` would have let a provider that does not exist widen the gate;
+    // the two providers Slicely actually has are named.
+    for (const path of ["/auth/gitlab/start", "/auth/apple/callback", "/auth/x/start"]) {
+      const resp = await fetch(`${base}${path}`);
+      assert.equal(resp.status, 401, `${path} is not one of our sign-in routes`);
+      assert.equal(((await resp.json()) as { code: string }).code, "no_session");
+    }
+    for (const path of ["/auth/github/callback", "/auth/google/start"]) {
+      const resp = await fetch(`${base}${path}`);
+      assert.equal(resp.status, 404, `${path} must still reach the router`);
+    }
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a rehydrated session keeps the age it had, rather than being born again", async () => {
+  const root = tmpRoot();
+  const first = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const a = await listen(probeApp(first));
+  let cookie = "";
+  let id = "";
+  let bornAt = 0;
+  try {
+    const boot = await fetch(`${a.base}/api/config`);
+    cookie = cookieOf(boot)!;
+    id = ((await boot.json()) as { id: string }).id;
+    bornAt = first.get(id)!.createdAt;
+  } finally {
+    await a.close();
+    first.stopSweep();
+  }
+
+  // A measurable gap, so "the age it had" and "now" are telling different times.
+  const deployedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const second = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const b = await listen(probeApp(second));
+  try {
+    await fetch(`${b.base}/probe`, { headers: { cookie } });
+    const adopted = second.get(id)!;
+    assert.ok(adopted, "adopted");
+    // Not "now": a session adopted after a deploy is as old as its workspace, and
+    // stamping the adoption moment onto it would make every deploy look like a
+    // wave of brand-new visitors to anything that ever reads a session's age.
+    assert.ok(
+      adopted.createdAt < deployedAt,
+      `createdAt ${adopted.createdAt} must predate the restart at ${deployedAt}`,
+    );
+    assert.ok(
+      Math.abs(adopted.createdAt - bornAt) < 1_000,
+      `createdAt ${adopted.createdAt} should be the original ${bornAt}`,
+    );
+    assert.ok(adopted.createdAt <= adopted.lastActiveAt);
+  } finally {
+    await b.close();
+    second.stopSweep();
     rmSync(root, { recursive: true, force: true });
   }
 });
