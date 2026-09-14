@@ -293,6 +293,26 @@ export interface ProviderInfo {
   label: string;
   hasKey: boolean;
   keyHint?: string;
+  /** The copy the key card is built from. Shipped rather than duplicated in the
+   *  client: two tables for one truth means a corrected console URL in
+   *  main/agent/provider-*.ts leaves the card pointing at the old one. Optional,
+   *  so a client can still render against a server too old to send it. */
+  keyHelp?: ProviderKeyHelp;
+}
+
+/** One provider's key-card copy, flattened for the wire (`formatMessage` is a
+ *  sentence here, not the function it is on the server). */
+export interface ProviderKeyHelp {
+  /** Field label, e.g. "OpenAI API key". */
+  label: string;
+  /** Input placeholder, e.g. "sk-ant-…". */
+  placeholder: string;
+  consoleUrl: string;
+  /** How to name that URL in prose, e.g. "platform.openai.com/api-keys". */
+  consoleLabel: string;
+  /** What to say about a paste that isn't recognised at all — the client's own
+   *  refusal, before any request is made. */
+  formatMessage: string;
 }
 
 /** Tri-state for supports/brim in the user's saved defaults:

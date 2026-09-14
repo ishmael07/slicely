@@ -55,7 +55,7 @@ export class KeyFormatError extends Error {
  * migrate.
  */
 interface SecretsFile {
-  version: 1;
+  version: number;
   [other: string]: unknown;
 }
 
@@ -102,7 +102,11 @@ function readSecrets(): SecretsFile {
   try {
     const parsed = JSON.parse(readFileSync(SECRETS_FILE(), "utf8")) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return { ...(parsed as Record<string, unknown>), version: 1 };
+      // The file's OWN version wins (hence the spread last). Stamping 1 over it
+      // would silently downgrade a file written by a newer Slicely on the first
+      // key change — and a future migration keyed on that number would then skip
+      // the very file that needed migrating.
+      return { version: 1, ...(parsed as Record<string, unknown>) } as SecretsFile;
     }
   } catch {
     /* no file yet, or unreadable/corrupt — treated as "no secrets" */

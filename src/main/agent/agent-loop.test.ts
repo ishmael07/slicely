@@ -17,8 +17,9 @@ import { setUserApiKey } from "../userkey";
 import { resetKeyVaultForTests } from "../keyvault";
 import { SlicelyAgent } from "./agent";
 import type { AgentEvent, ProviderId } from "../../shared/types";
-import type { Provider, StreamRequest, TurnResult } from "./provider";
+import type { NeutralMessage, Provider, StreamRequest, TurnResult } from "./provider";
 import { getProvider } from "./provider";
+import { OpenAiError } from "./provider-openai";
 
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
@@ -52,6 +53,7 @@ function fakeProvider(turns: TurnResult[], id: ProviderId = "anthropic"): Provid
     label: real.label,
     keyPattern: real.keyPattern,
     keyHelp: real.keyHelp,
+    maxOutputTokens: real.maxOutputTokens,
     seen,
     async stream(req, emit) {
       seen.push(structuredClone(req) as StreamRequest);
@@ -247,6 +249,162 @@ test("a model whose provider has no key fails as no_key, with the provider named
       assert.equal(failure?.type === "error" && failure.code, "no_key");
       assert.match(failure?.type === "error" ? failure.message : "", /OpenAI/);
       assert.equal(openai.seen.length, 0, "nothing was sent without a key");
+    });
+  });
+});
+
+// ── failures the user sees ───────────────────────────────────────────────────
+//
+// A turn that fails MID-CHAT used to take a different path out of the agent than
+// a turn that failed before the stream opened: the catch-all emitted
+// `err.message` raw. So a key revoked between messages arrived with no
+// `key_rejected` code (no key card, just red prose) and carried OpenAI's own
+// sentence — "Incorrect API key provided: sk-proj-abc…" — to the browser. Both
+// paths now run through the same classifier the routes use.
+
+/** A provider whose stream always throws `err`. */
+function throwingProvider(err: unknown, id: ProviderId = "openai"): Provider {
+  const real = getProvider(id);
+  return {
+    ...real,
+    async stream() {
+      throw err;
+    },
+    async validateKey() {
+      return "ok";
+    },
+  };
+}
+
+const OPENAI_KEY = "sk-proj-" + "o".repeat(40);
+
+test("a key rejected mid-chat comes back as key_rejected, with no upstream prose", async () => {
+  await withTempDir("agent-401-", async (dir) => {
+    const upstream = new OpenAiError(401, "invalid_api_key", "Incorrect API key provided: sk-proj-abc123def. You can find your API key at https://platform.openai.com/account/api-keys.");
+    await runInSession(sessionContext("mid401", dir), async () => {
+      setUserApiKey("openai", OPENAI_KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => throwingProvider(upstream) });
+      const events: AgentEvent[] = [];
+      await agent.send("hello", (e) => events.push(e));
+      const failure = events.find((e) => e.type === "error");
+      assert.equal(failure?.type === "error" && failure.code, "key_rejected");
+      const message = failure?.type === "error" ? failure.message : "";
+      assert.match(message, /Settings/);
+      assert.doesNotMatch(message, /Incorrect API key|sk-proj|platform\.openai\.com/);
+      assert.equal(events.at(-1)?.type, "done");
+      // A failed turn still leaves an alternating history, so the user's next
+      // message is not a 400 on top of the error they already saw.
+      const roles = (agent.exportHistory() as { messages: NeutralMessage[] }).messages.map((m) => m.role);
+      assert.deepEqual(roles, ["user", "assistant"]);
+    });
+  });
+});
+
+test("an unclassified upstream failure never reaches the client", async () => {
+  await withTempDir("agent-500-", async (dir) => {
+    // A 400 from a model id the catalog has outlived. Nothing the user can do,
+    // and OpenAI's wording ("Unknown parameter: 'reasoning.summary'") would only
+    // tell an attacker how we build the request.
+    const upstream = new OpenAiError(400, "invalid_request_error", "Unknown parameter: 'reasoning.summary'.");
+    const logged: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+    try {
+      await runInSession(sessionContext("mid500", dir), async () => {
+        setUserApiKey("openai", OPENAI_KEY);
+        const agent = new SlicelyAgent({ resolveProvider: () => throwingProvider(upstream) });
+        const events: AgentEvent[] = [];
+        await agent.send("hello", (e) => events.push(e));
+        const failure = events.find((e) => e.type === "error");
+        assert.equal(failure?.type === "error" && failure.message, "Something went wrong.");
+        assert.equal(failure?.type === "error" && failure.code, undefined);
+      });
+    } finally {
+      console.error = realError;
+    }
+    // ...but the operator gets the whole thing, in the server log.
+    assert.ok(logged.some((line) => /reasoning\.summary/.test(line)), "the real failure is logged server-side");
+  });
+});
+
+// ── cancellation ─────────────────────────────────────────────────────────────
+
+test("cancel aborts the provider's own request, and the turn ends cleanly", async () => {
+  await withTempDir("agent-cancel-", async (dir) => {
+    let seen: AbortSignal | undefined;
+    const provider: Provider = {
+      ...getProvider("anthropic"),
+      async stream(req, emit) {
+        seen = req.signal;
+        emit({ type: "text", text: "thinking" });
+        // What a real provider does: wait on the socket until the signal fires.
+        await new Promise<void>((_resolve, reject) => {
+          req.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+          );
+        });
+        return { assistant: [], toolCalls: [] };
+      },
+      async validateKey() {
+        return "ok";
+      },
+    };
+
+    await runInSession(sessionContext("cancel", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => provider });
+      const events: AgentEvent[] = [];
+      const turn = agent.send("hi", (e) => events.push(e));
+      // Cancel once the first delta proves the turn is really in flight.
+      await new Promise((r) => setTimeout(r, 5));
+      agent.cancel();
+      await turn; // must NOT reject: an aborted turn is a finished turn
+      assert.ok(seen, "the provider was handed a signal to honour");
+      assert.equal(seen?.aborted, true);
+      assert.equal(events.at(-1)?.type, "done");
+      // A cancel the user asked for is not an error to show them.
+      assert.equal(events.some((e) => e.type === "error"), false);
+      // And the history is still REPLAYABLE: an aborted turn leaves no reply, and
+      // both providers refuse a history with two user messages in a row.
+      const roles = (agent.exportHistory() as { messages: NeutralMessage[] }).messages.map((m) => m.role);
+      assert.deepEqual(roles, ["user", "assistant"]);
+    });
+  });
+});
+
+test("cancelling between parallel tool calls still answers every call", async () => {
+  await withTempDir("agent-stub-", async (dir) => {
+    // A `function_call` with no `function_call_output` is a 400 on the NEXT
+    // message, on both providers — so a cancel that skips the second of two
+    // parallel calls has to leave a stub behind, or the chat is bricked.
+    const calls = [
+      { id: "t1", name: "get_slicer_status", input: {} },
+      { id: "t2", name: "get_slicer_status", input: {} },
+    ];
+    const provider = fakeProvider([
+      { assistant: calls.map((c) => ({ type: "tool_use" as const, ...c })), toolCalls: calls },
+      { assistant: [{ type: "text", text: "never reached" }], toolCalls: [] },
+    ]);
+
+    await runInSession(sessionContext("stub", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => provider });
+      await agent.send("two things at once", (e) => {
+        if (e.type === "tool_end") agent.cancel();
+      });
+
+      const exported = agent.exportHistory() as { messages: NeutralMessage[] };
+      const results = exported.messages.find((m) => m.content.some((b) => b.type === "tool_result"))?.content ?? [];
+      assert.equal(results.length, 2, "both tool calls are answered");
+      assert.deepEqual(
+        results.map((b) => (b.type === "tool_result" ? b.id : b.type)),
+        ["t1", "t2"],
+      );
+      const stub = results[1];
+      assert.equal(stub.type === "tool_result" && stub.content, "Cancelled by the user.");
+      assert.equal(stub.type === "tool_result" && stub.isError, undefined);
+      // Only the one turn: the loop stopped where it was told to.
+      assert.equal(provider.seen.length, 1);
     });
   });
 });

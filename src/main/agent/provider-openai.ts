@@ -54,6 +54,22 @@ const CONSOLE_URL = "https://platform.openai.com/api-keys";
 const VALIDATE_TIMEOUT_MS = 10_000;
 
 /**
+ * The hard ceiling on ONE streamed turn.
+ *
+ * Generous on purpose — a max-effort reasoning turn with a dozen tool calls is a
+ * slow thing, and cutting a real answer off is worse than waiting. But it exists,
+ * because a `fetch` with no signal has no timeout at all: a stalled upstream
+ * would hold the socket, the turn and the session's chat slot indefinitely, with
+ * nothing on either end to notice.
+ */
+const STREAM_TIMEOUT_MS = 10 * 60_000;
+
+/** How much of a failure's body to read. It is parsed for its `error.code` and
+ *  nothing else, so buffering a misconfigured proxy's megabytes of HTML into this
+ *  process buys nothing. */
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/**
  * A cheap local sanity check on a pasted OpenAI key — deliberately LOOSE.
  *
  * OpenAI documents only the `sk-` prefix (and `sk-admin-`) in its own OpenAPI
@@ -98,6 +114,35 @@ export class OpenAiUnreachableError extends Error {
     super(message);
     this.name = "OpenAiUnreachableError";
   }
+}
+
+/**
+ * Read a failure's body, up to `MAX_ERROR_BODY_BYTES`.
+ *
+ * `response.text()` would buffer whatever the other end sends — and the other end
+ * of a failure is often not OpenAI at all but a proxy answering with an HTML
+ * error page. Exported for its own test; a body with no readable stream (a 204, a
+ * fake) still comes back through `text()`.
+ */
+export async function readErrorBody(response: Response): Promise<string> {
+  const body = response.body as unknown as AsyncIterable<Uint8Array> | null | undefined;
+  if (!body || typeof body[Symbol.asyncIterator] !== "function") {
+    return response.text().then((t) => t.slice(0, MAX_ERROR_BODY_BYTES)).catch(() => "");
+  }
+  const decoder = new TextDecoder();
+  let out = "";
+  let read = 0;
+  try {
+    for await (const chunk of body) {
+      read += chunk.byteLength;
+      out += decoder.decode(chunk, { stream: true });
+      // `break` on a ReadableStream cancels it, so the rest is never transferred.
+      if (read >= MAX_ERROR_BODY_BYTES) break;
+    }
+  } catch {
+    /* a truncated error body is still an error — the status is the whole story */
+  }
+  return out.slice(0, MAX_ERROR_BODY_BYTES);
 }
 
 /** Build an `OpenAiError` from a response's status and raw body. The body is
@@ -175,9 +220,33 @@ export function toOpenAiTools(tools: ToolSpec[]): unknown[] {
   }));
 }
 
+/**
+ * Which assistant turn (if any) may still carry its reasoning items.
+ *
+ * THE RULE THE RESPONSES API ENFORCES: a reasoning item must be followed by the
+ * function call it reasoned about. Replay every past turn's reasoning and the
+ * second message in any chat 400s, because turn one's reasoning item is now
+ * followed by a plain user message.
+ *
+ * So reasoning is replayed for exactly one turn: the MOST RECENT assistant turn,
+ * and only when that turn also holds a `tool_use` — i.e. we are mid-tool-loop and
+ * the next thing in `input` is that call. Every older turn's reasoning is
+ * stripped. That costs nothing but the continuity `store: false` already costs
+ * us, and it is the difference between a tool loop that works and a chat that
+ * cannot take a second message.
+ */
+function reasoningTurnIndex(messages: NeutralMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== "assistant") continue;
+    return messages[i].content.some((b) => b.type === "tool_use") ? i : -1;
+  }
+  return -1;
+}
+
 export function toOpenAiInput(messages: NeutralMessage[]): unknown[] {
   const items: unknown[] = [];
-  for (const message of messages) {
+  const replayReasoningAt = reasoningTurnIndex(messages);
+  for (const [index, message] of messages.entries()) {
     for (const block of message.content) {
       switch (block.type) {
         case "text":
@@ -185,8 +254,9 @@ export function toOpenAiInput(messages: NeutralMessage[]): unknown[] {
           break;
         case "reasoning":
           // VERBATIM, and only where it came from: the encrypted content is the
-          // whole point, and rebuilding the item would invalidate it.
-          items.push(block.opaque);
+          // whole point, and rebuilding the item would invalidate it. Only on the
+          // one turn that is allowed to have it — see reasoningTurnIndex.
+          if (index === replayReasoningAt) items.push(block.opaque);
           break;
         case "tool_use":
           items.push({
@@ -320,7 +390,15 @@ export async function readTurn(frames: AsyncIterable<string>, emit: StreamEmit):
       // breaks a switch written from the others.
       throw errorFromEvent(event);
     } else if (type === "response.failed" || type === "response.incomplete") {
-      const response = (event.response ?? {}) as { error?: unknown };
+      const response = (event.response ?? {}) as { error?: unknown; incomplete_details?: { reason?: unknown } };
+      // A TRUNCATED ANSWER IS STILL AN ANSWER. `max_output_tokens` counts
+      // reasoning tokens on this API, so a long think can end a turn early
+      // through no fault of the user — and handing them the half-sentence the
+      // model did produce beats the generic 500 a thrown error becomes. Every
+      // other reason (a content filter, an aborted upstream) really is a failure.
+      if (type === "response.incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
+        break;
+      }
       throw errorFromEvent((response.error ?? event) as Record<string, unknown>);
     }
   }
@@ -400,6 +478,11 @@ export const OPENAI_PROVIDER: Provider = {
   id: "openai",
   label: "OpenAI",
   keyPattern: OPENAI_KEY_RE,
+  // TWICE ANTHROPIC'S, on purpose: `max_output_tokens` is an upper bound on
+  // reasoning tokens AND the reply, so a max-effort turn can spend most of a
+  // 16000 budget thinking and then get cut off mid-sentence. The cap is a
+  // safety rail against a runaway turn, not a budget the user is meant to feel.
+  maxOutputTokens: 32_000,
   keyHelp: {
     label: "OpenAI API key",
     // Deliberately not "sk-proj-…": project keys are the default today, but
@@ -421,10 +504,19 @@ export const OPENAI_PROVIDER: Provider = {
   },
 
   async stream(req: StreamRequest, emit: StreamEmit): Promise<TurnResult> {
+    // The caller's cancel AND a ceiling, so a turn ends whether or not anybody is
+    // watching. `AbortSignal.any` keeps both live: whichever fires first wins,
+    // and the composite is what the socket is bound to — a `fetch` with no signal
+    // could be neither cancelled nor timed out.
+    const signal = req.signal
+      ? AbortSignal.any([req.signal, AbortSignal.timeout(STREAM_TIMEOUT_MS)])
+      : AbortSignal.timeout(STREAM_TIMEOUT_MS);
+
     let response: Response;
     try {
       response = await fetch(RESPONSES_URL, {
         method: "POST",
+        signal,
         headers: {
           // These two headers are the whole set: the Responses API is GA (no
           // OpenAI-Beta), and `stream: true` in the body is what switches on
@@ -435,14 +527,17 @@ export const OPENAI_PROVIDER: Provider = {
         body: JSON.stringify(buildResponsesBody(req)),
       });
     } catch (err) {
+      // An abort is not an outage: the user pressed Stop (or the ceiling fired),
+      // and calling that "couldn't reach OpenAI" would send them looking for a
+      // network problem they don't have.
+      if ((err as Error)?.name === "AbortError" || (err as Error)?.name === "TimeoutError") throw err;
       throw new OpenAiUnreachableError((err as Error).message);
     }
 
     if (!response.ok || !response.body) {
       // Read the body for its `code` only — its prose is upstream's, and
-      // errors.ts would not forward it anyway.
-      const text = await response.text().catch(() => "");
-      throw openAiErrorFrom(response.status, text);
+      // errors.ts would not forward it anyway. Capped: see readErrorBody.
+      throw openAiErrorFrom(response.status, await readErrorBody(response));
     }
 
     return readTurn(parseSseFrames(response.body as unknown as AsyncIterable<Uint8Array>), emit);

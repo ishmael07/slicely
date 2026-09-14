@@ -26,6 +26,7 @@ import {
   buildResponsesBody,
   openAiErrorFrom,
   parseSseFrames,
+  readErrorBody,
   readTurn,
   toOpenAiInput,
   toOpenAiTools,
@@ -350,4 +351,202 @@ test("the key pattern is loose on shape and firm on what cannot work", () => {
   assert.match(OPENAI_PROVIDER.keyHelp.formatMessage("nonsense"), /ChatGPT/);
   assert.equal(OPENAI_PROVIDER.keyHelp.placeholder, "sk-…");
   assert.match(OPENAI_PROVIDER.keyHelp.consoleUrl, /platform\.openai\.com/);
+});
+
+// ── cancellation and timeouts ────────────────────────────────────────────────
+//
+// A `fetch` with no signal cannot be cancelled and cannot time out: pressing
+// Stop left the socket open and a stalled upstream held a turn (and a session's
+// chat slot) forever. Both are wired through `StreamRequest.signal`, combined
+// with a hard per-turn ceiling so nothing hangs even when nobody presses Stop.
+
+/** A fake `fetch` standing in for undici: it records what it was called with,
+ *  and — like the real one — ERRORS ITS BODY when the signal aborts, which is
+ *  what makes an abort mid-stream observable at all. */
+function fakeFetch(bodyText: string, keepOpen = false): {
+  install: () => void;
+  restore: () => void;
+  calls: Array<{ url: string; init: RequestInit }>;
+} {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const real = globalThis.fetch;
+  return {
+    calls,
+    install() {
+      globalThis.fetch = (async (url: unknown, init: RequestInit = {}) => {
+        calls.push({ url: String(url), init });
+        const signal = init.signal as AbortSignal | undefined;
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(new TextEncoder().encode(bodyText));
+            if (!keepOpen) {
+              c.close();
+              return;
+            }
+            // An upstream that has stopped talking but not hung up — the state
+            // an abort is the only way out of.
+            signal?.addEventListener("abort", () =>
+              c.error(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+            );
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }) as typeof fetch;
+    },
+    restore() {
+      globalThis.fetch = real;
+    },
+  };
+}
+
+test("the stream request carries an abort signal even when the caller supplies none", async () => {
+  const fake = fakeFetch(
+    frame({ type: "response.output_item.done", item: { type: "message", content: [{ type: "output_text", text: "hi" }] } }) +
+      frame({ type: "response.completed", response: { id: "r", status: "completed" } }),
+  );
+  fake.install();
+  try {
+    const { assistant } = await OPENAI_PROVIDER.stream(request(), () => {});
+    assert.deepEqual(assistant, [{ type: "text", text: "hi" }]);
+    const signal = fake.calls[0].init.signal as AbortSignal;
+    assert.ok(signal instanceof AbortSignal, "an unattended turn still gets the per-turn ceiling");
+    assert.equal(signal.aborted, false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("cancelling mid-stream aborts the fetch and ends the turn", async () => {
+  const fake = fakeFetch(frame({ type: "response.output_text.delta", delta: "thinking…" }), true);
+  fake.install();
+  const caller = new AbortController();
+  try {
+    const deltas: StreamDelta[] = [];
+    await assert.rejects(
+      OPENAI_PROVIDER.stream({ ...request(), signal: caller.signal }, (d) => {
+        deltas.push(d);
+        caller.abort();
+      }),
+      (err: Error) => err.name === "AbortError" || /abort/i.test(err.message),
+    );
+    assert.deepEqual(deltas, [{ type: "text", text: "thinking…" }]);
+    // The signal handed to fetch is a COMPOSITE (caller + ceiling), not the
+    // caller's own, and the caller's abort still reaches it.
+    const signal = fake.calls[0].init.signal as AbortSignal;
+    assert.notEqual(signal, caller.signal);
+    assert.equal(signal.aborted, true);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("validateKey does not wait forever either", async () => {
+  const real = globalThis.fetch;
+  const seen: Array<AbortSignal | undefined> = [];
+  globalThis.fetch = (async (_url: unknown, init: RequestInit = {}) => {
+    seen.push(init.signal as AbortSignal | undefined);
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  try {
+    assert.equal(await OPENAI_PROVIDER.validateKey("sk-proj-" + "a".repeat(40)), "ok");
+    assert.ok(seen[0] instanceof AbortSignal);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+// ── truncation ───────────────────────────────────────────────────────────────
+
+test("a response cut short by the output cap returns what it produced", async () => {
+  // `max_output_tokens` INCLUDES reasoning tokens on this API, so a long think
+  // can end a turn early. A truncated answer is worth far more to the user than
+  // the generic 500 a thrown error becomes.
+  const truncated =
+    frame({
+      type: "response.output_item.done",
+      item: { id: "msg_1", type: "message", content: [{ type: "output_text", text: "Here's as far as I got" }] },
+    }) +
+    frame({
+      type: "response.incomplete",
+      response: { id: "r", status: "incomplete", incomplete_details: { reason: "max_output_tokens" } },
+    });
+  const { assistant, toolCalls } = await readTurn(parseSseFrames(chunked(truncated)), () => {});
+  assert.deepEqual(assistant, [{ type: "text", text: "Here's as far as I got" }]);
+  assert.deepEqual(toolCalls, []);
+});
+
+test("a response cut short for any other reason is still a failure", async () => {
+  const filtered = frame({
+    type: "response.incomplete",
+    response: { id: "r", status: "incomplete", incomplete_details: { reason: "content_filter" } },
+  });
+  await assert.rejects(readTurn(parseSseFrames(chunked(filtered)), () => {}), OpenAiError);
+});
+
+test("the per-turn output cap is the provider's own, and higher than Anthropic's", () => {
+  // Reasoning tokens count against this one, so the same 16000 that is generous
+  // for Anthropic can truncate an OpenAI answer before it starts speaking.
+  assert.equal(OPENAI_PROVIDER.maxOutputTokens, 32000);
+  assert.equal(buildResponsesBody(request({ maxOutputTokens: OPENAI_PROVIDER.maxOutputTokens })).max_output_tokens, 32000);
+});
+
+// ── reasoning replay ─────────────────────────────────────────────────────────
+
+test("reasoning is replayed only on the newest assistant turn, and only with its tool call", () => {
+  // The Responses API requires a reasoning item to be followed by the function
+  // call it reasoned about. Replaying every past turn's reasoning puts one in
+  // front of a plain user message, which is a 400 — the failure that makes a
+  // second message in a chat impossible.
+  const reasoning = (id: string) => ({ type: "reasoning" as const, opaque: { id, type: "reasoning", encrypted_content: id } });
+  const threeTurns: NeutralMessage[] = [
+    { role: "user", content: [{ type: "text", text: "turn one" }] },
+    {
+      role: "assistant",
+      content: [reasoning("rs_1"), { type: "tool_use", id: "call_1", name: "find_models", input: {} }],
+    },
+    { role: "user", content: [{ type: "tool_result", id: "call_1", content: "found" }] },
+    { role: "assistant", content: [reasoning("rs_2"), { type: "text", text: "here you go" }] },
+    { role: "user", content: [{ type: "text", text: "turn two" }] },
+    { role: "assistant", content: [reasoning("rs_3"), { type: "text", text: "and again" }] },
+    { role: "user", content: [{ type: "text", text: "turn three" }] },
+  ];
+
+  // The newest assistant turn has NO tool call, so every reasoning item goes.
+  assert.deepEqual(toOpenAiInput(threeTurns), [
+    { role: "user", content: "turn one" },
+    { type: "function_call", call_id: "call_1", name: "find_models", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: "found" },
+    { role: "assistant", content: "here you go" },
+    { role: "user", content: "turn two" },
+    { role: "assistant", content: "and again" },
+    { role: "user", content: "turn three" },
+  ]);
+
+  // Mid-tool-loop: the newest assistant turn DOES have a tool call, so its own
+  // reasoning is replayed — that is the continuity `store:false` costs us — and
+  // the older turn's is still dropped.
+  const midLoop = threeTurns.slice(0, 3);
+  const items = toOpenAiInput([
+    ...midLoop,
+    { role: "assistant", content: [reasoning("rs_9"), { type: "tool_use", id: "call_9", name: "find_models", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", id: "call_9", content: "found" }] },
+  ]) as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    items.filter((i) => i.type === "reasoning").map((i) => i.id),
+    ["rs_9"],
+  );
+});
+
+// ── error bodies ─────────────────────────────────────────────────────────────
+
+test("an enormous error body is read only up to 64 KB", async () => {
+  // A misconfigured proxy can answer a failure with megabytes of HTML. The body
+  // is read for its `error.code` and nothing else, so there is no reason to buffer
+  // all of it into this process.
+  const text = await readErrorBody(new Response("x".repeat(500_000), { status: 502 }));
+  assert.ok(text.length > 0);
+  assert.ok(text.length <= 64 * 1024, `read ${text.length} bytes`);
+  // A body with no stream at all (a fake, a 204) still reads without throwing.
+  const none = await readErrorBody({ text: async () => '{"error":{"code":"invalid_api_key"}}' } as Response);
+  assert.equal(openAiErrorFrom(401, none).errorCode, "invalid_api_key");
 });

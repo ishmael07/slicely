@@ -65,6 +65,17 @@ export interface StreamRequest {
   tools: ToolSpec[];
   messages: NeutralMessage[];
   maxOutputTokens: number;
+  /**
+   * Abort this turn.
+   *
+   * REQUIRED IN PRACTICE, even though it is optional in the type: without it a
+   * provider's own HTTP call has no timeout and no cancel, so pressing Stop left
+   * the socket running to completion and a stalled upstream held the session's
+   * chat slot for as long as it liked. `agent.ts` owns the controller and aborts
+   * it on `cancel()`; each provider is expected to combine this with its own
+   * ceiling so an unattended turn cannot hang either.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ToolCall {
@@ -123,6 +134,15 @@ export interface Provider {
    *  validation is `validateKey`, and over-strict patterns age badly. */
   readonly keyPattern: RegExp;
   readonly keyHelp: KeyHelp;
+  /**
+   * This provider's ceiling on one turn's output.
+   *
+   * PROVIDER-OWNED, because the number does not mean the same thing twice:
+   * Anthropic's `max_tokens` counts the reply, while OpenAI's
+   * `max_output_tokens` also counts reasoning tokens — so a cap that is generous
+   * for one truncates the other before it has finished thinking.
+   */
+  readonly maxOutputTokens: number;
   /** One streamed model call. Deltas go to `emit`; the authoritative blocks come
    *  back in the result. */
   stream(req: StreamRequest, emit: StreamEmit): Promise<TurnResult>;

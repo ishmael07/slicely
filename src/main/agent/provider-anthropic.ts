@@ -97,26 +97,63 @@ export function fromAnthropicMessage(final: Anthropic.Message): TurnResult {
  * Deliberately forgiving: a hand-edited or half-written file must reopen as a
  * chat with a shorter memory, never as an exception on the way to the user's
  * transcript.
+ *
+ * Forgiving is NOT the same as lossy-in-place, though. Dropping one unreadable
+ * block out of a tool pair used to leave the other half behind — a `tool_result`
+ * naming a call that no longer exists, or a `tool_use` nobody answered — and
+ * both of those are a 400 on the user's very next message, which is the worst
+ * possible way to lose a conversation. So a call id survives only if BOTH halves
+ * do, and a lossy half takes its partner with it.
  */
 export function fromAnthropicHistory(raw: unknown): NeutralMessage[] {
   if (!Array.isArray(raw)) return [];
-  const out: NeutralMessage[] = [];
+
+  // Pass 1 — convert, remembering which messages lost a block on the way.
+  const converted: Array<{ role: "user" | "assistant"; content: NeutralBlock[]; lossy: boolean }> = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
     const msg = entry as { role?: unknown; content?: unknown };
     if (msg.role !== "user" && msg.role !== "assistant") continue;
     const content: NeutralBlock[] = [];
+    let lossy = false;
     if (typeof msg.content === "string") {
       content.push({ type: "text", text: msg.content });
     } else if (Array.isArray(msg.content)) {
       for (const b of msg.content) {
         const block = neutralFromParam(b);
         if (block) content.push(block);
+        else lossy = true;
       }
     }
-    if (content.length) out.push({ role: msg.role, content });
+    if (content.length) converted.push({ role: msg.role, content, lossy });
+  }
+
+  // Pass 2 — a message that lost a block AND is half of a tool pair goes whole.
+  // Prose that lost a block keeps its prose: there is no counterpart for a
+  // stray `server_tool_use` or a future block type to invalidate.
+  const kept = converted.filter((m) => !(m.lossy && m.content.some(isPairBlock)));
+
+  // Pass 3 — and the other half goes with it. One fixed point, no iteration
+  // needed: a call is legal only where both the use and the result survived.
+  const uses = new Set<string>();
+  const results = new Set<string>();
+  for (const m of kept) {
+    for (const b of m.content) {
+      if (b.type === "tool_use") uses.add(b.id);
+      else if (b.type === "tool_result") results.add(b.id);
+    }
+  }
+  const out: NeutralMessage[] = [];
+  for (const m of kept) {
+    const content = m.content.filter((b) => !isPairBlock(b) || (uses.has(b.id) && results.has(b.id)));
+    if (content.length) out.push({ role: m.role, content });
   }
   return out;
+}
+
+/** The two block types that only make sense as a matched pair. */
+function isPairBlock(b: NeutralBlock): b is Extract<NeutralBlock, { type: "tool_use" | "tool_result" }> {
+  return b.type === "tool_use" || b.type === "tool_result";
 }
 
 function neutralFromParam(raw: unknown): NeutralBlock | undefined {
@@ -181,6 +218,9 @@ export const ANTHROPIC_PROVIDER: Provider = {
   id: "anthropic",
   label: "Anthropic",
   keyPattern: ANTHROPIC_KEY_RE,
+  // `max_tokens` here counts only the reply, so Slicely's long-standing 16000 is
+  // ample. (OpenAI's equivalent also counts reasoning — see provider-openai.ts.)
+  maxOutputTokens: 16_000,
   keyHelp: {
     label: "Anthropic API key",
     placeholder: "sk-ant-…",
@@ -210,7 +250,11 @@ export const ANTHROPIC_PROVIDER: Provider = {
     if (thinking) params.thinking = thinking;
     if (outputConfig) params.output_config = outputConfig;
 
-    const stream = client.messages.stream(params as unknown as Anthropic.MessageStreamParams);
+    // The signal is the agent's: pressing Stop has to close the socket, not just
+    // stop painting the deltas (the tokens are billed either way).
+    const stream = client.messages.stream(params as unknown as Anthropic.MessageStreamParams, {
+      signal: req.signal,
+    });
     // Thinking only fires on adaptive-thinking models; on the others the event
     // simply never arrives, which the renderer handles gracefully.
     stream.on("text", (delta) => emit({ type: "text", text: delta }));

@@ -559,3 +559,48 @@ test("DELETE /api/key disconnects the provider it is told about, and only that o
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("/api/config ships each provider's key-card copy, so the client keeps no second table", async () => {
+  // The web client used to carry its own copy of every label, placeholder,
+  // console URL and refusal message. Two tables for one truth: a corrected
+  // console URL in provider-openai.ts would leave the card pointing at the old
+  // one. The server owns the copy now.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await boot(base);
+    const config = (await (await fetch(`${base}/api/config`, { headers: { cookie } })).json()) as {
+      providers: Array<{
+        id: string;
+        label: string;
+        keyHelp?: { label: string; placeholder: string; consoleUrl: string; consoleLabel: string; formatMessage: string };
+      }>;
+    };
+
+    const openai = config.providers.find((p) => p.id === "openai");
+    assert.ok(openai?.keyHelp, "the OpenAI card's copy comes over the wire");
+    assert.equal(openai.keyHelp.label, "OpenAI API key");
+    assert.equal(openai.keyHelp.placeholder, "sk-…");
+    assert.match(openai.keyHelp.consoleUrl, /^https:\/\/platform\.openai\.com/);
+    assert.equal(openai.keyHelp.consoleLabel, "platform.openai.com/api-keys");
+    // The sentence for a paste that is not recognised at all — which is the one
+    // the client needs when it refuses locally, before any request.
+    assert.match(openai.keyHelp.formatMessage, /doesn't look like an OpenAI API key/);
+
+    const anthropic = config.providers.find((p) => p.id === "anthropic");
+    assert.equal(anthropic?.keyHelp?.label, "Anthropic API key");
+    assert.equal(anthropic?.keyHelp?.placeholder, "sk-ant-…");
+    assert.match(anthropic?.keyHelp?.formatMessage ?? "", /sk-ant-api/);
+
+    // A key itself is never described here, in either direction.
+    const raw = JSON.stringify(config);
+    assert.doesNotMatch(raw, /sk-ant-api03|sk-proj-o/);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

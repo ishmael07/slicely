@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -298,5 +298,23 @@ test("the operator fallback is per provider, under the same one gate", () => {
       delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
       process.env.SLICELY_MODE = "hosted";
     }
+  });
+});
+
+test("a secrets file written by a future version keeps its own version number", () => {
+  // `readSecrets` used to stamp `version: 1` over whatever the file said and then
+  // write that back, so the first key change on a machine running a newer
+  // Slicely would quietly downgrade the file's own format marker — and a future
+  // migration keyed on that number would then skip it.
+  withTempDir("uk-ver-", (dir) => {
+    runInSession(sessionContext("V", dir), () => {
+      const path = join(dir, "secrets.json");
+      writeFileSync(path, JSON.stringify({ version: 7, somethingNew: "keep me" }), { mode: 0o600 });
+      setUserApiKey("anthropic", GOOD);
+      const after = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      assert.equal(after.version, 7, "the file's own version survives a write");
+      assert.equal(after.somethingNew, "keep me", "and so does everything else in it");
+      assert.equal(typeof after.anthropicKey, "string");
+    });
   });
 });

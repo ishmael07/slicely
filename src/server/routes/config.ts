@@ -25,6 +25,11 @@ import { PROVIDERS, providerForModel } from "../../main/agent/provider";
 import { getSettings } from "../../main/settings";
 import type { ProviderInfo } from "../../shared/types";
 
+/** A string that is not a key and not one of the prefixes any provider names
+ *  specially, so `formatMessage` returns its GENERAL refusal — the sentence the
+ *  client needs when it turns a paste away locally. */
+const UNRECOGNISED_KEY = "?";
+
 /** Repo root from this file's compiled location (`dist/server/routes/`) — the
  *  same three levels up from `src/server/routes/`, so it resolves either way. */
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -125,6 +130,13 @@ export function createConfigRouter(): Router {
         label: p.label,
         hasKey: Boolean(getUserApiKey(p.id)),
         keyHint: userKeyHint(p.id),
+        keyHelp: {
+          label: p.keyHelp.label,
+          placeholder: p.keyHelp.placeholder,
+          consoleUrl: p.keyHelp.consoleUrl,
+          consoleLabel: p.keyHelp.consoleLabel,
+          formatMessage: p.keyHelp.formatMessage(UNRECOGNISED_KEY),
+        },
       })),
       multiUser: isHosted(),
       slicerAvailable: slicerAvailable(),

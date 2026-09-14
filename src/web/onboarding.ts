@@ -45,9 +45,15 @@ export interface AppConfig {
 /**
  * The per-provider copy the cards are built from.
  *
- * Duplicated deliberately from main/agent/provider-*.ts rather than shipped over
- * the wire: it is static product copy, not state, and /api/config should carry
- * what this session IS, not the words used to describe it.
+ * THE SERVER OWNS MOST OF IT. `/api/config` ships each provider's `keyHelp`
+ * (field label, placeholder, console URL and link text, and the refusal sentence)
+ * straight from main/agent/provider-*.ts, and `help()` below prefers it. What is
+ * left here is a fallback for the ASSUMED config — a server too old to send
+ * `providers`, or /api/config unreachable — plus `detail`, which is onboarding
+ * copy rather than anything the key route knows about.
+ *
+ * Keeping the whole table client-side was two tables for one truth: a corrected
+ * console URL on the server left the card pointing at the old one.
  */
 interface ProviderHelp {
   id: ProviderId;
@@ -88,7 +94,23 @@ const PROVIDER_HELP: ProviderHelp[] = [
 ];
 
 function help(id: ProviderId): ProviderHelp {
-  return PROVIDER_HELP.find((p) => p.id === id) ?? PROVIDER_HELP[0];
+  const fallback = PROVIDER_HELP.find((p) => p.id === id) ?? PROVIDER_HELP[0];
+  const info = current.providers.find((p) => p.id === id);
+  if (!info) return fallback;
+  const wire = info.keyHelp;
+  return {
+    ...fallback,
+    label: info.label || fallback.label,
+    ...(wire
+      ? {
+          keyLabel: wire.label,
+          placeholder: wire.placeholder,
+          consoleUrl: wire.consoleUrl,
+          consoleLabel: wire.consoleLabel,
+          formatMessage: wire.formatMessage,
+        }
+      : {}),
+  };
 }
 
 /** What /api/config said about one provider, or a keyless placeholder for a
