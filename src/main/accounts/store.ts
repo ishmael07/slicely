@@ -161,8 +161,12 @@ function writeIndex(next: AccountIndex): void {
  * or the new one — never a truncated account whose spend has been forgotten.
  * The temp is removed if the rename fails, so a failed write never leaves a
  * readable copy of the record beside it.
+ *
+ * Exported because meter.ts's daily spend total and signups.ts's hashed-IP
+ * counter need exactly this and nothing more — one writer for everything under
+ * `accounts/` means one place to get the permissions and the rename right.
  */
-function writeAtomic(path: string, text: string): void {
+export function writeAtomic(path: string, text: string): void {
   const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
   writeFileSync(tmp, text, { mode: 0o600 });
   try {
