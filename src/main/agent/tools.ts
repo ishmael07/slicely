@@ -154,102 +154,55 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
   path: {
     type: "string",
     description:
-      "Workspace path to the model file, as a tool result gave it to you (\"uploads/cube.stl\", \"downloads/kit/part1.stl\", \"slices/plate-1.gcode\"). " +
-      "Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
+      "Workspace path as a tool result gave it. Omit for the active model and its parts.",
   },
-  goal: {
-    type: "string",
-    enum: ["draft", "quality", "functional"],
-    description: "Print goal driving the recommended baseline. Default quality.",
-  },
-  material: {
-    type: "string",
-    enum: ["PLA", "PETG", "ABS"],
-    description: "Filament family. Default PLA. Also improves weight/cost accuracy.",
-  },
-  layerHeightMm: { type: "number", description: "Override, e.g. 0.2" },
-  fillDensityPct: {
-    type: "number",
-    description: "Override infill density as a percent, 0–100 (e.g. 20).",
-  },
-  fillPattern: {
-    type: "string",
-    description: "Override infill pattern, e.g. gyroid, rectilinear, grid, honeycomb.",
-  },
-  perimeters: { type: "integer", description: "Override wall count." },
+  goal: { type: "string", enum: ["draft", "quality", "functional"], description: "Default quality." },
+  material: { type: "string", enum: ["PLA", "PETG", "ABS"], description: "Default PLA." },
+  layerHeightMm: { type: "number" },
+  fillDensityPct: { type: "number", description: "0-100." },
+  fillPattern: { type: "string", description: "gyroid, rectilinear, grid, honeycomb." },
+  perimeters: { type: "integer", description: "Wall count." },
   supportMaterial: {
     type: "boolean",
-    description:
-      "Override supports on/off. By default Slicely enables PrusaSlicer's automatic overhang detection (supports added only where the real mesh needs them); set false to force them off.",
+    description: "Default is PrusaSlicer's own overhang analysis; false forces supports off.",
   },
   supportStyle: {
     type: "string",
     enum: ["grid", "organic", "snug"],
-    description:
-      "Support style when supports are generated: grid (classic), organic (tree — lighter, easier to remove; needs PrusaSlicer ≥ 2.6), or snug. Default grid.",
+    description: "Default grid; organic is tree, and needs PrusaSlicer 2.6+.",
   },
-  brimWidthMm: { type: "number", description: "Override brim width; 0 for none." },
-  nozzleDiameterMm: { type: "number", description: "e.g. 0.4" },
-  copies: {
-    type: "integer",
-    description:
-      "Print N auto-arranged copies of a single model on the plate (e.g. 4). Ignored for multi-part models.",
-  },
-  scale: {
-    type: "number",
-    description: "Uniform scale factor (1 = 100%, 0.5 = half size, 2 = double).",
-  },
-  rotateDeg: {
-    type: "number",
-    description: "Rotate the model around the Z axis by this many degrees.",
-  },
-  merge: {
-    type: "boolean",
-    description: "Merge multiple parts into one object after arranging.",
-  },
-  arrangeParts: {
-    type: "boolean",
-    description:
-      "Auto-arrange multiple parts on the bed (default true). Set false to keep original positions.",
-  },
+  brimWidthMm: { type: "number", description: "0 for none." },
+  nozzleDiameterMm: { type: "number" },
+  copies: { type: "integer", description: "Copies of a single model; ignored for multi-part." },
+  scale: { type: "number", description: "1 = 100%." },
+  rotateDeg: { type: "number", description: "About Z." },
+  merge: { type: "boolean", description: "Merge parts into one object." },
+  arrangeParts: { type: "boolean", description: "Default true." },
   filamentColour: {
     type: "string",
     description:
-      'ONE filament colour as hex, e.g. "#33aaff". Use this only when the user names a SINGLE colour. It is ' +
-      'written into the config and the plate project, so PrusaSlicer opens showing the part in that colour. ' +
-      'For two or more colours use `colours` or `colourStops` — never collapse several colours into this one.',
+      "ONE colour as hex, and only when the user named exactly one — for several use colours or colourStops.",
   },
   colours: {
     type: "array",
     items: { type: "string" },
     description:
-      'TWO OR MORE colours for a single model, stacked BOTTOM-FIRST, e.g. ["#000000", "#008080"] for a black ' +
-      'base and a teal top. Slicely divides the model\'s height into equal bands and changes filament at each ' +
-      'boundary. Use this whenever the user names more than one colour without saying where they change ' +
-      '("make it teal and black") — passing just one of them is the wrong print. Works on EVERY printer: on a ' +
-      'single-extruder machine the printer pauses so the user swaps the spool; on an AMS/MMU it swaps itself.',
+      "TWO OR MORE colours for one model, BOTTOM-FIRST, in equal height bands.",
   },
   colourStops: {
     type: "array",
     items: {
       type: "object",
       properties: {
-        atZ: { type: "number", description: "Height in mm where this colour starts." },
-        atLayer: { type: "integer", description: "First layer number printed in this colour." },
-        atFraction: {
-          type: "number",
-          description: "Fraction of the model height (0-1) where this colour starts, e.g. 0.33.",
-        },
-        colourHex: { type: "string", description: 'e.g. "#000000".' },
+        atZ: { type: "number" },
+        atLayer: { type: "integer" },
+        atFraction: { type: "number", description: "0-1 of height." },
+        colourHex: { type: "string" },
       },
       required: ["colourHex"],
     },
     description:
-      'Colour changes at heights the user actually NAMED, rather than at equal fractions: "black up to 5 mm" ' +
-      '(atZ 0 black, atZ 5 the next colour), "change at layer 40" (atLayer), "the bottom third in black" ' +
-      '(atFraction 0.33). Give exactly one of atZ / atLayer / atFraction per entry. A stop at the bed ' +
-      '(atZ 0 / atLayer 1) is the colour the print STARTS in and needs no swap. Prefer this over `colours` ' +
-      'whenever the user said WHERE the colour changes.',
+      "Colour changes at heights the user named. Exactly one of atZ / atLayer / atFraction each; the stop at the bed is the starting colour.",
   },
 };
 
@@ -263,18 +216,13 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "search_models",
     description:
-      "Search free, open-source 3D-printable model marketplaces for models matching a query. " +
-      "Returns a list of models with titles, creators, licenses, and whether Slicely can download " +
-      "them directly. Use this whenever the user wants to find or print something (e.g. 'a model car'). " +
-      "Trust each result's `downloadable` flag rather than assuming by source: Printables, MyMiniFactory, " +
-      "NIH 3D, Smithsonian, NASA and GitHub are all directly downloadable in-app alongside Thingiverse.",
+      "Search model marketplaces for a query and return titles, creators, licences and whether Slicely can download each result. Prefer find_models; use this to search one named site.",
     schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "What to search for, e.g. 'low poly model car', 'articulated dragon', 'phone stand'.",
+          description: "What to search for, in the user's own words.",
         },
         source: {
           type: "string",
@@ -282,12 +230,11 @@ const V1_TOOLS: ToolSpec[] = [
             "all", "thingiverse", "printables", "myminifactory", "nih3d",
             "smithsonian", "nasa", "github", "makerworld",
           ],
-          description:
-            "Which marketplace to search. Default 'all'. Prefer 'thingiverse' when the user wants something they can import directly.",
+          description: "Default all.",
         },
         limit: {
           type: "integer",
-          description: "Max results per source (1–30). Default 8.",
+          description: "1-30 per source. Default 8.",
         },
       },
       required: ["query"],
@@ -296,21 +243,18 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "import_model",
     description:
-      "Download a model's mesh file (STL/3MF) from Thingiverse into the local workspace so it can be " +
-      "inspected and sliced. Works for ANY result whose `downloadable` flag is true — Thingiverse, Printables, " +
-      "MyMiniFactory, NIH 3D, Smithsonian, NASA and GitHub. Only fall back to open_in_browser when `downloadable` " +
-      "is false. Returns the local file path.",
+      "Download a result's mesh into the workspace so it can be inspected and sliced. Works for any result whose downloadable flag is true. Returns the local path.",
     schema: {
       type: "object",
       properties: {
         source: {
           type: "string",
-          description: "The result's own `source` value from the search results.",
+          description: "The result's own source value.",
         },
-        modelId: { type: "string", description: "The model's id from search_models." },
+        modelId: { type: "string", description: "The result's own id." },
         fileId: {
           type: "string",
-          description: "Optional specific file id; omit to auto-pick the best mesh (prefers .stl).",
+          description: "Omit to auto-pick the best mesh.",
         },
       },
       required: ["source", "modelId"],
@@ -319,9 +263,7 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "open_in_browser",
     description:
-      "Open a model's web page in the user's default browser, so they can download it manually. " +
-      "Use ONLY for results with `downloadable: false`, whose files really are gated at source. " +
-      "If a result is downloadable, import it instead of sending the user off to fetch it themselves.",
+      "Open a model's web page in the user's browser so they can fetch it by hand. ONLY for results with downloadable: false — import anything else.",
     schema: {
       type: "object",
       properties: {
@@ -333,32 +275,25 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "get_slicer_status",
     description:
-      "Check whether PrusaSlicer is installed, what version, and whether it's currently running. " +
-      "Use this to detect the user's slicing software before slicing, or when the user asks what slicer they have.",
+      "Report whether PrusaSlicer is installed, its version, and whether it is running. Use before slicing if unsure, or when asked which slicer they have.",
     schema: { type: "object", properties: {} },
   },
   {
     name: "check_printer_setup",
     description:
-      "Check whether the user has a usable PrusaSlicer printer profile configured (they ran the setup " +
-      "wizard / exported a config). Use this BEFORE the first slice for a new user. If they have nothing " +
-      "set up, ask which printer they have and call set_printer — otherwise slices use generic defaults and " +
-      "estimates won't match their machine. Returns the config state plus the list of printers Slicely knows.",
+      "Report whether the user has a usable PrusaSlicer profile or a saved printer. Call it before the first slice for someone new.",
     schema: { type: "object", properties: {} },
   },
   {
     name: "set_printer",
     description:
-      "Set the user's printer when they don't have a PrusaSlicer profile configured. Slicely synthesizes a " +
-      "config (bed size + nozzle) so slices are realistic for their machine. Use the printer key from " +
-      "check_printer_setup, or 'generic' if unknown.",
+      "Save the user's printer when they have no PrusaSlicer profile, so bed size and nozzle are theirs rather than generic. Takes a key from check_printer_setup.",
     schema: {
       type: "object",
       properties: {
         printerKey: {
           type: "string",
-          description:
-            "A printer key from check_printer_setup (e.g. 'prusa-mk4', 'ender-3', 'bambu-256', 'bambu-h2d', 'generic').",
+          description: "A printer key from check_printer_setup, or 'generic'.",
         },
       },
       required: ["printerKey"],
@@ -367,16 +302,13 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "inspect_model",
     description:
-      "Get the physical dimensions (mm), volume, triangle count, and manifold status of a downloaded " +
-      "model file using PrusaSlicer. Use after import_model, or on a path the user provides, to report " +
-      "accurate metrics before slicing.",
+      "Measure a model with PrusaSlicer: dimensions in mm, volume, triangle count and whether the mesh is watertight. Use it before reporting anything about a file.",
     schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description:
-            "Workspace path to a model file, as a tool result gave it to you (e.g. \"downloads/cube.stl\"). Omit to use the most recently imported model.",
+          description: "Workspace path as a tool result gave it. Omit for the active model.",
         },
       },
     },
@@ -384,48 +316,28 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "recommend_settings",
     description:
-      "Analyze a model's geometry and recommend accurate, print-safe slicing settings (layer height, " +
-      "infill density + pattern, walls, solid layers, supports, brim) with a plain-language rationale AND " +
-      "warnings (bed fit, non-watertight mesh, material gotchas). Pass the user's goal/material/nozzle when " +
-      "known — they materially change the result. Inspects the model first if needed. Use this before slicing " +
-      "so you can explain WHY the settings fit the print.",
+      "Recommend print-safe settings from a model's geometry plus goal, material and nozzle, with a rationale and warnings (bed fit, non-watertight mesh, material gotchas). Use it before slicing so you can explain why.",
     schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description:
-            "Workspace path to a model file, as a tool result gave it to you (e.g. \"uploads/cube.stl\"). Omit to use the active (imported/uploaded) model.",
+          description: "Workspace path as a tool result gave it. Omit for the active model.",
         },
         goal: {
           type: "string",
           enum: ["draft", "quality", "functional"],
-          description:
-            "What the print is for: draft = fast/rough, quality = looks/detail, functional = strong/load-bearing. Default quality.",
+          description: "draft = fast, quality = detail, functional = strong. Default quality.",
         },
-        material: {
-          type: "string",
-          enum: ["PLA", "PETG", "ABS"],
-          description: "Filament family. Default PLA.",
-        },
-        nozzleMm: {
-          type: "number",
-          description: "Nozzle diameter in mm (default 0.4). Bounds the layer height.",
-        },
+        material: { type: "string", enum: ["PLA", "PETG", "ABS"], description: "Default PLA." },
+        nozzleMm: { type: "number", description: "Default 0.4; it bounds the layer height." },
       },
     },
   },
   {
     name: "slice_model",
     description:
-      "Slice the active model into G-code with PrusaSlicer and return real metrics: estimated print time, " +
-      "filament used (mm and grams), filament cost, and layer count. If no settings are given it auto-applies " +
-      "the geometry/goal-aware recommended settings (including supports + brim, decided from the model — and " +
-      "for multi-part models aggregated across ALL parts), so 'just slice it' always works. Multi-part models " +
-      "and copies are arranged automatically, and SPLIT ACROSS MULTIPLE PLATES when they don't fit one bed — " +
-      "you get one metrics result per plate. Pass goal/material to shape the recommendation, or explicit " +
-      "values to override individual settings. You can also make copies, scale, rotate, merge parts, or set a " +
-      "preview filament colour.",
+      "Slice the active model to G-code and return real metrics: print time, filament in mm and grams, cost and layer count. With no settings it applies the recommendation, so \"just slice it\" works.",
     schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
@@ -434,15 +346,7 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "slice_and_open",
     description:
-      "Slice the active model headlessly for ACCURATE metrics (print time, filament, cost — shown once), THEN open " +
-      "the FINISHED result in PrusaSlicer's G-code VIEWER (the toolpath preview / export view). Use this ONLY when " +
-      "the user explicitly wants to SEE THE FINISHED RESULT — e.g. 'show me the finished product', 'show me the " +
-      "finished slice', 'slice it and open it', 'open the export/g-code', 'let me see the toolpaths/preview'. Do " +
-      "NOT use it for a plain 'open it' (that's open_in_slicer — the editable editor). Takes the SAME settings as " +
-      "slice_model (goal, material, overrides, copies, scale, rotate, merge, colour). Honest note: this opens the " +
-      "already-sliced G-code (the viewer is read-only — toolpaths + export, nothing to click); PrusaSlicer has no " +
-      "API to auto-press the Slice button in the editor. For a multi-plate split, the finished G-code for plate 1 " +
-      "opens; the rest are sliced too and openable from their panels.",
+      "Slice headlessly for accurate metrics, then open the FINISHED G-code in PrusaSlicer's read-only viewer. Only when the user explicitly wants to see the finished result or the toolpaths — a plain \"open it\" is open_in_slicer. Same settings as slice_model.",
     schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
@@ -451,35 +355,19 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "open_in_slicer",
     description:
-      "Open a MODEL in the regular, EDITABLE PrusaSlicer editor with slicing settings ALREADY APPLIED. This is the " +
-      "DEFAULT for 'open it' / 'open in PrusaSlicer' / 'let me tweak it myself' / 'slice it and open in the editor' " +
-      "/ 'take over manually'. When PrusaSlicer is closed, Slicely also turns on its background-processing " +
-      "preference, so the model auto-slices as it loads — the user just clicks the Preview tab to see the finished " +
-      "toolpaths (no Slice click). If PrusaSlicer is already running, pre-slicing can't be set for that session, so " +
-      "the user presses Slice (the result message explains this and how to get auto-slice). By default it reuses " +
-      "the settings of the most recent slice (or recommends from the model's geometry). Pass any setting below to " +
-      "open with that specific value. This keeps the model EDITABLE — for the read-only finished G-code viewer, " +
-      "use slice_and_open.",
+      "Open a model in the EDITABLE PrusaSlicer editor with settings already applied — the default for \"open it\", \"let me tweak it\", \"take over manually\". For the read-only finished G-code, use slice_and_open.",
     schema: {
       type: "object",
       properties: {
-        path: {
-          type: "string",
-          description:
-            'Workspace path to the model, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the most recently imported model.',
-        },
-        layerHeightMm: { type: "number", description: "Layer height in mm (e.g. 0.2)." },
-        fillDensityPct: { type: "number", description: "Infill density percent 0–100." },
-        fillPattern: { type: "string", description: 'Infill pattern, e.g. "gyroid", "grid".' },
-        perimeters: { type: "number", description: "Number of perimeter walls." },
-        supportMaterial: { type: "boolean", description: "Enable/disable supports." },
-        supportStyle: {
-          type: "string",
-          enum: ["grid", "organic", "snug"],
-          description: "Support style: grid (classic), organic (tree), or snug.",
-        },
-        brimWidthMm: { type: "number", description: "Brim width in mm (0 = none)." },
-        nozzleDiameterMm: { type: "number", description: "Nozzle diameter in mm (e.g. 0.4)." },
+        path: SLICE_PROPERTIES.path,
+        layerHeightMm: SLICE_PROPERTIES.layerHeightMm,
+        fillDensityPct: SLICE_PROPERTIES.fillDensityPct,
+        fillPattern: SLICE_PROPERTIES.fillPattern,
+        perimeters: SLICE_PROPERTIES.perimeters,
+        supportMaterial: SLICE_PROPERTIES.supportMaterial,
+        supportStyle: SLICE_PROPERTIES.supportStyle,
+        brimWidthMm: SLICE_PROPERTIES.brimWidthMm,
+        nozzleDiameterMm: SLICE_PROPERTIES.nozzleDiameterMm,
         // Declared here, not just on slice_model: "make it black and twice as
         // big, then open it" is one request. While these were missing, the
         // model had no way to express them on an open and they were silently

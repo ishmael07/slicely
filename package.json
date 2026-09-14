@@ -19,7 +19,8 @@
     "release:mac": "npm run build && electron-builder --mac --config scripts/electron-builder.config.cjs --publish always",
     "test": "npm run build && npm run test:only",
     "test:only": "node --test $(find dist -name '*.test.js')",
-    "serve": "npm run build && node dist/server/index.js"
+    "serve": "npm run build && node dist/server/index.js",
+    "tokens": "node scripts/count-prompt-tokens.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.105.0",
