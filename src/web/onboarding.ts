@@ -20,7 +20,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { ProviderId, ProviderInfo } from "../shared/types";
 import { ApiError, del, getJson, putJson, ready } from "./api.js";
+import { buildSigninBlock, hasFreeCredit } from "./account.js";
 import { externalLink, make, toast } from "./ui.js";
+
+/**
+ * The two account-shaped halves of `/api/config`, taken from the server's own
+ * declarations rather than mirrored here — a type-only import is erased, so this
+ * module gains no runtime dependency on `src/shared` (which the packaged Mac
+ * app's bundle does not ship).
+ *
+ * `SigninProvider` is one way in, rendered as a button; pressing it is a
+ * top-level navigation, never a fetch. `FreeTierInfo` is the free tier as this
+ * deploy is configured — the model the owner's credit runs on and how much of it
+ * a new account is given — and is null when there is no free tier (desktop, or
+ * no owner key), which is today's bring-your-own-key product. It keeps the local
+ * name because five call sites read it that way; the server calls the same shape
+ * `FreeTierView`.
+ */
+export type { SigninProvider } from "../shared/types";
+import type { FreeTierView, SigninProvider } from "../shared/types";
+export type FreeTierInfo = FreeTierView;
 
 export interface AppConfig {
   mode: "hosted" | "desktop";
@@ -36,6 +55,11 @@ export interface AppConfig {
   repoUrl: string;
   termsUrl: string;
   privacyUrl: string;
+  /** Can a stranger sign in here at all? False on desktop, false with no OAuth
+   *  provider configured, and false with no free tier to hand them. */
+  accountsEnabled: boolean;
+  signinProviders: SigninProvider[];
+  freeTier: FreeTierInfo | null;
 }
 
 /**
@@ -112,6 +136,11 @@ function providerState(id: ProviderId): ProviderInfo {
  * key route to offer, and nagging the user to connect a key the server would not
  * accept is worse than staying quiet. A real hosted server always answers, and
  * a `no_key` reply from /api/chat still says so.
+ *
+ * `accountsEnabled: false` for the same reason read the other way round: with no
+ * answer from the server, the safe guess is the product that needs no server
+ * feature at all — bring your own key. Offering a sign-in button that leads
+ * nowhere would be worse than not offering one.
  */
 const ASSUMED: AppConfig = {
   mode: "desktop",
@@ -124,6 +153,9 @@ const ASSUMED: AppConfig = {
   repoUrl: "",
   termsUrl: "/terms",
   privacyUrl: "/privacy",
+  accountsEnabled: false,
+  signinProviders: [],
+  freeTier: null,
 };
 
 let current: AppConfig = ASSUMED;
@@ -147,6 +179,39 @@ export function hasKey(): boolean {
   return current.hasKey;
 }
 
+/**
+ * What a server that predates accounts left out.
+ *
+ * `/api/config` is read straight into `AppConfig`, so any field an older build
+ * does not send arrives as `undefined` — and `config().signinProviders.map(…)`
+ * on an undefined is a blank page, not a missing button. The three account
+ * fields are therefore filled in on the way through, defaulted to the BYO-only
+ * product.
+ */
+function withAccountDefaults(raw: AppConfig): AppConfig {
+  return {
+    ...raw,
+    accountsEnabled: raw.accountsEnabled === true,
+    signinProviders: Array.isArray(raw.signinProviders) ? raw.signinProviders : [],
+    freeTier: raw.freeTier ?? null,
+  };
+}
+
+/** True when this deploy can sign a stranger in and fund their first turns. */
+export function accountsEnabled(): boolean {
+  return current.accountsEnabled;
+}
+
+/** The sign-in buttons to draw, in the order the server listed them. */
+export function signinProviders(): SigninProvider[] {
+  return current.signinProviders;
+}
+
+/** The free tier as configured here, or null when there isn't one. */
+export function freeTier(): FreeTierInfo | null {
+  return current.freeTier;
+}
+
 /** False when /api/config could not be reached, so the client is working from
  *  assumptions. Anything that would state a fact about the account — "your key
  *  is connected" — should stay quiet rather than make one up. */
@@ -162,7 +227,7 @@ export function configLoaded(): boolean {
  */
 export async function loadConfig(): Promise<AppConfig> {
   try {
-    current = (await ready()) as unknown as AppConfig;
+    current = withAccountDefaults((await ready()) as unknown as AppConfig);
     loaded = true;
   } catch {
     current = ASSUMED;
@@ -181,7 +246,7 @@ export async function loadConfig(): Promise<AppConfig> {
  */
 export async function refreshConfig(): Promise<void> {
   try {
-    current = await getJson<AppConfig>("/api/config");
+    current = withAccountDefaults(await getJson<AppConfig>("/api/config"));
     loaded = true;
     emit();
   } catch {
@@ -320,14 +385,32 @@ function buildKeyForm(id: ProviderId, opts: KeyFormOptions = {}): HTMLFormElemen
 }
 
 /**
- * The first-run card: one heading, one sentence, one choice, one field.
+ * The first-run card.
  *
- * Both providers are offered as equal buttons rather than two stacked cards —
- * the answer to "which do I need?" is "whichever account you already have", and
- * that is a choice, not two things to read.
+ * Two shapes, one card. On a deploy with a free tier the card is the sign-in
+ * block: a title, one sentence, a button per provider and a plain link for
+ * people who already have an API key — pressing that link swaps the key form
+ * in, in place, so nobody has to go looking for it. With accounts off the card
+ * is byte-for-byte the one it has always been: a heading, one sentence, a choice
+ * of provider, a paste box.
  */
 export function buildConnectCard(): HTMLElement {
   const card = make("section", "connect");
+  const signin = buildSigninBlock(() => {
+    card.replaceChildren(buildKeyCard());
+    // The link was pressed to type a key, so put the keyboard where the key
+    // goes rather than leaving it on a button that no longer exists.
+    card.querySelector<HTMLInputElement>(".key-input")?.focus();
+  });
+  card.appendChild(signin ?? buildKeyCard());
+  return card;
+}
+
+/** The key card's own contents: heading, sentence, provider choice, paste box.
+ *  A fragment rather than a card of its own, so it can be swapped into the
+ *  first-run card in place without the card moving or changing size abruptly. */
+function buildKeyCard(): DocumentFragment {
+  const card = document.createDocumentFragment();
   const titleId = `connectTitle${++keyFieldSeq}`;
   const title = make("h2", "connect-title", CONNECT_HEADING);
   title.id = titleId;
@@ -426,7 +509,10 @@ const EXAMPLE_PROMPTS = [
  * it described work the user cannot start yet.
  */
 export function buildEmptyState(onExample: (prompt: string) => void): HTMLElement {
-  if (!current.hasKey) {
+  // Somebody signed in with credit to spend needs no card at all: they can type
+  // straight away, and being shown a way to start when they have already started
+  // is the same noise as the old three-step tour.
+  if (!current.hasKey && !hasFreeCredit()) {
     const first = make("div", "empty onboarding");
     first.appendChild(buildConnectCard());
     return first;

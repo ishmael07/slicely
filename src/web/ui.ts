@@ -102,12 +102,13 @@ export function toast(message: string, kind: ToastKind = "info"): void {
 
 // ── sheets (Settings, Chats, Print jobs) ─────────────────────────────────────
 
-export type SheetId = "settings" | "chats" | "jobs";
+export type SheetId = "settings" | "chats" | "jobs" | "waitlist";
 
 const SHEET_ELEMENT: Record<SheetId, string> = {
   settings: "settingsSheet",
   chats: "chatsSheet",
   jobs: "jobsSheet",
+  waitlist: "waitlistSheet",
 };
 
 let openSheetId: SheetId | null = null;

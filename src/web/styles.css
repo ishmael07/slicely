@@ -153,15 +153,18 @@ a {
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+/* WRAPS, NEVER SCROLLS. This row used to scroll sideways when it ran out of
+   room, which hides controls rather than showing them — the narrow-phone rules
+   below already chose wrapping instead. It is generalised to every width here
+   because the account menu drops out of this row, and a scroll container clips
+   anything that leaves it (overflow-x: auto makes overflow-y: auto too). */
 .title-right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.title-right::-webkit-scrollbar {
-  display: none;
+  overflow: visible;
 }
 .pill {
   display: flex;
@@ -180,6 +183,46 @@ a {
 .pill:hover {
   background: var(--panel-2);
   border-color: var(--border-bright);
+}
+
+/* ── The account pill ───────────────────────────────────────────────────────
+   A monogram and a balance, in the corner, always. The letter sits in a filled
+   circle so the pill reads as a person rather than as another status chip; the
+   balance beside it is the one number this product has to keep honest. */
+#accountPill {
+  color: var(--text);
+  font-weight: 600;
+  padding: 4px 10px 4px 4px;
+}
+#accountPill .mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #1a1006;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+#accountPill .mono[hidden] {
+  display: none;
+}
+/* With no monogram (signed out) the pill is an ordinary text pill again. */
+#accountPill:has(.mono[hidden]) {
+  padding: 5px 10px;
+}
+/* The composer's menus open upwards because they sit at the bottom of the
+   screen; this one hangs off the header, so it opens down and to the right. */
+.account-anchor .picker-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+  min-width: 232px;
 }
 .dot {
   display: inline-block;
@@ -433,6 +476,7 @@ a {
 
 .sheet select,
 .sheet input[type="number"],
+.sheet input[type="email"],
 .sheet input[type="text"] {
   width: 100%;
   font-family: var(--font);
@@ -2296,6 +2340,109 @@ button.menu-item:disabled {
   margin-top: var(--sp-1);
 }
 
+/* ── Signing in ─────────────────────────────────────────────────────────────
+   The same card, on a deploy that has free credit to hand out: a title, one
+   sentence, one full-width button per provider, and a plain link for the people
+   who already have an API key. Full width because these are not a choice
+   between two products — they are one door with two handles, and a row of two
+   would ask the reader to compare them before starting. */
+.signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.signin-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+.signin-buttons .btn {
+  display: block;
+  padding: 11px 12px;
+  font-size: var(--fs);
+  text-align: center;
+  text-decoration: none;
+}
+/* The way out for someone who never wanted an account: quiet, but a real
+   sentence at a real size — the point of this screen is that both doors are
+   open. */
+.signin .signin-own {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.signin .signin-own:hover {
+  color: var(--text);
+}
+
+/* What free credit runs on. A real sentence in the panel's own voice, dim
+   rather than small — it is the only thing Settings → AI has to say to somebody
+   who has no key of their own. */
+#freeModelNote {
+  color: var(--text-dim);
+  margin-bottom: var(--sp-1);
+}
+
+/* ── The waitlist sheet ─────────────────────────────────────────────────────
+   One sentence, two fields, one button — the smallest honest thing to offer
+   somebody whose free credit is gone and who does not want to paste a key. The
+   thank-you replaces the form, so it cannot be sent twice. */
+.waitlist-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.waitlist-lead {
+  color: var(--text-dim);
+  max-width: 52ch;
+}
+.waitlist-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.waitlist-thanks {
+  font-size: var(--fs);
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* ── The end of the free credit ─────────────────────────────────────────────
+   Not a failure, so not the red card: a free trial finishing is an ordinary
+   thing, and the two ways on from it are what the card is for. Same panel and
+   border as the connect card, so it reads as part of the app rather than as
+   something that went wrong. */
+.credit-card {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(100%, 560px);
+  padding: var(--sp-2);
+  border: 0.5px solid var(--border-bright);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.credit-title {
+  font-size: var(--fs-h);
+  font-weight: 650;
+  color: var(--text);
+}
+.credit-body {
+  font-size: var(--fs);
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.credit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: 4px;
+}
+
 /* Two equal buttons, not two stacked cards: which provider you use is a choice,
    not two things to read. */
 .provider-choice {
@@ -2565,13 +2712,21 @@ button.menu-item:disabled {
   .title-right {
     flex: 0 1 auto;
     min-width: 0;
-    overflow-x: visible;
-    justify-content: flex-end;
   }
   /* The banner says when PrusaSlicer is missing, and a phone has no room for a
      pill that otherwise only repeats "ready". */
   #slicerStatus {
     display: none;
+  }
+  /* Same trade for the account: once there IS a monogram it says who you are in
+     22 pixels, and the balance is one tap away in the menu (and spelt out in
+     Settings). Signed out there is no monogram, so "Sign in" stays — an empty
+     button would be worse than a wide one. */
+  #accountPill:has(.mono:not([hidden])) #accountBalance {
+    display: none;
+  }
+  #accountPill:has(.mono:not([hidden])) {
+    padding: 4px;
   }
   .pill {
     flex: 0 1 auto;

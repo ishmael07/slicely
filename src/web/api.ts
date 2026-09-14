@@ -129,6 +129,26 @@ const CODE_COPY: Record<string, string> = {
   not_found: "That wasn't found. It may have already been removed.",
   too_large: "That's too large.",
   host_blocked: "That printer's address isn't allowed.",
+
+  // ── accounts and the free tier ─────────────────────────────────────────────
+  //
+  // Seven codes, seven sentences, and each one says what happened and what the
+  // reader can do next — never how the meter works and never a number the
+  // header pill is already showing. They are pinned to the design spec by
+  // account-copy.test.ts so the client's words and the server's words cannot
+  // drift apart.
+  signin_required: "Sign in to start — you get free credit to try Slicely.",
+  credit_exhausted: "You've used your free credit. Add your own API key to keep going.",
+  free_tier_paused:
+    "Free usage is busy today. Add your own API key to keep going, or come back tomorrow.",
+  signup_limited:
+    "Too many new accounts from your network today. Try again tomorrow, or use your own API key.",
+  email_unverified:
+    "That account has no verified email address. Verify one with your provider, or try the other button.",
+  email_blocked: "That email address can't be used here. Try another, or use your own API key.",
+  oauth_failed: "That sign-in didn't complete. Try again.",
+  // Not a chat code: the waitlist route's own 400, shown under the email field.
+  email_invalid: "That doesn't look like an email address.",
 };
 
 /**
@@ -290,6 +310,71 @@ export async function postForm<T>(url: string, form: FormData): Promise<T> {
   const { resp, body } = await withSession(() => fetch(url, { method: "POST", body: form }));
   if (!resp.ok) fail(url, resp, body as WireError);
   return body as T;
+}
+
+// ── who is signed in, and what is left of their credit ───────────────────────
+//
+// ONE STORE, so the header pill, the transcript and the Settings sheet can
+// never disagree about the balance. The server formats the money (`$0.42`) —
+// the client never divides micro-cents by anything — and the same shape arrives
+// two ways: from `GET /api/me` on boot, and from the `credit` event at the end
+// of every metered turn, which is why `setAccount` exists at all.
+
+/** The two wire shapes `GET /api/me` speaks, taken from the server's own
+ *  declarations rather than mirrored here — `export type` is erased at compile
+ *  time, so this file still emits no runtime import (see the header) and the
+ *  packaged Mac app, whose bundle excludes `dist-web/shared/`, is unaffected. A
+ *  copy would be a second place for `chatsPerDay` to be renamed. */
+export type { AccountView, MeResponse } from "../shared/types";
+import type { MeResponse } from "../shared/types";
+
+const SIGNED_OUT: MeResponse = { signedIn: false };
+
+let currentAccount: MeResponse = SIGNED_OUT;
+const accountListeners = new Set<(me: MeResponse) => void>();
+
+/** What the client currently believes about the account. */
+export function account(): MeResponse {
+  return currentAccount;
+}
+
+/** Notified whenever that belief changes — a sign-in, a sign-out, or a turn
+ *  that spent some credit. */
+export function onAccountChange(fn: (me: MeResponse) => void): void {
+  accountListeners.add(fn);
+}
+
+export function setAccount(next: MeResponse): void {
+  currentAccount = next;
+  for (const fn of accountListeners) fn(currentAccount);
+}
+
+/**
+ * `GET /api/me` — who this session is, if anyone.
+ *
+ * Through the same boot gate as every other call, and forgiving of a 404: a
+ * server that predates accounts has no such route, and "this build has no
+ * accounts" is exactly the same thing to the UI as "nobody is signed in".
+ */
+export async function me(): Promise<MeResponse> {
+  try {
+    const body = await getJson<MeResponse>("/api/me");
+    return body && typeof body.signedIn === "boolean" ? body : SIGNED_OUT;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return SIGNED_OUT;
+    throw err;
+  }
+}
+
+/** Read /api/me and publish it. Returns what it found; a failure leaves the
+ *  store as it was, because a failed refresh is not news about the account. */
+export async function refreshAccount(): Promise<MeResponse> {
+  try {
+    setAccount(await me());
+  } catch {
+    /* keep what we had */
+  }
+  return currentAccount;
 }
 
 /** Read a `data: {...}\n\n` SSE stream off a POST response body — the

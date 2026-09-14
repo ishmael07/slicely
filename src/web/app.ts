@@ -13,9 +13,10 @@
 // the emitted modules import nothing but each other.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
-import { ApiError, errorMessage, getJson } from "./api.js";
+import { ApiError, codeMessage, errorMessage, getJson, onAccountChange } from "./api.js";
+import { hasFreeCredit, initAccount, openWaitlist, readAuthErrorFromHash, renderAccountPill } from "./account.js";
 import type { SheetId } from "./ui.js";
-import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toggleSheet } from "./ui.js";
+import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toast, toggleSheet } from "./ui.js";
 import {
   clearTranscript,
   initChat,
@@ -125,7 +126,8 @@ if ((window as unknown as { slicely?: unknown }).slicely) {
 
 initUi();
 
-const settings = initSettings({ onError: renderError });
+const accounts = initAccount({ openAiSettings });
+const settings = initSettings({ onError: renderError, openWaitlist });
 initPrinters({ multiUser: () => config().multiUser });
 initJobs({ mountSend: attachSendSlot, planOptions });
 initChat({
@@ -134,8 +136,11 @@ initChat({
   mountSend: attachSendSlot,
   onStatus: applyStatus,
   buildEmptyState: () => buildEmptyState((prompt) => void sendInstruction(prompt, prompt)),
-  canChat: hasKey,
+  // A key of their own, OR free credit that hasn't run out. Either one pays for
+  // the next message.
+  canChat: () => hasKey() || hasFreeCredit(),
   onConnect: openAiSettings,
+  openWaitlist,
   // A turn that reported a missing or rejected key knows something this page
   // does not, so the account is re-read rather than guessed at.
   onKeyProblem: () => void refreshConfig(),
@@ -171,7 +176,7 @@ byId<HTMLButtonElement>("chatsBtn").addEventListener("click", () => {
 byId<HTMLButtonElement>("jobsBtn").addEventListener("click", () => {
   if (toggleSheet("jobs")) loadJobs();
 });
-for (const id of ["settingsClose", "chatsClose", "jobsClose"]) {
+for (const id of ["settingsClose", "chatsClose", "jobsClose", "waitlistClose"]) {
   byId<HTMLButtonElement>(id).addEventListener("click", () => closeSheets());
 }
 
@@ -206,12 +211,36 @@ function isEmptyStateShowing(): boolean {
 // behind it. That is what stopped one page load from minting a workspace per
 // boot call.
 void (async () => {
+  // A sign-in that failed comes back as /#auth_error=<code>, because the OAuth
+  // callback has no page of its own to say it on. Said once, then wiped from
+  // the URL so a reload doesn't repeat it.
+  const authError = readAuthErrorFromHash();
+  if (authError) toast(codeMessage(authError) ?? "That sign-in didn't complete. Try again.", "error");
+
   await loadConfig();
+  // WHO before WHAT: the first screen is a different screen for somebody with
+  // free credit than for a stranger, so the account is read before anything is
+  // drawn — and only on a deploy whose config says accounts exist at all.
+  await accounts.refresh();
+  renderAccountPill();
   showEmptyState();
   initConsent(byId<HTMLElement>("consent"));
   renderAccount();
   updateSendEnabled();
   applyMode();
+
+  // Signing in, signing out and spending credit all change the same three
+  // things: the pill, whether the composer is live, and what the first screen
+  // should say.
+  onAccountChange(() => {
+    renderAccountPill();
+    renderAccount();
+    updateSendEnabled();
+    if (isEmptyStateShowing()) {
+      clearTranscript();
+      showEmptyState();
+    }
+  });
 
   // Connecting or removing a key changes what the first screen should say and
   // what the send button promises, so both are redrawn rather than left stale.

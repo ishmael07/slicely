@@ -28,6 +28,14 @@ import {
   type WireModelInfo,
 } from "./cards.js";
 import { byId, closeSheets, confirmDialog, errorCard, externalLink, make, skeleton, toast } from "./ui.js";
+import {
+  applyCreditEvent,
+  buildCreditCard,
+  buildSigninCard,
+  creditExhausted,
+  markExhausted,
+  type CreditState,
+} from "./account.js";
 import { renderMarkdownLite } from "./markdown.js";
 
 export interface ChatDeps {
@@ -51,6 +59,8 @@ export interface ChatDeps {
   /** A turn came back saying the key is missing or rejected, so whatever this
    *  module believes about the account is out of date. */
   onKeyProblem(): void;
+  /** The user asked to join the waitlist for a paid plan. */
+  openWaitlist(): void;
 }
 
 export interface ChatApi {
@@ -308,6 +318,39 @@ function renderTurnError(message: string): void {
   renderError(message, again === null ? undefined : () => void runTurn(again));
 }
 
+/**
+ * The refusals that are about money or an account rather than about a failure.
+ *
+ * These get a card with somewhere to go instead of a red line with a Retry
+ * button that would be refused the same way. Returns false for anything else,
+ * so the ordinary error path still owns every ordinary error.
+ */
+function renderAccountRefusal(code: string | undefined): boolean {
+  if (code === "credit_exhausted" || code === "free_tier_paused") {
+    endBotBubble();
+    if (code === "credit_exhausted") markExhausted();
+    // Paused, exhausted, or (eventually) low — only one credit card ever sits
+    // in the transcript. A second refusal replaces it rather than piling on.
+    messagesEl.querySelectorAll(".credit-card").forEach((el) => el.remove());
+    mount(
+      buildCreditCard(code as CreditState, {
+        onAddKey: () => deps.onConnect(),
+        onWaitlist: () => deps.openWaitlist(),
+      }),
+    );
+    updateSendEnabled();
+    return true;
+  }
+  if (code === "signin_required") {
+    endBotBubble();
+    // Both doors, never one: the card picks no provider for the user.
+    mount(buildSigninCard());
+    updateSendEnabled();
+    return true;
+  }
+  return false;
+}
+
 // ── AgentEvent handling ──────────────────────────────────────────────────────
 
 function renderAgentAction(action: { label: string; kind: string; href?: string; hint?: string }): void {
@@ -446,10 +489,16 @@ export function handleAgentEvent(raw: AgentEvent | Record<string, unknown>): voi
     case "action":
       renderAgentAction(event as unknown as { label: string; kind: string; href?: string; hint?: string });
       break;
+    case "credit":
+      // The turn is paying its own way as it goes, so the header follows it
+      // without a second request.
+      applyCreditEvent(event);
+      break;
     case "error":
       // A key problem says so once and points at Settings; it no longer drops a
       // card into the transcript on every turn.
       if (event.code === "no_key" || event.code === "key_rejected") reportKeyProblem(event.code, event.message);
+      else if (renderAccountRefusal(event.code)) break;
       else renderTurnError(codeMessage(event.code) ?? event.message);
       break;
     case "done":
@@ -486,15 +535,26 @@ export function updateSendEnabled(): void {
   sendBtn.disabled = busy || !canChat || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
   inputEl.disabled = !canChat;
   for (const id of ["attachBtn", "linkBtn"]) byId<HTMLButtonElement>(id).disabled = !canChat;
-  const cardShowing = messagesEl.querySelector(".connect") !== null;
+  // The card on screen — the sign-in card, the connect card, the exhausted card
+  // — already says this, louder and with the buttons attached.
+  const cardShowing =
+    messagesEl.querySelector(".connect") !== null || messagesEl.querySelector(".credit-card") !== null;
   composerNote.classList.toggle("hidden", canChat || cardShowing);
-  if (!canChat && !cardShowing && composerNote.childElementCount === 0) {
-    composerNote.appendChild(make("span", "", "Connect an AI provider to chat."));
-    const connect = make("button", "link-btn", "Connect");
-    connect.type = "button";
-    connect.addEventListener("click", () => deps.onConnect());
-    composerNote.appendChild(connect);
-  }
+  if (canChat || cardShowing) return;
+  // Someone who spent their free credit is told what THEY ran out of, not asked
+  // to connect a provider as though they had never started.
+  const spent = creditExhausted();
+  composerNote.replaceChildren(
+    make(
+      "span",
+      "",
+      spent ? "Free credit used up — add your own key to keep going." : "Connect an AI provider to chat.",
+    ),
+  );
+  const connect = make("button", "link-btn", "Connect");
+  connect.type = "button";
+  connect.addEventListener("click", () => deps.onConnect());
+  composerNote.appendChild(connect);
 }
 
 /** A turn said the key is missing or rejected. The message is the whole of the
@@ -518,6 +578,9 @@ async function runTurn(instruction: string): Promise<void> {
       /* the user pressed Stop — nothing to report */
     } else if (err instanceof ApiError && (err.code === "no_key" || err.code === "key_rejected")) {
       reportKeyProblem(err.code, err.message);
+    } else if (err instanceof ApiError && renderAccountRefusal(err.code)) {
+      // A pre-flight refusal (402, 503, 401) arrives as plain JSON before any
+      // SSE header, and lands on the same card as its in-band twin.
     } else {
       renderTurnError(errorMessage(err));
     }
@@ -705,7 +768,9 @@ function submitComposer(): void {
 
 // ── paste-a-link OR search directly ──────────────────────────────────────────
 // One row does both jobs: a URL resolves via /api/resolve, anything else runs a
-// direct federated search via GET /api/search (no chat turn, so no key needed).
+// direct federated search via POST /api/find — no chat turn, so no key needed and
+// no credit spent. That route is the deterministic half of `find_models`: the same
+// façade, the same ranking, the same twelve results, and none of the model.
 
 function looksLikeUrl(s: string): boolean {
   const t = s.trim();
@@ -746,19 +811,34 @@ async function resolveLink(url: string): Promise<void> {
   }
 }
 
+/** What `POST /api/find` answers with. `sources` is optional because that route
+ *  does not send it today — the field is read if it ever does, rather than the
+ *  note being dropped from a second place later. */
+interface FindResponse {
+  query: string;
+  models: SearchOutcome["results"];
+  sources?: SearchOutcome["sources"];
+}
+
+/** The line every free find carries. It is the honest half of the feature: the
+ *  results are real, no credit was spent, and the way to get Slicely's judgement
+ *  on them is to ask for it. */
+const FREE_FIND_NOTE = "Found without using AI credit — ask a follow-up to bring Slicely in.";
+
 async function runDirectSearch(query: string): Promise<void> {
   endBotBubble();
   const chip = pendingChip(`Searching for "${query}"…`);
   try {
-    const outcome = await getJson<SearchOutcome>(`/api/search?q=${encodeURIComponent(query)}`);
+    const found = await postJson<FindResponse>("/api/find", { query });
     chip.remove();
     // Nothing found is not a failure, and an error card would say it was.
-    if (outcome.results.length === 0) {
+    if (found.models.length === 0) {
       mount(make("div", "empty-note", `No results for "${query}". Try different words, or paste a link to a model.`));
     } else {
-      showCards(outcome.results as unknown as CardLike[]);
+      showCards(found.models as unknown as CardLike[]);
+      mount(make("div", "empty-note", FREE_FIND_NOTE));
     }
-    const note = buildSourcesNote(outcome.sources);
+    const note = buildSourcesNote(found.sources);
     if (note) mount(note);
   } catch (err) {
     chip.remove();
