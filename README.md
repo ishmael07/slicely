@@ -163,11 +163,13 @@ src/
     jobs/                Mesh parsing, orientation scoring, colour planning, plate packing, job runner
     prusaslicer.ts       CLI: detect, --info, slice, parse metrics, open GUI
     plates.ts            Bin-packing that mirrors PrusaSlicer's own arranger
-    main.ts preload.ts   Electron only
+    main.ts              Electron: boots the server on loopback, opens one window on it
+    preload.ts           The native-only bridge (PrusaSlicer, Finder, file dialog) — tokens, never paths
   server/         Express + SSE, per-session workspaces, rate limiting, security guards
-  web/            The zero-install browser client
-  renderer/       The macOS app UI
+  web/            The browser client — the ONLY UI, in the browser and in the Mac app alike
 ```
+
+**One UI.** The Mac app is the web app. Electron starts the same Express server the hosted deployment runs — in-process, on a random loopback port, in desktop mode — and loads `src/web` into a `BrowserWindow` over HTTP; a per-launch token in an httpOnly cookie keeps other local processes off that port. There is no second renderer, so every feature is written once. All the Mac app adds is what a browser cannot do: open a file in PrusaSlicer, reveal it in Finder, the native file dialog, and the real path of a dropped file (which `POST /api/attach-local` copies in instead of re-uploading).
 
 **Session scoping is the key to multi-user.** Conversation state and preferences were module-level singletons — right for one Electron window, wrong for a website. `session-context.ts` carries a session id in an `AsyncLocalStorage`, and `sessionState` is a `Proxy` that resolves to the ambient session's record. Every existing call site works unchanged; Electron transparently gets a default session; each web visitor gets isolated state, their own `settings.json`, and their own workspace. Sliced G-code is addressable only by an opaque token, never a path.
 

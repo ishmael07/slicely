@@ -43,6 +43,12 @@
     "productName": "Slicely",
     "files": [
       "dist/**/*",
+      "dist-web/**/*",
+      "src/web/*.html",
+      "src/web/*.css",
+      "site/terms.html",
+      "site/privacy.html",
+      "site/favicon.svg",
       "node_modules/**/*",
       "package.json"
     ],
