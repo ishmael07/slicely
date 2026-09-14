@@ -21,6 +21,7 @@ import { fetchWithUA } from "../../main/sourcing/net";
 import type { SigninProvider } from "../../shared/types";
 import type { OauthState } from "./state";
 import { googleProvider } from "./google";
+import { githubProvider } from "./github";
 import { publicUrl } from "./__stub";
 
 /** The one function a provider needs from the outside world. Injected in tests;
@@ -74,7 +75,7 @@ export interface RawProfile {
 
 /** Fixed, in UI order. `signinProviders` in /api/config reads the same list, so
  *  the two buttons can never come back in a different order between renders. */
-const ALL_PROVIDERS: readonly OauthProvider[] = [googleProvider];
+const ALL_PROVIDERS: readonly OauthProvider[] = [googleProvider, githubProvider];
 
 /**
  * Where the provider sends the browser back to.

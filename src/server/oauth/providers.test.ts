@@ -302,3 +302,191 @@ test("a Google sign-in writes nothing to disk and makes exactly one outbound cal
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── GitHub ───────────────────────────────────────────────────────────────────
+
+/** The three headers every GitHub API call must carry, plus a UA GitHub will
+ *  not turn away. Asserted on both API calls, because either one missing the
+ *  version header is a sign-in that breaks on GitHub's next API change. */
+function assertGithubApiHeaders(init: RequestInit, token: string): void {
+  const h = init.headers as Record<string, string>;
+  assert.equal(h.Authorization, `Bearer ${token}`);
+  assert.equal(h.Accept, "application/vnd.github+json");
+  assert.equal(h["X-GitHub-Api-Version"], "2022-11-28");
+  assert.ok(h["User-Agent"]?.startsWith("slicely/"), `User-Agent was ${h["User-Agent"]}`);
+}
+
+const GH_USER = { id: 4242, login: "jane", name: "Jane Doe" };
+const GH_EMAILS = [
+  { email: "alt@x.com", primary: false, verified: true },
+  { email: "jane@example.com", primary: true, verified: true },
+];
+
+test("GitHub is offered only when its id, its secret and the public URL are all set", () => {
+  env({});
+  assert.equal(
+    configuredProviders().find((p) => p.id === "github"),
+    undefined,
+  );
+  env({ GITHUB_CLIENT_ID: GITHUB_ID, SLICELY_PUBLIC_URL: "https://app.test" });
+  assert.equal(
+    configuredProviders().find((p) => p.id === "github"),
+    undefined,
+  );
+  env({ GITHUB_CLIENT_ID: GITHUB_ID, GITHUB_CLIENT_SECRET: GITHUB_SECRET });
+  assert.equal(
+    configuredProviders().find((p) => p.id === "github"),
+    undefined,
+  );
+  env({
+    GITHUB_CLIENT_ID: GITHUB_ID,
+    GITHUB_CLIENT_SECRET: GITHUB_SECRET,
+    SLICELY_PUBLIC_URL: "https://app.test",
+  });
+  assert.equal(provider("github").label, "GitHub");
+  assert.equal(redirectUri("github"), "https://app.test/auth/github/callback");
+});
+
+test("both providers are offered in one fixed order, so the buttons never swap", () => {
+  allSet();
+  assert.deepEqual(signInProviders(), [
+    { id: "google", label: "Google" },
+    { id: "github", label: "GitHub" },
+  ]);
+});
+
+test("the GitHub authorize URL sends state but no PKCE challenge, because OAuth Apps have none", () => {
+  allSet();
+  const s = state({ provider: "github" });
+  const url = new URL(provider("github").authorizeUrl(s));
+  assert.equal(url.origin + url.pathname, "https://github.com/login/oauth/authorize");
+  const q = url.searchParams;
+  assert.equal(q.get("client_id"), GITHUB_ID);
+  assert.equal(q.get("redirect_uri"), "https://app.test/auth/github/callback");
+  assert.equal(q.get("scope"), "read:user user:email");
+  assert.equal(q.get("state"), s.state);
+  assert.equal(q.get("allow_signup"), "true");
+  assert.equal(q.get("code_challenge"), null);
+  assert.equal(q.get("code_challenge_method"), null);
+  assert.ok(!url.toString().includes(GITHUB_SECRET));
+  assert.ok(!url.toString().includes(s.verifier));
+});
+
+test("a GitHub sign-in is three calls in order, and the address is the verified primary one", async () => {
+  allSet();
+  const { http, calls } = scripted([
+    { body: { access_token: "gho_x", token_type: "bearer", scope: "read:user,user:email" } },
+    { body: GH_USER },
+    { body: GH_EMAILS },
+  ]);
+  const raw = await provider("github").profile("gh-code", state({ provider: "github" }), http);
+  assert.equal(calls.length, 3);
+
+  assert.equal(calls[0].url, "https://github.com/login/oauth/access_token");
+  const form = formOf(calls[0].init);
+  assert.equal((calls[0].init.headers as Record<string, string>).Accept, "application/json");
+  assert.deepEqual([...form.keys()].sort(), ["client_id", "client_secret", "code", "redirect_uri"]);
+  assert.equal(form.get("client_id"), GITHUB_ID);
+  assert.equal(form.get("client_secret"), GITHUB_SECRET);
+  assert.equal(form.get("code"), "gh-code");
+  assert.equal(form.get("redirect_uri"), "https://app.test/auth/github/callback");
+
+  assert.equal(calls[1].url, "https://api.github.com/user");
+  assertGithubApiHeaders(calls[1].init, "gho_x");
+  assert.equal(calls[2].url, "https://api.github.com/user/emails");
+  assertGithubApiHeaders(calls[2].init, "gho_x");
+
+  // The primary address wins even though a verified non-primary came first.
+  assert.deepEqual(raw, {
+    providerUserId: "4242",
+    email: "jane@example.com",
+    emailVerified: true,
+    name: "Jane Doe",
+  });
+});
+
+test("the GitHub identity is the numeric id, never the login, because a login can change hands", async () => {
+  allSet();
+  const { http } = scripted([
+    { body: { access_token: "gho_x" } },
+    { body: { id: 4242, login: "renamed-later", name: null } },
+    { body: GH_EMAILS },
+  ]);
+  const raw = await provider("github").profile("c", state({ provider: "github" }), http);
+  assert.equal(raw.providerUserId, "4242");
+  assert.equal(raw.name, undefined);
+});
+
+test("a GitHub account with no verified primary address is told where to fix it", async () => {
+  allSet();
+  const unverifiedPrimary = [
+    { email: "alt@x.com", primary: false, verified: true },
+    { email: "jane@example.com", primary: true, verified: false },
+  ];
+  for (const emails of [unverifiedPrimary, [], [{ email: "a@b.c", primary: false, verified: true }]]) {
+    const { http } = scripted([{ body: { access_token: "gho_x" } }, { body: GH_USER }, { body: emails }]);
+    await assert.rejects(
+      () => provider("github").profile("c", state({ provider: "github" }), http),
+      (e: unknown) => {
+        assert.ok(e instanceof OauthError);
+        assert.equal(e.code, "email_unverified");
+        assert.ok(e.message.includes("github.com/settings/emails"), e.message);
+        return true;
+      },
+      JSON.stringify(emails),
+    );
+  }
+});
+
+test("every way GitHub can refuse is an oauth_failed that names no token", async () => {
+  allSet();
+  const scripts: Array<[string, Array<{ status?: number; body: unknown; text?: string }>]> = [
+    // GitHub answers 200 with an error BODY for a bad code.
+    ["a bad verification code", [{ body: { error: "bad_verification_code", error_description: "expired" } }]],
+    ["no access token at all", [{ body: { token_type: "bearer" } }]],
+    ["a 500 from the token endpoint", [{ status: 500, body: {} }]],
+    ["a body that is not JSON", [{ body: {}, text: "<html>maintenance</html>" }]],
+    ["a 401 from /user", [{ body: { access_token: "gho_x" } }, { status: 401, body: {} }]],
+    ["a /user with no id", [{ body: { access_token: "gho_x" } }, { body: { login: "jane" } }]],
+    [
+      "a 403 from /user/emails",
+      [{ body: { access_token: "gho_x" } }, { body: GH_USER }, { status: 403, body: {} }],
+    ],
+    [
+      "an emails body that is not an array",
+      [{ body: { access_token: "gho_x" } }, { body: GH_USER }, { body: { message: "nope" } }],
+    ],
+  ];
+  for (const [why, replies] of scripts) {
+    const { http } = scripted(replies);
+    await assert.rejects(
+      () => provider("github").profile("c", state({ provider: "github" }), http),
+      (e: unknown) => {
+        assert.ok(e instanceof OauthError, why);
+        assert.equal(e.code, "oauth_failed", why);
+        assert.ok(!e.message.includes("gho_"), `the access token reached a message: ${why}`);
+        assert.ok(!e.message.includes(GITHUB_SECRET), `the client secret reached a message: ${why}`);
+        assert.ok(!e.message.includes("bad_verification_code"), `the upstream body reached a message: ${why}`);
+        return true;
+      },
+      why,
+    );
+  }
+});
+
+test("a GitHub sign-in writes nothing to disk, and the access token appears in no file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slicely-oauth-gh-"));
+  process.env.SLICELY_WORKDIR = dir;
+  allSet();
+  try {
+    const before = readdirSync(dir);
+    const { http } = scripted([{ body: { access_token: "gho_x" } }, { body: GH_USER }, { body: GH_EMAILS }]);
+    const raw = await provider("github").profile("c", state({ provider: "github" }), http);
+    assert.deepEqual(readdirSync(dir), before);
+    assert.ok(!JSON.stringify(raw).includes("gho_"));
+  } finally {
+    delete process.env.SLICELY_WORKDIR;
+    resetConfigForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
