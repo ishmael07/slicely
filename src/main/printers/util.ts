@@ -10,7 +10,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { isHosted } from "../mode";
-import { isLocalOrLinkLocalAddress, isPrivateAddress } from "../sourcing/net";
+import { isLocalOrLinkLocalAddress, isPrivateAddress, normalizeIp } from "../sourcing/net";
 import { WireError } from "../../server/errors";
 
 /** Default network timeout applied to a driver call, in ms. Every driver
@@ -41,6 +41,14 @@ export const DEFAULT_TIMEOUT_MS = 8000;
 //     cost — and its job is to stop a URL a driver built from reaching this
 //     machine, not to re-litigate the LAN policy the saved record already
 //     passed. A LAN printer must keep working here in both modes.
+//
+// Skipping DNS on that hot path is only safe because a hosted deploy cannot
+// hold a LAN printer at all: `isLanOnlyTransport` (src/server/security.ts) makes
+// POST/PATCH /printers refuse every LAN transport on a multi-user server
+// (src/server/routes/printers.ts), so the only records a hosted server polls are
+// cloud ones. If "hosted LAN over a tunnel" is ever built, that gate comes down
+// and this check becomes the only thing between a driver URL and the deploy's
+// own network — it would then need the full resolving guard, not the literal one.
 
 /** Hostnames that always mean "this machine". */
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"]);
@@ -52,9 +60,23 @@ function hostBlocked(): never {
   throw new WireError(400, "That address isn't a printer we can reach from here.", "host_blocked");
 }
 
-/** Strip the brackets of an IPv6 literal and normalise case. */
+/**
+ * Reduce a host to the one spelling the checks below can read: brackets off an
+ * IPv6 literal, case folded, a trailing root dot dropped ("localhost." and
+ * "127.0.0.1." are the same places as without it, but they match neither the
+ * hostname set nor `isIP`), and every IP literal put through
+ * `normalizeIp` — an IPv4-mapped IPv6 address arrives from `new URL` in hex
+ * ("[::ffff:7f00:1]" is 127.0.0.1), and only the normaliser sees through that.
+ * Hostnames pass through it unchanged.
+ */
 function bareHost(host: string): string {
-  return (host ?? "").trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  const bare = (host ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/\.$/, "");
+  return normalizeIp(bare);
 }
 
 /** True for a host that is never a printer, in any mode: it names this very

@@ -311,7 +311,15 @@ test("assertAllowedOutputDir rejects /Volumes/Macintosh HD — a symlink to the 
 
 test("hosted mode refuses a printer on a private network — there is no LAN to reach from a shared server", async () => {
   await inModeAsync("hosted", async () => {
-    for (const host of ["192.168.1.50", "10.0.0.5", "172.16.0.1", "100.64.0.1", "fc00::1"]) {
+    for (const host of [
+      "192.168.1.50",
+      "10.0.0.5",
+      "172.16.0.1",
+      "100.64.0.1",
+      "fc00::1",
+      "::ffff:a00:1", // 10.0.0.1 as new URL spells an IPv4-mapped IPv6 address
+      "[::ffff:c0a8:132]", // 192.168.1.50, bracketed
+    ]) {
       await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `hosted must refuse ${host}`);
     }
   });
@@ -319,7 +327,7 @@ test("hosted mode refuses a printer on a private network — there is no LAN to 
 
 test("desktop mode allows a printer on a private network — that is where printers are", async () => {
   await inModeAsync("desktop", async () => {
-    for (const host of ["192.168.1.50", "10.0.0.5", "172.16.0.1"]) {
+    for (const host of ["192.168.1.50", "10.0.0.5", "172.16.0.1", "::ffff:a00:1"]) {
       await assertPrinterHostAllowed(host);
     }
     // An mDNS name is how a printer advertises itself on a LAN.
@@ -343,6 +351,17 @@ test("both modes refuse the machine Slicely runs on, and the cloud metadata serv
         "169.254.169.254", // the AWS/GCP instance metadata address
         "fe80::1",
         "224.0.0.1",
+        // The same two places, spelled as new URL serialises an IPv4-mapped
+        // IPv6 address: hex, not dotted quad.
+        "[::ffff:7f00:1]",
+        "::ffff:7f00:1",
+        "::ffff:a9fe:a9fe",
+        "0:0:0:0:0:ffff:127.0.0.1",
+        "::7f00:1", // the deprecated IPv4-compatible form
+        // A trailing root dot names the same host and used to match neither the
+        // hostname list nor isIP.
+        "localhost.",
+        "127.0.0.1.",
         "", // no host at all is not a printer either
       ]) {
         await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `${mode} must refuse ${JSON.stringify(host)}`);
@@ -410,6 +429,13 @@ test("fetchTimeout refuses a loopback URL before it makes any request", async (t
     "http://localhost:8080/printer/info",
     "http://169.254.169.254/latest/meta-data/",
     "http://[::1]/api/version",
+    // new URL turns "[::ffff:127.0.0.1]" into this, and "[0:0:0:0:0:ffff:
+    // 169.254.169.254]" into the metadata one below.
+    "http://[::ffff:7f00:1]:5000/api/version",
+    "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+    "http://[::7f00:1]/api/version",
+    "http://localhost./printer/info",
+    "http://127.0.0.1./api/version",
   ]) {
     await rejectsHostBlocked(() => fetchTimeout(url), `fetchTimeout must refuse ${url}`);
   }

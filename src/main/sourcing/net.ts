@@ -93,6 +93,87 @@ function ipv4Parts(ip: string): number[] | undefined {
 }
 
 /**
+ * Expand an IPv6 literal to exactly eight numeric hextets, or undefined if it
+ * isn't one. Handles the "::" run-of-zeros compressor and an embedded dotted
+ * IPv4 tail ("::ffff:10.0.0.1"), which occupies the last two hextets.
+ */
+function ipv6Hextets(ip: string): number[] | undefined {
+  let text = ip;
+  const tail: number[] = [];
+
+  // A dotted IPv4 tail is the last two hextets. Lop it off first so the rest is
+  // plain hex groups.
+  const lastColon = text.lastIndexOf(":");
+  if (lastColon >= 0 && text.slice(lastColon + 1).includes(".")) {
+    const parts = ipv4Parts(text.slice(lastColon + 1));
+    if (!parts || parts.some((n) => n < 0 || n > 255)) return undefined;
+    tail.push((parts[0] << 8) | parts[1], (parts[2] << 8) | parts[3]);
+    text = text.slice(0, lastColon);
+    // "::1.2.3.4" leaves ":" behind — put the compressor back together.
+    if (text.endsWith(":")) text += ":";
+  }
+
+  const halves = text.split("::");
+  if (halves.length > 2) return undefined;
+  const parseGroups = (s: string): number[] | undefined => {
+    if (s === "") return [];
+    const out: number[] = [];
+    for (const piece of s.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return undefined;
+      out.push(Number.parseInt(piece, 16));
+    }
+    return out;
+  };
+  const left = parseGroups(halves[0]);
+  const right = halves.length === 2 ? parseGroups(halves[1]) : [];
+  if (!left || !right) return undefined;
+
+  const explicit = left.length + right.length + tail.length;
+  if (halves.length === 1) return explicit === 8 ? [...left, ...tail] : undefined;
+  if (explicit > 7) return undefined; // "::" must stand for at least one hextet
+  return [...left, ...new Array(8 - explicit).fill(0), ...right, ...tail];
+}
+
+/**
+ * Reduce an IP literal to the ONE spelling the range checks below understand.
+ *
+ * This exists because of a bypass that is invisible if you only ever test the
+ * readable spellings: WHATWG URL serialises an IPv4-mapped IPv6 address in HEX.
+ * `new URL("http://[::ffff:127.0.0.1]/").hostname` is `[::ffff:7f00:1]`, and
+ * `[0:0:0:0:0:ffff:169.254.169.254]` arrives as `[::ffff:a9fe:a9fe]` — the
+ * cloud metadata address, wearing a hat. A check that only recognises the
+ * dotted `::ffff:10.0.0.1` form lets every one of those straight through, and
+ * the socket layer then dials the IPv4 address they mean.
+ *
+ * So: brackets and any zone id come off, the address is expanded to eight
+ * hextets, and if it is an IPv4-mapped (`::ffff:0:0/96`) or deprecated
+ * IPv4-compatible (`::/96`) address, the last two hextets are rewritten as the
+ * dotted IPv4 address they actually are. `::` and `::1` are left alone — they
+ * are IPv6 addresses in their own right, handled by the v6 rules.
+ *
+ * Anything that isn't an IP literal is returned unchanged (lowercased and
+ * de-bracketed), so callers can hand it a hostname safely.
+ */
+export function normalizeIp(ip: string): string {
+  const bare = (ip ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/%.*$/, ""); // drop any zone id
+  if (isIP(bare) !== 6) return bare;
+
+  const h = ipv6Hextets(bare);
+  if (!h) return bare;
+  if (h[0] || h[1] || h[2] || h[3] || h[4]) return bare; // not in ::/96 or ::ffff:0:0/96
+  const mapped = h[5] === 0xffff;
+  // ::/96 minus :: and ::1 themselves, which are IPv6 loopback/unspecified.
+  const compat = h[5] === 0 && !(h[6] === 0 && (h[7] === 0 || h[7] === 1));
+  if (!mapped && !compat) return bare;
+  return `${h[6] >> 8}.${h[6] & 255}.${h[7] >> 8}.${h[7] & 255}`;
+}
+
+/**
  * Addresses that are never a place on the public internet AND are never a
  * device on someone's LAN either: they name this very machine, the local link,
  * or a group. Split out from `isPrivateAddress` because the printer guard
@@ -100,9 +181,10 @@ function ipv4Parts(ip: string): number[] | undefined {
  * while still refusing these.
  */
 export function isLocalOrLinkLocalAddress(ip: string): boolean {
-  const version = isIP(ip);
+  const norm = normalizeIp(ip);
+  const version = isIP(norm);
   if (version === 4) {
-    const parts = ipv4Parts(ip);
+    const parts = ipv4Parts(norm);
     if (!parts) return false;
     const [a, b] = parts;
     if (a === 127) return true; // 127.0.0.0/8 loopback
@@ -112,14 +194,13 @@ export function isLocalOrLinkLocalAddress(ip: string): boolean {
     return false;
   }
   if (version !== 6) return false;
-  const norm = ip.toLowerCase().replace(/%.*$/, ""); // drop any zone id
-  if (norm === "::1" || norm === "::") return true;
-  const mapped = /^::ffff:(.+)$/.exec(norm);
-  if (mapped && isIP(mapped[1]) === 4) return isLocalOrLinkLocalAddress(mapped[1]);
-  const first = Number.parseInt(norm.split(":")[0] || "", 16);
-  if (Number.isNaN(first)) return false;
-  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
-  if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  const h = ipv6Hextets(norm);
+  if (!h) return false;
+  // :: (unspecified) and ::1 (loopback), in every spelling including the
+  // fully-written-out "0:0:0:0:0:0:0:1".
+  if (h.slice(0, 7).every((g) => g === 0) && (h[7] === 0 || h[7] === 1)) return true;
+  if ((h[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((h[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   return false;
 }
 
@@ -137,9 +218,10 @@ export function isLocalOrLinkLocalAddress(ip: string): boolean {
  */
 export function isPrivateAddress(ip: string): boolean {
   if (isLocalOrLinkLocalAddress(ip)) return true;
-  const version = isIP(ip);
+  const norm = normalizeIp(ip);
+  const version = isIP(norm);
   if (version === 4) {
-    const parts = ipv4Parts(ip);
+    const parts = ipv4Parts(norm);
     if (!parts) return false;
     const [a, b, c] = parts;
     if (a === 10) return true; // 10.0.0.0/8
@@ -152,12 +234,9 @@ export function isPrivateAddress(ip: string): boolean {
     return false;
   }
   if (version !== 6) return false;
-  const norm = ip.toLowerCase().replace(/%.*$/, "");
-  const mapped = /^::ffff:(.+)$/.exec(norm);
-  if (mapped && isIP(mapped[1]) === 4) return isPrivateAddress(mapped[1]);
-  const first = Number.parseInt(norm.split(":")[0] || "", 16);
-  if (Number.isNaN(first)) return false;
-  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+  const h = ipv6Hextets(norm);
+  if (!h) return false;
+  if ((h[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
   return false;
 }
 
@@ -323,7 +402,24 @@ export async function guardedFetch(
     const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
     if (!location) return res;
 
+    // Nobody will ever read a 3xx body, and an un-read body holds the socket
+    // open until the agent times it out. Cancelling is best-effort: a body that
+    // is already disturbed or absent throws, and that is not a fetch failure.
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* nothing to release */
+    }
+
     const next = new URL(location, current);
+    if (target.protocol === "https:" && next.protocol !== "https:") {
+      // A chain that starts encrypted must stay encrypted. Otherwise a hop can
+      // move the rest of the download onto plaintext — visible and rewritable
+      // by anything on the path — which is a downgrade we get no say in later.
+      throw new Error(
+        `Refusing to follow a redirect from https to ${next.protocol} (${next.hostname}) — a downgraded hop is blocked.`,
+      );
+    }
     if (res.status === 303 || ((res.status === 301 || res.status === 302) && method !== "GET" && method !== "HEAD")) {
       // What every client does in practice, and what the spec allows: the
       // redirected request becomes a bodiless GET.

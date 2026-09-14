@@ -6,7 +6,15 @@ import assert from "node:assert/strict";
 // namespace-import emits a getter-based rebinding wrapper that
 // `t.mock.method` can't intercept (it only replaces plain data properties).
 import dns = require("node:dns/promises");
-import { isPrivateHost, isPrivateAddress, assertPublicHttpUrl, guardedFetch, clamp } from "./net";
+import {
+  isPrivateHost,
+  isPrivateAddress,
+  isLocalOrLinkLocalAddress,
+  normalizeIp,
+  assertPublicHttpUrl,
+  guardedFetch,
+  clamp,
+} from "./net";
 
 /** A `lookup` for the injected guard: every test that uses a HOSTNAME passes
  *  one of these, so no test in this file ever touches real DNS. */
@@ -105,9 +113,75 @@ test("isPrivateAddress covers the ranges an SSRF probe reaches for once RFC1918 
   ]) {
     assert.equal(isPrivateAddress(ip), true, `expected ${ip} to be private`);
   }
-  for (const ip of ["8.8.8.8", "93.184.216.34", "172.15.0.1", "172.32.0.1", "100.63.0.1", "100.128.0.1", "2606:4700::1"]) {
+  for (const ip of [
+    "8.8.8.8",
+    "93.184.216.34",
+    "172.15.0.1",
+    "172.32.0.1",
+    "100.63.0.1",
+    "100.128.0.1",
+    "2606:4700::1",
+    // The IPv6 documentation prefix has never been in these ranges; it is here
+    // to pin that the range logic hasn't quietly started swallowing real IPv6.
+    "2001:db8::1",
+  ]) {
     assert.equal(isPrivateAddress(ip), false, `expected ${ip} to be public`);
   }
+});
+
+// The bypass fix round 1 was opened for: WHATWG URL prints an IPv4-mapped IPv6
+// address in HEX, so every guard that matched only "::ffff:10.0.0.1" was blind
+// to the form the URL parser actually hands it.
+test("an IPv4-mapped or IPv4-compatible IPv6 address is classified as the IPv4 address it is", () => {
+  const cases: [string, string][] = [
+    ["::ffff:7f00:1", "127.0.0.1"], // what new URL("http://[::ffff:127.0.0.1]/") produces
+    ["::ffff:a9fe:a9fe", "169.254.169.254"], // …and the cloud metadata address
+    ["::ffff:a00:1", "10.0.0.1"],
+    ["0:0:0:0:0:ffff:10.0.0.1", "10.0.0.1"],
+    ["::ffff:10.0.0.1", "10.0.0.1"],
+    ["::7f00:1", "127.0.0.1"], // deprecated IPv4-compatible form
+    ["[::ffff:7f00:1]", "127.0.0.1"], // bracketed, as a URL hostname arrives
+    ["::ffff:7f00:1%en0", "127.0.0.1"], // with a zone id
+    ["::FFFF:7F00:1", "127.0.0.1"], // upper case
+  ];
+  for (const [spelling, expected] of cases) {
+    assert.equal(normalizeIp(spelling), expected, `${spelling} normalises to ${expected}`);
+    assert.equal(isPrivateAddress(spelling), true, `expected ${spelling} to be private`);
+    assert.equal(isLocalOrLinkLocalAddress(spelling), expected.startsWith("10.") ? false : true, spelling);
+  }
+  // Not mapped addresses: these stay IPv6 and keep their own classification.
+  assert.equal(normalizeIp("::1"), "::1");
+  assert.equal(normalizeIp("::"), "::");
+  assert.equal(normalizeIp("2001:db8::1"), "2001:db8::1");
+  assert.equal(isLocalOrLinkLocalAddress("0:0:0:0:0:0:0:1"), true, "::1 written out in full");
+  assert.equal(isLocalOrLinkLocalAddress("2001:db8::1"), false);
+  // A hostname is not an address and must pass through untouched.
+  assert.equal(normalizeIp("Example.COM"), "example.com");
+});
+
+test("assertPublicHttpUrl rejects a hex-spelled IPv4-mapped IPv6 URL", async () => {
+  let looked = 0;
+  const lookup = async (): Promise<string[]> => {
+    looked += 1;
+    return ["93.184.216.34"];
+  };
+  for (const u of [
+    "http://[::ffff:7f00:1]:8080/admin", // loopback, on a port an admin UI uses
+    "http://[::ffff:a9fe:a9fe]/latest/meta-data/iam/security-credentials/",
+    "http://[0:0:0:0:0:ffff:169.254.169.254]/latest/meta-data/",
+    "http://[::7f00:1]/x",
+  ]) {
+    await assert.rejects(() => assertPublicHttpUrl(u, { lookup }), /private\/loopback/, u);
+  }
+  assert.equal(looked, 0, "an IP literal is decided on the spot — nothing is resolved");
+});
+
+test("assertPublicHttpUrl rejects a name whose AAAA record is a mapped internal address", async () => {
+  const lookup = fakeLookup({ "rebind.test": ["93.184.216.34", "::ffff:7f00:1"] });
+  await assert.rejects(
+    () => assertPublicHttpUrl("https://rebind.test/", { lookup }),
+    /resolves to a private address/,
+  );
 });
 
 test("assertPublicHttpUrl rejects a hostname whose records are only PARTLY public", async () => {
@@ -131,7 +205,13 @@ test("assertPublicHttpUrl rejects an IP address written as a number, without res
   // they are caught as loopback rather than by the numeric-host rule — either
   // message is fine, the property under test is that they do not get through
   // and that nothing is resolved.
-  for (const u of ["http://2130706433/", "http://0x7f000001/", "http://0177.1/"]) {
+  for (const u of [
+    "http://2130706433/",
+    "http://0x7f000001/",
+    "http://0177.1/",
+    "http://127.1/", // the two-part short form
+    "http://0177.0.0.1/", // one octet in octal, the rest decimal
+  ]) {
     await assert.rejects(() => assertPublicHttpUrl(u, { lookup }), /numeric host|private\/loopback/, u);
   }
   // A dotted-numeric host the parser did NOT canonicalise is the numeric rule's
@@ -165,7 +245,9 @@ test("guardedFetch re-checks every redirect hop, so a 302 can't walk it into the
   let calls = 0;
   const fetchImpl = (async () => {
     calls += 1;
-    return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/meta" } });
+    // Same scheme as the origin, so this test is about the ADDRESS and not
+    // about the https→http downgrade rule below.
+    return new Response(null, { status: 302, headers: { location: "https://127.0.0.1/meta" } });
   }) as unknown as typeof fetch;
 
   await assert.rejects(
@@ -175,12 +257,49 @@ test("guardedFetch re-checks every redirect hop, so a 302 can't walk it into the
   assert.equal(calls, 1, "the internal address is never requested — only the public origin was");
 });
 
-test("guardedFetch resolves a Location relative to the URL it came from", async () => {
+test("guardedFetch refuses a hop to a hex-spelled IPv4-mapped loopback address", async () => {
+  for (const location of ["http://[::ffff:7f00:1]/meta", "http://[::ffff:a9fe:a9fe]/latest/meta-data/"]) {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(null, { status: 302, headers: { location } });
+    }) as unknown as typeof fetch;
+
+    // An http origin, so the downgrade rule is not what refuses this.
+    await assert.rejects(
+      () => guardedFetch("http://public.test/model.stl", { fetchImpl, guard: { lookup: PUBLIC_ONLY } }),
+      /private|blocked/i,
+      location,
+    );
+    assert.equal(calls, 1, `${location} is never requested — only the public origin was`);
+  }
+});
+
+test("guardedFetch refuses a hop that downgrades https to http", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return new Response(null, { status: 302, headers: { location: "http://public.test/model.stl" } });
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () => guardedFetch("https://public.test/start", { fetchImpl, guard: { lookup: PUBLIC_ONLY } }),
+    /downgrad|blocked/i,
+  );
+  assert.equal(calls, 1, "the plaintext hop is never made");
+});
+
+test("guardedFetch resolves a Location relative to the URL it came from, and releases the 3xx body", async () => {
   const seen: string[] = [];
+  const redirects: Response[] = [];
   const fetchImpl = (async (u: string) => {
     seen.push(String(u));
     if (seen.length === 1) {
-      return new Response(null, { status: 302, headers: { location: "/second/step" } });
+      // A real 3xx often carries a short HTML body nobody will ever read; left
+      // undrained it holds the connection until the agent times it out.
+      const first = new Response("<html>moved</html>", { status: 302, headers: { location: "/second/step" } });
+      redirects.push(first);
+      return first;
     }
     return new Response("ok", { status: 200 });
   }) as unknown as typeof fetch;
@@ -188,6 +307,7 @@ test("guardedFetch resolves a Location relative to the URL it came from", async 
   const res = await guardedFetch("https://public.test/first", { fetchImpl, guard: { lookup: PUBLIC_ONLY } });
   assert.equal(res.status, 200);
   assert.deepEqual(seen, ["https://public.test/first", "https://public.test/second/step"]);
+  assert.equal(redirects[0].bodyUsed, true, "the redirect's body was cancelled before the next hop");
 });
 
 test("guardedFetch gives up on a redirect chain that never ends", async () => {
