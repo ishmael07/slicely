@@ -9,6 +9,7 @@ primary_region = "iad"
   SLICELY_TRUST_PROXY = "1"
   SLICELY_PORT = "8080"
   SLICELY_MAX_SLICES = "2"
+  SLICELY_PUBLIC_URL = "https://slicely.fly.dev"   # the origin OAuth callbacks come back to
 [http_service]
   internal_port = 8080
   force_https = true
