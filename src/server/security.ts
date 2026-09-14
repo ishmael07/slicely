@@ -56,6 +56,46 @@ export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
  * batch total is a separate, manually-counted bound (see routes/upload.ts). */
 export const MAX_UPLOAD_BATCH_BYTES = 600 * 1024 * 1024;
 
+/**
+ * The one Content-Security-Policy Slicely ships.
+ *
+ * Exported because it has to be said in three places and must not drift
+ * between them: this middleware's header, the `<meta http-equiv>` copy in
+ * src/web/index.html (which still applies if a proxy strips the header), and
+ * Electron's own session handler.
+ *
+ * What each directive is actually for:
+ *   • `default-src 'self'` — nothing loads from anywhere else by default.
+ *   • `img-src … https: data:` — model thumbnails come from whichever CDN the
+ *     source site uses, and the ◆ favicon is a data: URI.
+ *   • `style-src 'unsafe-inline'` — the client's CSS is one stylesheet, but the
+ *     UI does set element.style directly. Allowed for styles ONLY; script-src
+ *     stays on same-origin files, which is the directive that matters for XSS.
+ *   • `frame-ancestors 'none'` — nobody may frame this app. X-Frame-Options
+ *     says the same thing to older browsers; this is the one that counts now.
+ *   • `base-uri 'none'` — an injected `<base href>` would silently repoint
+ *     every relative URL on the page (scripts included) at another origin.
+ *   • `form-action 'self'` — an injected form cannot post a session's data out.
+ *   • `object-src 'none'` — no plugins, ever; a legacy XSS vector for free.
+ */
+export const CSP_STRING =
+  "default-src 'self'; " +
+  "img-src 'self' https: data:; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self'; " +
+  "connect-src 'self'; " +
+  "frame-ancestors 'none'; " +
+  "base-uri 'none'; " +
+  "form-action 'self'; " +
+  "object-src 'none'";
+
+/** HSTS for a year, subdomains included. Hosted only — see below. */
+const HSTS_VALUE = "max-age=31536000; includeSubDomains";
+
+/** Capabilities a slicer has no use for. Named explicitly rather than left to
+ *  the browser's default so a future embedded page can't inherit them. */
+const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=()";
+
 export function securityHeaders(): RequestHandler {
   return (_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -63,13 +103,23 @@ export function securityHeaders(): RequestHandler {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-    // 'unsafe-inline' on style- only (the web client's CSS is a single small
-    // stylesheet with no inline event handlers); script-src stays locked to
-    // same-origin script files.
-    res.setHeader(
-      "Content-Security-Policy",
-      "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';",
-    );
+    res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
+    res.setHeader("Content-Security-Policy", CSP_STRING);
+
+    // HSTS in HOSTED MODE ONLY, and deliberately not conditioned on this
+    // request having arrived over https.
+    //
+    // Hosted Slicely lives behind TLS termination, so the app itself sees
+    // plain http on the proxy's last hop; gating on `req.protocol` would mean
+    // never sending HSTS at all. A browser ignores the header on a non-secure
+    // response anyway, so sending it costs nothing and covers the deploy.
+    //
+    // Desktop is the opposite case and must NOT send it: the Electron app is
+    // http://127.0.0.1, and an HSTS entry for localhost that a browser DID
+    // honour would pin "localhost is https-only" for a year — breaking every
+    // other local dev server on the user's machine, with no way for Slicely to
+    // take it back.
+    if (isHosted()) res.setHeader("Strict-Transport-Security", HSTS_VALUE);
     next();
   };
 }

@@ -36,6 +36,7 @@ import { basename, join, relative, resolve, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AgentEvent } from "../shared/types";
 import { getConfig } from "../main/config";
+import { isHosted } from "../main/mode";
 import { runInSession, sessionContext } from "../main/session-context";
 import { disposeSessionState } from "../main/agent/state";
 import { disposeSessionSettings } from "../main/settings";
@@ -60,7 +61,28 @@ declare global {
   }
 }
 
-const COOKIE_NAME = "slicely_sid";
+/**
+ * The session cookie's name, which depends on the mode (Task D6).
+ *
+ * HOSTED gets the `__Host-` prefix. It is not decoration: a browser refuses to
+ * store a `__Host-` cookie unless it is Secure, has `Path=/`, and carries no
+ * `Domain` — which means no other host under the registrable domain (a
+ * neighbouring subdomain, say one that got taken over) can SET this cookie for
+ * us. That is the one attack ordinary cookie attributes cannot prevent, and
+ * here it would hand a visitor somebody else's workspace.
+ *
+ * DESKTOP gets the bare name, because `__Host-` requires Secure and the
+ * Electron app is served over http://127.0.0.1 — a Secure cookie there is
+ * simply never stored, and the app would mint a new workspace per request.
+ *
+ * Read fresh on every call, like `getMode()` itself, so a test can flip modes
+ * mid-run. Names the cookie in exactly one place; `lookup`, `getOrCreate` and
+ * `clearSessionCookie` all ask here.
+ */
+export function cookieName(): string {
+  return isHosted() ? "__Host-slicely_sid" : "slicely_sid";
+}
+
 /**
  * How long a session RECORD (and its cookie) survives without a request.
  *
@@ -282,8 +304,14 @@ export class SessionStore {
 
     const record = this.create();
     const cookieValue = `${record.id}.${sign(record.id, this.secret)}`;
-    const secure = (req.headers["x-forwarded-proto"] ?? req.protocol) === "https";
-    res.setHeader("Set-Cookie", serializeCookie(COOKIE_NAME, cookieValue, { maxAgeMs: this.idleMs, secure }));
+    // Hosted: ALWAYS Secure, whatever this particular hop looked like. The
+    // deploy is behind TLS termination, so the proxy's last hop is plain http
+    // and `x-forwarded-proto` is the only hint we get — and a browser discards
+    // a `__Host-` cookie that arrives without Secure, so guessing wrong here
+    // would log every visitor out on every request. Desktop stays non-Secure
+    // on purpose: http://127.0.0.1 would never store it otherwise.
+    const secure = isHosted() || (req.headers["x-forwarded-proto"] ?? req.protocol) === "https";
+    res.setHeader("Set-Cookie", serializeCookie(cookieName(), cookieValue, { maxAgeMs: this.idleMs, secure }));
     return { session: record, minted: true };
   }
 
@@ -302,7 +330,7 @@ export class SessionStore {
   /** The live session `req`'s cookie proves ownership of, if any. Touches
    *  `lastActiveAt`, since finding a session IS the session being used. */
   private lookup(req: Request): SessionRecord | undefined {
-    const raw = parseCookies(req.headers.cookie)[COOKIE_NAME];
+    const raw = parseCookies(req.headers.cookie)[cookieName()];
     const id = raw ? verify(raw, this.secret) : undefined;
     const session = id ? this.sessions.get(id) : undefined;
     if (session) session.lastActiveAt = Date.now();
@@ -471,7 +499,11 @@ export function __disposeCallsForTests(): { state: number; settings: number; use
 /** Expire the session cookie in the browser (DELETE /api/session). Lives here
  *  so the cookie's name and attributes are defined in exactly one place. */
 export function clearSessionCookie(res: Response): void {
-  res.setHeader("Set-Cookie", `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  // The expiring cookie must carry the SAME attributes it was set with, or a
+  // browser treats it as a different cookie and leaves the original in place —
+  // and a `__Host-` cookie without Secure is rejected outright.
+  const secure = isHosted() ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${cookieName()}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`);
 }
 
 export interface SessionMiddlewareOptions {

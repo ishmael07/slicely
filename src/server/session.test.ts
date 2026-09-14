@@ -247,3 +247,82 @@ test("sweepFiles keeps a stale file the session is still holding a reference to"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── Task D6: the session cookie's name and attributes ────────────────────────
+
+/** Mint a session against a real server running in `mode` and return the raw
+ *  `Set-Cookie` line, so its attributes can be read as the browser sees them. */
+async function mintedCookieLine(mode: "hosted" | "desktop"): Promise<string> {
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = mode;
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  const { base, close } = await listen(app);
+  try {
+    const resp = await fetch(`${base}/api/config`);
+    const raw = resp.headers.get("set-cookie");
+    assert.ok(raw, "a first /api request must mint a session cookie");
+    return raw!;
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+}
+
+test("hosted: the session cookie is __Host- prefixed and always Secure", async () => {
+  const line = await mintedCookieLine("hosted");
+
+  assert.ok(line.startsWith("__Host-slicely_sid="), `got ${line.split("=")[0]}`);
+  // `Secure` unconditionally, even though this test speaks plain http: a
+  // hosted deploy is behind TLS termination, so the proxy's own hop is the
+  // only place the request is ever plaintext — and a browser DISCARDS a
+  // `__Host-` cookie that arrives without Secure, which would have logged
+  // every visitor out of a server that happened not to see x-forwarded-proto.
+  assert.match(line, /;\s*Secure/);
+  assert.match(line, /;\s*HttpOnly/);
+  assert.match(line, /;\s*SameSite=Lax/);
+  assert.match(line, /;\s*Path=\//);
+  // A `__Host-` cookie may not carry Domain at all.
+  assert.doesNotMatch(line, /;\s*Domain=/i);
+});
+
+test("desktop: the session cookie is the bare name with no Secure", async () => {
+  const line = await mintedCookieLine("desktop");
+
+  // The Electron app is served over http://127.0.0.1. `Secure` there would
+  // mean the cookie is never stored, and `__Host-` requires Secure — so the
+  // desktop cookie is deliberately the plain one.
+  assert.ok(line.startsWith("slicely_sid="), `got ${line.split("=")[0]}`);
+  assert.doesNotMatch(line, /;\s*Secure/);
+  assert.match(line, /;\s*HttpOnly/);
+});
+
+test("a hosted cookie is read back under its own name", async () => {
+  // Naming is only half of it: the store has to LOOK for the name it issued,
+  // or every request would mint a fresh workspace and nothing would persist.
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = "hosted";
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  const { base, close } = await listen(app);
+  try {
+    const first = await fetch(`${base}/api/config`);
+    const cookie = setCookieValue(first)!;
+    assert.ok(cookie.startsWith("__Host-slicely_sid="));
+
+    const second = await fetch(`${base}/api/config`, { headers: { cookie } });
+    assert.equal(setCookieValue(second), undefined, "the same cookie must not mint a second workspace");
+    assert.equal(store.count(), 1);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+});

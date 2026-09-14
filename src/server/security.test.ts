@@ -10,10 +10,10 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rateLimiter, TokenBuckets } from "./security";
+import { CSP_STRING, rateLimiter, TokenBuckets } from "./security";
 import { createApp, type CreateAppOptions } from "./index";
 import { SessionStore } from "./session";
 import { createPrintersRouter } from "./routes/printers";
@@ -448,4 +448,81 @@ test("a slow-refilling bucket is not reset by being idle — idling never buys t
     undefined,
     "a genuinely refilled bucket still works",
   );
+});
+
+// ── Task D6: the headers a public site owes a browser ────────────────────────
+//
+// Asserted against a REAL response from the shipped app on a loopback port,
+// not against the string securityHeaders() builds. A header that is set but
+// never mounted protects nobody, and that is exactly the mistake a unit test
+// of the middleware cannot catch.
+
+/** Fetch `/healthz` from a real server in `mode` and hand back its headers.
+ *  /healthz is deliberate: it mints no session, so nothing is left on disk. */
+async function headersInMode(mode: "hosted" | "desktop"): Promise<Headers> {
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = mode;
+  const { app, store, cleanup } = testApp(undefined);
+  const { base, close } = await listen(app);
+  try {
+    const resp = await fetch(`${base}/healthz`);
+    assert.equal(resp.status, 200);
+    return resp.headers;
+  } finally {
+    await close();
+    store.stopSweep();
+    cleanup();
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+}
+
+test("a hosted response carries HSTS, Permissions-Policy and the full CSP", async () => {
+  const h = await headersInMode("hosted");
+
+  assert.equal(h.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
+  assert.equal(h.get("permissions-policy"), "camera=(), microphone=(), geolocation=()");
+
+  const csp = h.get("content-security-policy") ?? "";
+  // Framing, <base href>, form posts and plugins are each a way to use this
+  // page from somewhere else — all four are closed, not just the first.
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /base-uri 'none'/);
+  assert.match(csp, /form-action 'self'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /script-src 'self'/);
+
+  // The ones that were already right must stay right.
+  assert.equal(h.get("x-content-type-options"), "nosniff");
+  assert.equal(h.get("x-frame-options"), "DENY");
+  assert.equal(h.get("referrer-policy"), "no-referrer");
+});
+
+test("a desktop response sends no HSTS, and the CSP is still locked down", async () => {
+  const h = await headersInMode("desktop");
+
+  // HSTS on http://127.0.0.1 would be wrong twice over: a browser ignores it
+  // on a non-secure transport anyway, and if it ever did stick it would pin
+  // "localhost is https-only" for a year on the user's own machine.
+  assert.equal(h.get("strict-transport-security"), null);
+  assert.equal(h.get("permissions-policy"), "camera=(), microphone=(), geolocation=()");
+  assert.match(h.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+});
+
+test("the CSP the header sends is the CSP the page's own meta tag declares", async () => {
+  // Electron reuses CSP_STRING (Task E1), and the static page carries a meta
+  // copy for the case where a proxy strips the header — so the two must not
+  // drift apart. `frame-ancestors` is the one directive a meta tag cannot
+  // express (browsers ignore it there), so it is excluded from the comparison
+  // rather than silently duplicated into a warning.
+  const html = readFileSync(join(__dirname, "..", "..", "src", "web", "index.html"), "utf8");
+  const meta = /http-equiv="Content-Security-Policy"\s*\n?\s*content="([^"]+)"/.exec(html);
+  assert.ok(meta, "index.html must still declare a meta CSP");
+
+  const withoutFrameAncestors = CSP_STRING.split(";")
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0 && !d.startsWith("frame-ancestors"))
+    .join("; ");
+  assert.equal(meta![1].trim().replace(/;\s*$/, ""), withoutFrameAncestors);
 });
