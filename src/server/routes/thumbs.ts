@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { guardedFetch } from "../../main/sourcing/net";
 
 /**
  * Hosts whose thumbnails may be proxied.
@@ -74,15 +75,23 @@ export function createThumbsRouter(): Router {
     }
 
     try {
-      const upstream = await fetch(url, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: {
-          // Some CDNs 403 an unidentified client.
-          "User-Agent": "Slicely/1.0 (+https://github.com/ishmael07/slicely)",
-          Accept: "image/*",
+      // The allowlist above checks the URL the CLIENT sent. Thumbnail hosts
+      // redirect constantly (CDN → signed storage URL), and a 302 is a fresh
+      // URL nobody has checked — so the fetch goes through the shared guard,
+      // which follows the chain itself and re-applies BOTH the SSRF ranges and
+      // the `allow` predicate below to every hop.
+      const upstream = await guardedFetch(
+        url.toString(),
+        {
+          headers: {
+            // Some CDNs 403 an unidentified client.
+            "User-Agent": "Slicely/1.0 (+https://github.com/ishmael07/slicely)",
+            Accept: "image/*",
+          },
+          guard: { allow: (u) => u.protocol === "https:" && hostAllowed(u.hostname) },
         },
-        redirect: "follow",
-      });
+        TIMEOUT_MS,
+      );
       if (!upstream.ok) {
         res.status(502).end();
         return;

@@ -49,7 +49,26 @@ export function withTimeout(
 // ── SSRF guard ────────────────────────────────────────────────────────────
 // Verified 2026-08-27 by direct testing of the ranges below (loopback,
 // RFC1918, link-local, IPv6 loopback/unique-local/link-local, and the
-// "localhost"/".local" hostname forms called out in the spec).
+// "localhost"/".local" hostname forms called out in the spec), and widened in
+// Task D3 to the ranges an SSRF probe actually reaches for once RFC1918 is
+// closed: carrier-grade NAT, the IETF protocol/benchmark blocks, multicast,
+// and the reserved 240/4 space.
+//
+// THREE separate holes are closed here, and all three matter together — any
+// one left open makes the other two decorative:
+//   1. REDIRECTS. A public URL that answers "302 Location:
+//      http://169.254.169.254/latest/meta-data/" walks straight past a guard
+//      that only ever looks at the URL the user pasted. `guardedFetch` follows
+//      redirects ITSELF (redirect: "manual") and re-runs the full check on
+//      every hop.
+//   2. EVERY DNS RECORD, AND A FAILED LOOKUP. A name with two A records — one
+//      public, one internal — passed a guard that checked only the first
+//      address. And a lookup that fails tells us nothing about where the name
+//      points, so it is a refusal, not a shrug.
+//   3. PORTS AND NUMERIC HOSTS. Redis on 6379, Postgres on 5432 and friends are
+//      reachable over HTTP-shaped requests; and "http://2130706433/" is
+//      127.0.0.1 written as an integer, which `isIP` does not recognise as an
+//      address at all.
 
 const PRIVATE_HOSTNAMES = new Set([
   "localhost",
@@ -58,30 +77,87 @@ const PRIVATE_HOSTNAMES = new Set([
   "ip6-loopback",
 ]);
 
-function isPrivateIPv4(ip: string): boolean {
+/** Ports an ordinary http(s) service — the only thing Slicely has business
+ *  fetching — actually listens on. Anything else asked for by a URL we did not
+ *  write is a port scan or a swing at an internal service. */
+export const DEFAULT_ALLOWED_PORTS = [80, 443, 8080, 8443] as const;
+
+/** How many hops `guardedFetch` will follow before giving up. Real download
+ *  chains (CDN → signed URL → storage bucket) use two or three. */
+export const DEFAULT_MAX_REDIRECTS = 5;
+
+function ipv4Parts(ip: string): number[] | undefined {
   const parts = ip.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) {
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) return undefined;
+  return parts;
+}
+
+/**
+ * Addresses that are never a place on the public internet AND are never a
+ * device on someone's LAN either: they name this very machine, the local link,
+ * or a group. Split out from `isPrivateAddress` because the printer guard
+ * (printers/util.ts) has to allow LAN addresses — that is where printers live —
+ * while still refusing these.
+ */
+export function isLocalOrLinkLocalAddress(ip: string): boolean {
+  const version = isIP(ip);
+  if (version === 4) {
+    const parts = ipv4Parts(ip);
+    if (!parts) return false;
+    const [a, b] = parts;
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 0) return true; // 0.0.0.0/8 "this host"
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (cloud metadata)
+    if (a >= 224) return true; // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
     return false;
   }
-  const [a, b] = parts;
-  if (a === 127) return true; // 127.0.0.0/8 loopback
-  if (a === 10) return true; // 10.0.0.0/8
-  if (a === 192 && b === 168) return true; // 192.168.0.0/16
-  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
-  if (a === 0) return true; // 0.0.0.0/8 "this host"
+  if (version !== 6) return false;
+  const norm = ip.toLowerCase().replace(/%.*$/, ""); // drop any zone id
+  if (norm === "::1" || norm === "::") return true;
+  const mapped = /^::ffff:(.+)$/.exec(norm);
+  if (mapped && isIP(mapped[1]) === 4) return isLocalOrLinkLocalAddress(mapped[1]);
+  const first = Number.parseInt(norm.split(":")[0] || "", 16);
+  if (Number.isNaN(first)) return false;
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   return false;
 }
 
-function isPrivateIPv6(ip: string): boolean {
-  const norm = ip.toLowerCase();
-  if (norm === "::1" || norm === "::") return true;
-  if (norm.startsWith("::ffff:")) {
-    const mapped = norm.slice("::ffff:".length);
-    if (isIP(mapped) === 4) return isPrivateIPv4(mapped);
+/**
+ * Is this IP LITERAL somewhere a request must not go? Loopback, RFC1918,
+ * link-local, unique-local, and — added in Task D3 — carrier-grade NAT
+ * (100.64/10), the IETF protocol assignments and documentation blocks
+ * (192.0.0/24, 192.0.2/24), the benchmark range (198.18/15), multicast
+ * (224/4) and the reserved 240/4.
+ *
+ * Hostnames are NOT handled here (they have no range) — `isPrivateHost` does
+ * the hostname forms and `assertPublicHttpUrl` does the DNS resolution.
+ * Exported for the printer host guard in printers/util.ts, which applies the
+ * same ranges in hosted mode.
+ */
+export function isPrivateAddress(ip: string): boolean {
+  if (isLocalOrLinkLocalAddress(ip)) return true;
+  const version = isIP(ip);
+  if (version === 4) {
+    const parts = ipv4Parts(ip);
+    if (!parts) return false;
+    const [a, b, c] = parts;
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 IETF protocol assignments
+    if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 documentation
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
+    return false;
   }
-  if (norm.startsWith("fe80:")) return true; // link-local
-  if (/^f[cd][0-9a-f]{0,2}:/.test(norm)) return true; // fc00::/7 unique-local
+  if (version !== 6) return false;
+  const norm = ip.toLowerCase().replace(/%.*$/, "");
+  const mapped = /^::ffff:(.+)$/.exec(norm);
+  if (mapped && isIP(mapped[1]) === 4) return isPrivateAddress(mapped[1]);
+  const first = Number.parseInt(norm.split(":")[0] || "", 16);
+  if (Number.isNaN(first)) return false;
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
   return false;
 }
 
@@ -92,20 +168,41 @@ export function isPrivateHost(hostname: string): boolean {
   if (PRIVATE_HOSTNAMES.has(h)) return true;
   if (h.endsWith(".localhost") || h.endsWith(".local")) return true;
   const version = isIP(h);
-  if (version === 4) return isPrivateIPv4(h);
-  if (version === 6) return isPrivateIPv6(h);
+  if (version !== 0) return isPrivateAddress(h);
   return false; // a real hostname — DNS-checked by assertPublicHttpUrl
 }
 
+export interface UrlGuardOptions {
+  /** Ports the URL may name. Defaults to `DEFAULT_ALLOWED_PORTS`. */
+  allowedPorts?: number[];
+  /** Resolve a hostname to EVERY address it has. Injectable so tests never
+   *  touch real DNS; defaults to `dns.promises.lookup(host, { all: true })`. */
+  lookup?: (host: string) => Promise<string[]>;
+  /** An extra, caller-specific predicate applied to every hop — the thumbnail
+   *  proxy uses it to keep its host allowlist (and its https-only rule) in
+   *  force on redirect targets, not just on the URL it was handed. */
+  allow?: (url: URL) => boolean;
+}
+
+/** Every address a hostname resolves to, via the real resolver. */
+async function resolveAll(host: string): Promise<string[]> {
+  const records = await dnsLookup(host, { all: true });
+  return records.map((r) => r.address);
+}
+
 /**
- * Throws unless `raw` is an http(s) URL that does not point at a private,
- * loopback, or link-local address. For a plain hostname (not an IP literal)
- * this also resolves it and checks the resulting address, so a hostname that
- * DNS-rebinds to an internal IP is rejected too — best-effort: a DNS failure
- * here is not itself a reason to block (the subsequent fetch will fail on its
- * own), it's only a positive private-IP match that blocks.
+ * Throws unless `raw` is an http(s) URL, on an ordinary http(s) port, that does
+ * not point at a private, loopback, link-local, or otherwise non-public
+ * address — checking EVERY address the hostname resolves to, not just the
+ * first.
+ *
+ * A DNS failure BLOCKS (changed in Task D3). The old behaviour let it through
+ * on the theory that the subsequent fetch would fail anyway, but that is only
+ * true when the failure is genuine: a resolver that answers differently for
+ * two consecutive queries turns "we couldn't check" into "we didn't check".
+ * A name we cannot verify is a name we do not fetch.
  */
-export async function assertPublicHttpUrl(raw: string): Promise<URL> {
+export async function assertPublicHttpUrl(raw: string, opts: UrlGuardOptions = {}): Promise<URL> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -117,44 +214,125 @@ export async function assertPublicHttpUrl(raw: string): Promise<URL> {
       `Unsupported URL scheme "${url.protocol}" — only http/https are allowed.`,
     );
   }
-  if (isPrivateHost(url.hostname)) {
+  if (opts.allow && !opts.allow(url)) {
+    throw new Error(`Refusing to fetch ${url.hostname} — not an allowed host for this request.`);
+  }
+
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // A host made only of digits and dots is an IP address written so that
+  // `isIP` does not recognise it — "http://2130706433/" and "http://0177.1/"
+  // are both 127.0.0.1 — while the socket layer dials it happily. In practice
+  // the WHATWG URL parser canonicalises every such form to a real IPv4 literal
+  // before it reaches here (verified: 2130706433, 0x7f000001 and 0177.1 all
+  // arrive as "127.0.0.1", and 1.2.3.4.5 fails to parse at all), so this is a
+  // belt for a host that arrives from anywhere but `new URL`.
+  //
+  // Deliberately NOT also refusing a leading "0x": the hex spellings are
+  // canonicalised by the same parser, so the rule would buy nothing and would
+  // block the real, public file host `0x0.st`.
+  if (isIP(host) === 0 && /^[0-9.]+$/.test(host)) {
+    throw new Error(`Refusing to fetch a numeric host: ${url.hostname}`);
+  }
+  if (isPrivateHost(host)) {
     throw new Error(
       `Refusing to fetch a private/loopback address: ${url.hostname}`,
     );
   }
-  if (isIP(url.hostname) === 0) {
+
+  const allowedPorts = opts.allowedPorts ?? [...DEFAULT_ALLOWED_PORTS];
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+  if (!allowedPorts.includes(port)) {
+    throw new Error(`Refusing to fetch ${url.hostname} on port ${port} — not an http(s) port.`);
+  }
+
+  if (isIP(host) === 0) {
+    const lookup = opts.lookup ?? resolveAll;
+    let addresses: string[];
     try {
-      const { address } = await dnsLookup(url.hostname);
-      if (isPrivateHost(address)) {
-        throw new Error(
-          `Refusing to fetch ${url.hostname} — it resolves to a private address (${address}).`,
-        );
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith("Refusing to fetch")) {
-        throw err;
-      }
-      // DNS lookup itself failed (offline, NXDOMAIN, sandboxed test env) —
-      // not a private-address match, so let the real fetch fail naturally.
+      addresses = await lookup(host);
+    } catch {
+      throw new Error(`Refusing to fetch ${url.hostname} — its address could not be resolved.`);
+    }
+    if (addresses.length === 0) {
+      throw new Error(`Refusing to fetch ${url.hostname} — its address could not be resolved.`);
+    }
+    const bad = addresses.find((a) => isPrivateAddress(a));
+    if (bad !== undefined) {
+      throw new Error(
+        `Refusing to fetch ${url.hostname} — it resolves to a private address (${bad}).`,
+      );
     }
   }
   return url;
 }
 
-/** fetch() with the standard UA, timeout, and SSRF guard applied. Use this
- *  (not bare `fetch`) for anything hitting a URL that isn't a hardcoded,
- *  known-public API host. */
+/** Extra knobs `guardedFetch` understands on top of a plain RequestInit. */
+export interface GuardedFetchInit extends RequestInit {
+  /** Hops to follow before giving up. Defaults to `DEFAULT_MAX_REDIRECTS`. */
+  maxRedirects?: number;
+  /** Passed to `assertPublicHttpUrl` on every hop. */
+  guard?: UrlGuardOptions;
+  /** TESTS ONLY: stand in for global fetch, so the redirect loop can be driven
+   *  without a server (and without a real socket) on the other end. */
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * fetch() with the standard UA, timeout, and SSRF guard applied. Use this
+ * (not bare `fetch`) for anything hitting a URL that isn't a hardcoded,
+ * known-public API host.
+ *
+ * Redirects are followed HERE rather than by fetch, because fetch's own
+ * `redirect: "follow"` does the whole chain inside one call and hands back only
+ * the final response — the guard never sees the intermediate hops, which is
+ * exactly where an attacker puts the internal address. Every hop is re-checked
+ * from scratch.
+ */
 export async function guardedFetch(
   url: string,
-  init: RequestInit = {},
+  init: GuardedFetchInit = {},
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<Response> {
-  await assertPublicHttpUrl(url);
-  return fetch(url, {
-    ...init,
-    headers: { "User-Agent": USER_AGENT, ...(init.headers as Record<string, string> | undefined) },
-    signal: withTimeout(init.signal as AbortSignal | undefined, timeoutMs),
-  });
+  const { maxRedirects = DEFAULT_MAX_REDIRECTS, guard, fetchImpl, ...rest } = init;
+  const doFetch = fetchImpl ?? fetch;
+  // One budget for the whole chain, so a redirect loop can't buy extra time.
+  const signal = withTimeout(rest.signal as AbortSignal | undefined, timeoutMs);
+  const headers: Record<string, string> = {
+    "User-Agent": USER_AGENT,
+    ...(rest.headers as Record<string, string> | undefined),
+  };
+
+  let current = url;
+  let method = (rest.method ?? "GET").toUpperCase();
+  let body = rest.body;
+  let origin = "";
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const target = await assertPublicHttpUrl(current, guard);
+    if (origin && target.origin !== origin) {
+      // Credentials belong to the host they were issued for; a redirect to
+      // somewhere else must not carry them along.
+      delete headers.Authorization;
+      delete headers.authorization;
+      delete headers.Cookie;
+      delete headers.cookie;
+    }
+    origin = target.origin;
+
+    const res = await doFetch(current, { ...rest, method, body, headers, signal, redirect: "manual" });
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    if (!location) return res;
+
+    const next = new URL(location, current);
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method !== "GET" && method !== "HEAD")) {
+      // What every client does in practice, and what the spec allows: the
+      // redirected request becomes a bodiless GET.
+      method = "GET";
+      body = undefined;
+    }
+    current = next.toString();
+  }
+  throw new Error(`Too many redirects (more than ${maxRedirects}) starting at ${url}`);
 }
 
 /** Plain fetch with the standard UA + timeout, WITHOUT the SSRF guard — for

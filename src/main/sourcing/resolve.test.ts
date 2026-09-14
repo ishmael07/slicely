@@ -14,9 +14,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function mockPublicDns(t: { mock: { method: Function } }) {
   // Every resolve.test.ts URL uses a real-looking hostname (needed for the
-  // marketplace/git-host regex matches); this keeps the SSRF guard's
-  // best-effort DNS re-check hermetic instead of hitting real DNS.
-  t.mock.method(dns, "lookup", async () => ({ address: "93.184.216.34", family: 4 as const }));
+  // marketplace/git-host regex matches); this keeps the SSRF guard's DNS
+  // re-check hermetic instead of hitting real DNS. An ARRAY, because the guard
+  // asks for every record (`all: true`) — one public record is no longer proof
+  // that a name is safe (Task D3).
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.216.34", family: 4 as const }]);
 }
 
 function binaryStl(triangleCount: number): Buffer {

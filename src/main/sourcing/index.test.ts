@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// `import ... = require(...)` so `t.mock.method` can replace the property — see
+// the same note in net.test.ts.
+import dns = require("node:dns/promises");
 import {
   searchModels,
   resolveUrl,
@@ -99,6 +102,11 @@ test("searchModels restricted to a single dead source reports it as failed with 
 // ── end-to-end façade integration: downloadModel across the real
 // provider -> download.ts pipeline, onto a real temp directory ──────────
 test("downloadModel downloads every mesh file for a model by default (multi-part), writing real files to disk", async (t) => {
+  // The download goes through the SSRF guard, which resolves every hostname it
+  // is given. Stubbed to one public record so this test stays hermetic — the
+  // guard refuses a name it cannot resolve (Task D3), and "s3.example.test"
+  // resolves nowhere.
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.216.34", family: 4 as const }]);
   t.mock.method(globalThis, "fetch", async (url: string) => {
     if (url.includes("3d.nih.gov/api/entries/")) {
       return jsonResponse({
