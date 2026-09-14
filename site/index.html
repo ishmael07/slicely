@@ -34,7 +34,7 @@
        on .js means a reader with JavaScript off gets the whole page immediately
        rather than a blank canvas. -->
   <script>document.documentElement.classList.add('js');</script>
-  <link rel="stylesheet" href="styles.css?v=6" />
+  <link rel="stylesheet" href="styles.css?v=7" />
   <script src="config.js"></script>
 </head>
 <body>
@@ -85,6 +85,7 @@
             </span>
           </div>
 
+          <!-- demo:start -->
           <div class="app-msgs">
             <div class="m-empty">
               <i aria-hidden="true">◆</i>
@@ -93,45 +94,73 @@
               <span>Slice this for strength, PETG, my Ender 3</span>
               <span>Show me a cable clip for a desk</span>
             </div>
-
-            <div class="m-user"><span>Find me a phone stand I can print today</span></div>
-
-            <div class="m-act"><span class="m-act-line">
-              <i class="m-spin"></i>
-              <span class="m-act-a">Searching 8 sources…</span>
-              <span class="m-act-b">Found 12 models</span>
-              <span class="m-act-n">3 steps</span>
+            <div class="m-user e-a-user"><span>Find me a phone stand I can print today</span></div>
+            <div class="m-act e-a-act"><span class="m-act-line">
+              <i class="m-spin e-a-acta"></i>
+              <span class="m-act-a e-a-acta">Searching 8 sources…</span>
+              <span class="m-act-b e-a-actb">Found 12 models</span>
+              <span class="m-act-n e-a-actb">3 steps</span>
             </span></div>
-
-            <div class="m-cards">
-              <div class="m-card">
-                <img class="m-thumb" src="img/stand-minimal.png" width="190" height="120" alt="" />
-                <div class="m-meta"><b>Minimal Phone Stand</b><span class="m-sub"><span>Printables</span><span>by tomasp</span></span><span class="m-lic">CC BY</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div>
-              </div>
-              <div class="m-card">
-                <img class="m-thumb" src="img/stand-adjustable.png" width="190" height="120" alt="" />
-                <div class="m-meta"><b>Adjustable Stand v2</b><span class="m-sub"><span>MakerWorld</span><span>by lea.k</span></span><span class="m-lic">CC BY-NC</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div>
-              </div>
-              <div class="m-card">
-                <img class="m-thumb" src="img/stand-lowpoly.png" width="190" height="120" alt="" />
-                <div class="m-meta"><b>Low-poly Phone Dock</b><span class="m-sub"><span>Thingiverse</span><span>by jm3d</span></span><span class="m-lic">CC BY-SA</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div>
-              </div>
+            <div class="m-cards e-a-content">
+              <div class="m-card e-a-card1"><img class="m-thumb" src="img/stand-minimal.png" width="190" height="120" alt="" /><div class="m-meta"><b>Minimal Phone Stand</b><span class="m-sub"><span>Printables</span><span>by tomasp</span></span><span class="m-lic">CC BY</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div></div>
+              <div class="m-card e-a-card2"><img class="m-thumb" src="img/stand-adjustable.png" width="190" height="120" alt="" /><div class="m-meta"><b>Adjustable Stand v2</b><span class="m-sub"><span>MakerWorld</span><span>by lea.k</span></span><span class="m-lic">CC BY-NC</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div></div>
+              <div class="m-card e-a-card3"><img class="m-thumb" src="img/stand-lowpoly.png" width="190" height="120" alt="" /><div class="m-meta"><b>Low-poly Phone Dock</b><span class="m-sub"><span>Thingiverse</span><span>by jm3d</span></span><span class="m-lic">CC BY-SA</span><span class="m-actions"><i class="m-btn primary">Import</i><i class="m-btn">View</i></span></div></div>
             </div>
-
-            <div class="m-bot"><span>Flat base, no overhangs, so no supports. Slicing for your Ender 3 in PLA at 0.2&nbsp;mm.</span></div>
-
-            <div class="m-panel"><div class="m-panel-in">
+            <div class="m-bot e-a-bot"><span class="e-a-caret">Flat base, no overhangs, so no supports. Slicing the Printables one for your Ender&nbsp;3 in PLA at 0.2&nbsp;mm.</span></div>
+            <div class="m-panel e-a-panel"><div class="m-panel-in">
               <div class="m-panel-h"><i aria-hidden="true">✦</i>Slice result</div>
-              <div class="m-row"><span class="m-k">Print time</span><span class="m-track"><i class="m-fill f1"></i></span><b class="m-v v1">1h 42m</b></div>
-              <div class="m-row"><span class="m-k">Filament</span><span class="m-track"><i class="m-fill f2"></i></span><b class="m-v v2">18.4 g</b></div>
-              <div class="m-row"><span class="m-k">Layers</span><span class="m-track"><i class="m-fill f3"></i></span><b class="m-v v3">210</b></div>
-              <div class="m-tail">
-                <span class="m-actions"><i class="m-btn primary">Send to Ender 3</i><i class="m-btn">Download G-code</i></span>
+              <div class="m-row"><span class="m-k">Print time</span><span class="m-track"><i class="m-fill e-a-fill1"></i></span><b class="m-v e-a-v1">1h 42m</b></div>
+              <div class="m-row"><span class="m-k">Filament</span><span class="m-track"><i class="m-fill e-a-fill2"></i></span><b class="m-v e-a-v2">18.4 g</b></div>
+              <div class="m-row"><span class="m-k">Layers</span><span class="m-track"><i class="m-fill e-a-fill3"></i></span><b class="m-v e-a-v3">210</b></div>
+              <div class="m-tail e-a-tail"><span class="m-actions"><i class="m-btn primary">Send to Ender 3</i><i class="m-btn">Download G-code</i></span></div>
+            </div></div>
+            <div class="m-user e-b-user"><span><i class="m-chip">bracket.stl · 1.2 MB</i>Slice this for strength, PETG, my Ender 3</span></div>
+            <div class="m-act e-b-act"><span class="m-act-line">
+              <i class="m-spin e-b-acta"></i>
+              <span class="m-act-a e-b-acta">Reading bracket.stl…</span>
+              <span class="m-act-b e-b-actb">Checked 6 orientations</span>
+              <span class="m-act-n e-b-actb">2 steps</span>
+            </span></div>
+            <div class="m-panel e-b-content"><div class="m-panel-in">
+              <div class="m-panel-h"><i aria-hidden="true">✦</i>bracket.stl</div>
+              <div class="m-metrics">
+                <div class="m-metric"><span>Size</span><b>48 × 22 × 30 mm</b></div>
+                <div class="m-metric"><span>Best pose</span><b>on its back</b></div>
+                <div class="m-metric"><span>Overhang</span><b>0 %</b></div>
               </div>
+            </div></div>
+            <div class="m-bot e-b-bot"><span class="e-b-caret">On its back is best: nothing overhangs, so no supports. For strength, 5 walls and 40% gyroid infill in PETG at 0.2&nbsp;mm.</span></div>
+            <div class="m-panel e-b-panel"><div class="m-panel-in">
+              <div class="m-panel-h"><i aria-hidden="true">✦</i>Slice result</div>
+              <div class="m-row"><span class="m-k">Print time</span><span class="m-track"><i class="m-fill e-b-fill1"></i></span><b class="m-v e-b-v1">2h 58m</b></div>
+              <div class="m-row"><span class="m-k">Filament</span><span class="m-track"><i class="m-fill e-b-fill2"></i></span><b class="m-v e-b-v2">41.2 g</b></div>
+              <div class="m-row"><span class="m-k">Layers</span><span class="m-track"><i class="m-fill e-b-fill3"></i></span><b class="m-v e-b-v3">150</b></div>
+              <div class="m-tail e-b-tail"><span class="m-actions"><i class="m-btn primary">Send to Ender 3</i><i class="m-btn">Download G-code</i></span></div>
+            </div></div>
+            <div class="m-user e-c-user"><span><i class="m-chip">github.com/…/desk-organizer</i>Print every part of this</span></div>
+            <div class="m-act e-c-act"><span class="m-act-line">
+              <i class="m-spin e-c-acta"></i>
+              <span class="m-act-a e-c-acta">Fetching parts from GitHub…</span>
+              <span class="m-act-b e-c-actb">14 parts, 2 plates</span>
+              <span class="m-act-n e-c-actb">4 steps</span>
+            </span></div>
+            <div class="m-plates e-c-content">
+              <div class="m-plate"><i class="m-dot slicing"></i><span><b>Plate 1</b> · 8 parts · slicing</span></div>
+              <div class="m-plate"><i class="m-dot"></i><span><b>Plate 2</b> · 6 parts · queued</span></div>
+            </div>
+            <div class="m-bot e-c-bot"><span class="e-c-caret">Two plates, grouped so each needs one filament. Plate 1 is slicing; plate 2 follows.</span></div>
+            <div class="m-panel e-c-panel"><div class="m-panel-in">
+              <div class="m-panel-h"><i aria-hidden="true">✦</i>Plate 1 of 2</div>
+              <div class="m-row"><span class="m-k">Print time</span><span class="m-track"><i class="m-fill e-c-fill1"></i></span><b class="m-v e-c-v1">6h 10m</b></div>
+              <div class="m-row"><span class="m-k">Filament</span><span class="m-track"><i class="m-fill e-c-fill2"></i></span><b class="m-v e-c-v2">92.5 g</b></div>
+              <div class="m-row"><span class="m-k">On plate</span><span class="m-track"><i class="m-fill e-c-fill3"></i></span><b class="m-v e-c-v3">8 parts</b></div>
+              <div class="m-tail e-c-tail"><span class="m-actions"><i class="m-btn primary">Send to Ender 3</i><i class="m-btn">Download .3mf</i></span></div>
             </div></div>
           </div>
 
-          <div class="app-toast">Sent to Ender 3 ✓</div>
+          <div class="app-toast e-a-toast">Sent to Ender 3 ✓</div>
+          <div class="app-toast e-b-toast">Sent to Ender 3 ✓</div>
+          <div class="app-toast e-c-toast">Plate 1 sent to Ender 3 ✓</div>
 
           <div class="app-composer">
             <div class="app-pickers">
@@ -141,10 +170,11 @@
             <div class="app-row">
               <span class="app-circ"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
               <span class="app-circ"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg></span>
-              <span class="app-input"><span class="app-typed">Find me a phone stand I can print today</span><span class="app-ph">Ask, paste a link, or drop an STL to slice…</span></span>
+              <span class="app-input"><span class="app-typed e-a-typed">Find me a phone stand I can print today</span><span class="app-typed e-b-typed">Slice this for strength, PETG, my Ender 3</span><span class="app-typed e-c-typed">Print every part of this</span><span class="app-ph">Ask, paste a link, or drop an STL to slice…</span></span>
               <span class="app-send"><svg viewBox="0 0 24 24"><path d="M12 19V6M12 6l-6 6M12 6l6 6"/></svg></span>
             </div>
           </div>
+          <!-- demo:end -->
         </div>
       </div>
     </section>

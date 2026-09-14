@@ -197,7 +197,9 @@ h1 {
   display: flex; flex-direction: column; justify-content: flex-end;
   padding: 14px 12px 8px;
 }
-.app-msgs > * { flex: 0 0 auto; margin-top: 11px; }
+.app-msgs > * { flex: 0 0 auto; --gap: 14px; margin-top: var(--gap); }
+.app-msgs > .m-user { --gap: 26px; }
+.app-msgs > .m-user:first-of-type { --gap: 14px; }
 
 /* the empty state, before the first message */
 .m-empty {
@@ -221,6 +223,12 @@ h1 {
 
 /* bubbles */
 .m-user { display: flex; justify-content: flex-end; }
+.m-chip {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 7px; margin-right: 100%;
+  font-style: normal; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  padding: 4px 10px 4px 8px; border-radius: 999px; background: rgba(26, 16, 6, 0.18); color: #1a1006;
+}
+.m-chip::before { content: '⎘'; font-size: 12px; }
 .m-user > span {
   max-width: 92%; padding: 10px 14px; border-radius: 16px 16px 5px 16px;
   background: linear-gradient(135deg, #ff7a45, #ff9152); color: #1a1006; font-weight: 550;
@@ -272,6 +280,21 @@ h1 {
   box-shadow: 0 3px 12px rgba(255, 122, 69, 0.3);
 }
 
+/* metric tiles + plate rows, as in the app */
+.m-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.m-metric { background: var(--panel-2); border: 0.5px solid var(--line); border-radius: 8px; padding: 8px 9px; text-align: center; }
+.m-metric span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+.m-metric b { display: block; margin-top: 3px; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+.m-plates { display: flex; flex-direction: column; gap: 7px; }
+.m-plate {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px; font-size: 12px;
+  border-radius: 8px; background: var(--panel-2); border: 0.5px solid var(--line); color: var(--dim);
+}
+.m-plate b { color: var(--text); font-weight: 600; }
+.m-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.m-dot.slicing { background: #fbbf24; animation: pulse-warn 1.2s infinite; }
+@keyframes pulse-warn { 50% { opacity: 0.4; } }
+
 /* slice result panel — the app's panel, with the numbers drawn as filling bars */
 .m-panel-in { border-radius: 11px; background: var(--panel); border: 0.5px solid var(--line); padding: 12px 13px; }
 .m-panel-h { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 650; color: var(--accent-2); margin-bottom: 10px; }
@@ -281,9 +304,6 @@ h1 {
 .m-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
 .m-track { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
 .m-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
-.m-fill.f1 { width: 78%; }
-.m-fill.f2 { width: 46%; }
-.m-fill.f3 { width: 62%; }
 .m-v {
   font-size: 13.5px; font-weight: 700; text-align: right; white-space: nowrap;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -315,7 +335,7 @@ h1 {
   flex: 1 1 auto; min-width: 0; min-height: 42px; display: flex; align-items: center; position: relative;
   padding: 10px 13px; border-radius: 14px; background: var(--panel); border: 0.5px solid var(--line); font-size: 15px; line-height: 1.45;
 }
-.app-typed { white-space: nowrap; overflow: hidden; width: 0; border-right: 1.5px solid var(--accent); }
+.app-typed { position: absolute; left: 13px; white-space: nowrap; overflow: hidden; width: 0; border-right: 1.5px solid var(--accent); }
 .app-ph { position: absolute; left: 13px; right: 13px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .app-send {
   flex: 0 0 auto; width: 42px; height: 42px; padding: 11px; border-radius: 50%;
@@ -324,114 +344,317 @@ h1 {
 }
 .app-send svg { stroke-width: 2.2; }
 
-/* ---------- the 16 s timeline ----------
-   Every element runs its own 16 s animation with percentage keyframes, so the
-   stages stay in lockstep however late the page loaded. A message "arrives"
-   the same way every time: it grows from the bottom of the bottom-anchored
-   transcript (pushing the older ones up, the way a chat scrolls) while it
-   fades and rises in — one eased motion, nothing snaps.
-
-     0.0 –  2.4 s   the prompt types into the composer          (0 – 15%)
-     2.6 s          it posts as a user bubble                   (16%)
-     3.2 –  5.4 s   "Searching 8 sources…"                      (20 – 34%)
-     5.6 s          "Found 12 models · 3 steps", cards slide in  (35 – 43%)
-     7.5 –  9.3 s   the reply streams                           (47 – 58%)
-     9.6 – 12.6 s   the slice result, three bars filling in turn (60 – 79%)
-    12.6 – 15.0 s   "Sent to Ender 3 ✓"                         (79 – 94%)
-    15.2 – 16.0 s   the transcript fades and the loop restarts  (95 – 100%)
-
-   The base rules above are the final frame: with animations off the reader
-   sees a finished screenshot, not an empty window. */
-
-@keyframes d-fade  { 0%, 95% { opacity: 1; } 100% { opacity: 0; } }
-@keyframes d-type  {
-  0%     { width: 0; opacity: 1; animation-timing-function: steps(1, end); }
-  2%     { width: 0; animation-timing-function: steps(39, end); }
-  15%    { width: 39ch; opacity: 1; animation-timing-function: ease; }
-  15.5%  { opacity: 1; }
-  16.5%, 100% { width: 39ch; opacity: 0; }
-}
+/* demo-timeline:start */
+/* Generated by scripts/gen-site-demo.py — do not edit by hand.
+   One 47 s loop: three exchanges of 15 s each, then the transcript fades
+   and the conversation starts over. Every element grows from the bottom of
+   the bottom-anchored transcript (pushing the older ones up, the way a chat
+   scrolls) while it fades and rises in. */
 @keyframes d-caret { 0%, 49% { border-right-color: var(--accent); } 50%, 100% { border-right-color: transparent; } }
-@keyframes d-ph { 0%, 16.5% { opacity: 0; } 18%, 100% { opacity: 1; } }
-@keyframes d-empty { 0%, 14% { opacity: 1; } 17%, 100% { opacity: 0; } }
+@keyframes d-empty { 0%, 4.47% { opacity: 1; } 6.38%, 100% { opacity: 0; } }
+@keyframes d-fade { 0%, 97.87% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes d-ph { 0% { opacity: 0; } 0.00% { opacity: 1; } 0.64% { opacity: 0; } 6.38% { opacity: 0; } 7.23% { opacity: 1; } 31.91% { opacity: 1; } 32.55% { opacity: 0; } 38.30% { opacity: 0; } 39.15% { opacity: 1; } 63.83% { opacity: 1; } 64.47% { opacity: 0; } 70.21% { opacity: 0; } 71.06% { opacity: 1; } 100% { opacity: 1; } }
+@keyframes d-a-typed {
+  0%, 0.00% { width: 0; opacity: 0; animation-timing-function: steps(1, end); }
+  0.32% { width: 0; opacity: 1; animation-timing-function: steps(39, end); }
+  5.11% { width: 39ch; opacity: 1; animation-timing-function: ease; }
+  5.53% { opacity: 1; }
+  6.17%, 100% { width: 39ch; opacity: 0; }
+}
+@keyframes d-a-user {
+  0%, 5.53% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  5.64% { opacity: 0; transform: translateY(12px); }
+  6.70% { max-height: 80px; margin-top: var(--gap); }
+  7.13% { opacity: 1; transform: none; overflow: hidden; }
+  7.23%, 100% { max-height: 80px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-a-act {
+  0%, 6.81% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  6.91% { opacity: 0; transform: translateY(12px); }
+  7.98% { max-height: 40px; margin-top: var(--gap); }
+  8.40% { opacity: 1; transform: none; overflow: hidden; }
+  8.51%, 100% { max-height: 40px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-a-acta { 0%, 11.49% { opacity: 1; } 12.34%, 100% { opacity: 0; } }
+@keyframes d-a-actb { 0%, 11.49% { opacity: 0; } 12.34%, 100% { opacity: 1; } }
+@keyframes d-a-content {
+  0%, 12.13% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(8px); overflow: hidden; }
+  12.23% { opacity: 0; transform: translateY(8px); }
+  13.30% { max-height: 250px; margin-top: var(--gap); }
+  13.72% { opacity: 1; transform: none; overflow: hidden; }
+  13.83%, 100% { max-height: 250px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-a-card1 { 0%, 12.66% { opacity: 0; transform: translateX(18px); } 13.94%, 100% { opacity: 1; transform: none; } }
+@keyframes d-a-card2 { 0%, 13.19% { opacity: 0; transform: translateX(18px); } 14.47%, 100% { opacity: 1; transform: none; } }
+@keyframes d-a-card3 { 0%, 13.72% { opacity: 0; transform: translateX(18px); } 15.00%, 100% { opacity: 1; transform: none; } }
+@keyframes d-a-bot {
+  0%, 16.60% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  16.70% { opacity: 0; transform: translateY(12px); }
+  17.77% { max-height: 110px; margin-top: var(--gap); }
+  18.19% { opacity: 1; transform: none; overflow: hidden; }
+  18.30%, 100% { max-height: 110px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-a-caret { 0%, 20.43% { opacity: 1; } 21.28%, 100% { opacity: 0; } }
+@keyframes d-a-fill1 { 0%, 22.13% { width: 0; } 25.74%, 100% { width: 78%; } }
+@keyframes d-a-v1 { 0%, 24.26% { opacity: 0; } 25.74%, 100% { opacity: 1; } }
+@keyframes d-a-fill2 { 0%, 22.98% { width: 0; } 26.60%, 100% { width: 46%; } }
+@keyframes d-a-v2 { 0%, 25.11% { opacity: 0; } 26.60%, 100% { opacity: 1; } }
+@keyframes d-a-fill3 { 0%, 23.83% { width: 0; } 27.45%, 100% { width: 62%; } }
+@keyframes d-a-v3 { 0%, 25.96% { opacity: 0; } 27.45%, 100% { opacity: 1; } }
+@keyframes d-a-panel {
+  0%, 20.85% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  20.96% { opacity: 0; transform: translateY(12px); }
+  22.02% { max-height: 240px; margin-top: var(--gap); }
+  22.45% { opacity: 1; transform: none; overflow: hidden; }
+  22.55%, 100% { max-height: 240px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-a-tail { 0%, 26.38% { opacity: 0; } 27.66%, 100% { opacity: 1; } }
+@keyframes d-a-toast {
+  0%, 27.45% { opacity: 0; transform: translate(-50%, 10px); }
+  28.40%, 31.38% { opacity: 1; transform: translate(-50%, 0); }
+  32.34%, 100% { opacity: 0; transform: translate(-50%, 0); }
+}
+@keyframes d-b-typed {
+  0%, 31.91% { width: 0; opacity: 0; animation-timing-function: steps(1, end); }
+  32.23% { width: 0; opacity: 1; animation-timing-function: steps(41, end); }
+  37.02% { width: 41ch; opacity: 1; animation-timing-function: ease; }
+  37.45% { opacity: 1; }
+  38.09%, 100% { width: 41ch; opacity: 0; }
+}
+@keyframes d-b-user {
+  0%, 37.45% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  37.55% { opacity: 0; transform: translateY(12px); }
+  38.62% { max-height: 80px; margin-top: var(--gap); }
+  39.04% { opacity: 1; transform: none; overflow: hidden; }
+  39.15%, 100% { max-height: 80px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-b-act {
+  0%, 38.72% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  38.83% { opacity: 0; transform: translateY(12px); }
+  39.89% { max-height: 40px; margin-top: var(--gap); }
+  40.32% { opacity: 1; transform: none; overflow: hidden; }
+  40.43%, 100% { max-height: 40px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-b-acta { 0%, 43.40% { opacity: 1; } 44.26%, 100% { opacity: 0; } }
+@keyframes d-b-actb { 0%, 43.40% { opacity: 0; } 44.26%, 100% { opacity: 1; } }
+@keyframes d-b-content {
+  0%, 44.04% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(8px); overflow: hidden; }
+  44.15% { opacity: 0; transform: translateY(8px); }
+  45.21% { max-height: 120px; margin-top: var(--gap); }
+  45.64% { opacity: 1; transform: none; overflow: hidden; }
+  45.74%, 100% { max-height: 120px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-b-bot {
+  0%, 48.51% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  48.62% { opacity: 0; transform: translateY(12px); }
+  49.68% { max-height: 110px; margin-top: var(--gap); }
+  50.11% { opacity: 1; transform: none; overflow: hidden; }
+  50.21%, 100% { max-height: 110px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-b-caret { 0%, 52.34% { opacity: 1; } 53.19%, 100% { opacity: 0; } }
+@keyframes d-b-fill1 { 0%, 54.04% { width: 0; } 57.66%, 100% { width: 90%; } }
+@keyframes d-b-v1 { 0%, 56.17% { opacity: 0; } 57.66%, 100% { opacity: 1; } }
+@keyframes d-b-fill2 { 0%, 54.89% { width: 0; } 58.51%, 100% { width: 66%; } }
+@keyframes d-b-v2 { 0%, 57.02% { opacity: 0; } 58.51%, 100% { opacity: 1; } }
+@keyframes d-b-fill3 { 0%, 55.74% { width: 0; } 59.36%, 100% { width: 48%; } }
+@keyframes d-b-v3 { 0%, 57.87% { opacity: 0; } 59.36%, 100% { opacity: 1; } }
+@keyframes d-b-panel {
+  0%, 52.77% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  52.87% { opacity: 0; transform: translateY(12px); }
+  53.94% { max-height: 240px; margin-top: var(--gap); }
+  54.36% { opacity: 1; transform: none; overflow: hidden; }
+  54.47%, 100% { max-height: 240px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-b-tail { 0%, 58.30% { opacity: 0; } 59.57%, 100% { opacity: 1; } }
+@keyframes d-b-toast {
+  0%, 59.36% { opacity: 0; transform: translate(-50%, 10px); }
+  60.32%, 63.30% { opacity: 1; transform: translate(-50%, 0); }
+  64.26%, 100% { opacity: 0; transform: translate(-50%, 0); }
+}
+@keyframes d-c-typed {
+  0%, 63.83% { width: 0; opacity: 0; animation-timing-function: steps(1, end); }
+  64.15% { width: 0; opacity: 1; animation-timing-function: steps(24, end); }
+  68.94% { width: 24ch; opacity: 1; animation-timing-function: ease; }
+  69.36% { opacity: 1; }
+  70.00%, 100% { width: 24ch; opacity: 0; }
+}
+@keyframes d-c-user {
+  0%, 69.36% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  69.47% { opacity: 0; transform: translateY(12px); }
+  70.53% { max-height: 80px; margin-top: var(--gap); }
+  70.96% { opacity: 1; transform: none; overflow: hidden; }
+  71.06%, 100% { max-height: 80px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-c-act {
+  0%, 70.64% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  70.74% { opacity: 0; transform: translateY(12px); }
+  71.81% { max-height: 40px; margin-top: var(--gap); }
+  72.23% { opacity: 1; transform: none; overflow: hidden; }
+  72.34%, 100% { max-height: 40px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-c-acta { 0%, 75.32% { opacity: 1; } 76.17%, 100% { opacity: 0; } }
+@keyframes d-c-actb { 0%, 75.32% { opacity: 0; } 76.17%, 100% { opacity: 1; } }
+@keyframes d-c-content {
+  0%, 75.96% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(8px); overflow: hidden; }
+  76.06% { opacity: 0; transform: translateY(8px); }
+  77.13% { max-height: 110px; margin-top: var(--gap); }
+  77.55% { opacity: 1; transform: none; overflow: hidden; }
+  77.66%, 100% { max-height: 110px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-c-bot {
+  0%, 80.43% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  80.53% { opacity: 0; transform: translateY(12px); }
+  81.60% { max-height: 110px; margin-top: var(--gap); }
+  82.02% { opacity: 1; transform: none; overflow: hidden; }
+  82.13%, 100% { max-height: 110px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-c-caret { 0%, 84.26% { opacity: 1; } 85.11%, 100% { opacity: 0; } }
+@keyframes d-c-fill1 { 0%, 85.96% { width: 0; } 89.57%, 100% { width: 86%; } }
+@keyframes d-c-v1 { 0%, 88.09% { opacity: 0; } 89.57%, 100% { opacity: 1; } }
+@keyframes d-c-fill2 { 0%, 86.81% { width: 0; } 90.43%, 100% { width: 72%; } }
+@keyframes d-c-v2 { 0%, 88.94% { opacity: 0; } 90.43%, 100% { opacity: 1; } }
+@keyframes d-c-fill3 { 0%, 87.66% { width: 0; } 91.28%, 100% { width: 57%; } }
+@keyframes d-c-v3 { 0%, 89.79% { opacity: 0; } 91.28%, 100% { opacity: 1; } }
+@keyframes d-c-panel {
+  0%, 84.68% { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(12px); overflow: hidden; }
+  84.79% { opacity: 0; transform: translateY(12px); }
+  85.85% { max-height: 240px; margin-top: var(--gap); }
+  86.28% { opacity: 1; transform: none; overflow: hidden; }
+  86.38%, 100% { max-height: 240px; margin-top: var(--gap); opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-c-tail { 0%, 90.21% { opacity: 0; } 91.49%, 100% { opacity: 1; } }
+@keyframes d-c-toast {
+  0%, 91.28% { opacity: 0; transform: translate(-50%, 10px); }
+  92.23%, 95.21% { opacity: 1; transform: translate(-50%, 0); }
+  96.17%, 100% { opacity: 0; transform: translate(-50%, 0); }
+}
 
-/* arrivals */
-@keyframes d-user {
-  0%, 16%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
-  17%    { opacity: 0; transform: translateY(10px); }
-  19%    { max-height: 60px; margin-top: 11px; }
-  20.5%  { opacity: 1; transform: none; overflow: hidden; }
-  20.6%, 100% { max-height: 60px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
-}
-@keyframes d-act {
-  0%, 20%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
-  21%    { opacity: 0; transform: translateY(10px); }
-  23%    { max-height: 40px; margin-top: 11px; }
-  24.5%  { opacity: 1; transform: none; overflow: hidden; }
-  24.6%, 100% { max-height: 40px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
-}
-@keyframes d-act-a { 0%, 34% { opacity: 1; } 36%, 100% { opacity: 0; } }
-@keyframes d-act-b { 0%, 34% { opacity: 0; } 36%, 100% { opacity: 1; } }
-@keyframes d-cards {
-  0%, 35%  { max-height: 0; margin-top: 0; opacity: 0; }
-  38%      { max-height: 240px; margin-top: 11px; opacity: 1; }
-  100%     { max-height: 240px; margin-top: 11px; opacity: 1; }
-}
-@keyframes d-card1 { 0%, 36%   { opacity: 0; transform: translateX(18px); } 40%, 100%   { opacity: 1; transform: none; } }
-@keyframes d-card2 { 0%, 37.5% { opacity: 0; transform: translateX(18px); } 41.5%, 100% { opacity: 1; transform: none; } }
-@keyframes d-card3 { 0%, 39%   { opacity: 0; transform: translateX(18px); } 43%, 100%   { opacity: 1; transform: none; } }
-@keyframes d-bot {
-  0%, 47%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
-  48%    { opacity: 0; transform: translateY(10px); }
-  50%    { max-height: 90px; margin-top: 11px; }
-  51.5%  { opacity: 1; transform: none; overflow: hidden; }
-  51.6%, 100% { max-height: 90px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
-}
-@keyframes d-bot-caret { 0%, 58% { opacity: 1; } 59%, 100% { opacity: 0; } }
-@keyframes d-panel {
-  0%, 60%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
-  61%    { opacity: 0; transform: translateY(10px); }
-  63%    { max-height: 240px; margin-top: 11px; }
-  64.5%  { opacity: 1; transform: none; overflow: hidden; }
-  64.6%, 100% { max-height: 240px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
-}
-@keyframes d-fill-1 { 0%, 63% { width: 0; } 70%, 100% { width: 78%; } }
-@keyframes d-fill-2 { 0%, 65% { width: 0; } 72%, 100% { width: 46%; } }
-@keyframes d-fill-3 { 0%, 67% { width: 0; } 74%, 100% { width: 62%; } }
-@keyframes d-v1 { 0%, 68% { opacity: 0; } 71%, 100% { opacity: 1; } }
-@keyframes d-v2 { 0%, 70% { opacity: 0; } 73%, 100% { opacity: 1; } }
-@keyframes d-v3 { 0%, 72% { opacity: 0; } 75%, 100% { opacity: 1; } }
-@keyframes d-tail { 0%, 75% { opacity: 0; } 78.5%, 100% { opacity: 1; } }
-@keyframes d-toast {
-  0%, 79%   { opacity: 0; transform: translate(-50%, 10px); }
-  81.5%, 91% { opacity: 1; transform: translate(-50%, 0); }
-  93.5%, 100% { opacity: 0; transform: translate(-50%, 0); }
-}
+.m-empty { animation: d-empty 47.0s var(--ease) infinite; }
+.app-msgs { animation: d-fade 47.0s linear infinite; }
+.app-ph { animation: d-ph 47.0s linear infinite; }
+.e-a-typed { animation: d-a-typed 47.0s linear infinite, d-caret 1s linear infinite; }
+.e-a-user { animation: d-a-user 47.0s var(--ease) infinite; }
+.e-a-act { animation: d-a-act 47.0s var(--ease) infinite; }
+.m-act-a.e-a-acta { animation: d-a-acta 47.0s var(--ease) infinite; }
+.m-spin.e-a-acta { animation: d-a-acta 47.0s var(--ease) infinite, spin 0.7s linear infinite; }
+.e-a-actb { animation: d-a-actb 47.0s var(--ease) infinite; }
+.e-a-content { animation: d-a-content 47.0s var(--ease) infinite; }
+.e-a-card1 { animation: d-a-card1 47.0s var(--ease) infinite; }
+.e-a-card2 { animation: d-a-card2 47.0s var(--ease) infinite; }
+.e-a-card3 { animation: d-a-card3 47.0s var(--ease) infinite; }
+.e-a-bot { animation: d-a-bot 47.0s var(--ease) infinite; }
+.e-a-caret::after { animation: d-a-caret 47.0s var(--ease) infinite; }
+.e-a-fill1 { animation: d-a-fill1 47.0s var(--ease) infinite; }
+.e-a-v1 { animation: d-a-v1 47.0s var(--ease) infinite; }
+.e-a-fill2 { animation: d-a-fill2 47.0s var(--ease) infinite; }
+.e-a-v2 { animation: d-a-v2 47.0s var(--ease) infinite; }
+.e-a-fill3 { animation: d-a-fill3 47.0s var(--ease) infinite; }
+.e-a-v3 { animation: d-a-v3 47.0s var(--ease) infinite; }
+.e-a-panel { animation: d-a-panel 47.0s var(--ease) infinite; }
+.e-a-tail { animation: d-a-tail 47.0s var(--ease) infinite; }
+.e-a-toast { animation: d-a-toast 47.0s var(--ease) infinite; }
+.e-b-typed { animation: d-b-typed 47.0s linear infinite, d-caret 1s linear infinite; }
+.e-b-user { animation: d-b-user 47.0s var(--ease) infinite; }
+.e-b-act { animation: d-b-act 47.0s var(--ease) infinite; }
+.m-act-a.e-b-acta { animation: d-b-acta 47.0s var(--ease) infinite; }
+.m-spin.e-b-acta { animation: d-b-acta 47.0s var(--ease) infinite, spin 0.7s linear infinite; }
+.e-b-actb { animation: d-b-actb 47.0s var(--ease) infinite; }
+.e-b-content { animation: d-b-content 47.0s var(--ease) infinite; }
+.e-b-bot { animation: d-b-bot 47.0s var(--ease) infinite; }
+.e-b-caret::after { animation: d-b-caret 47.0s var(--ease) infinite; }
+.e-b-fill1 { animation: d-b-fill1 47.0s var(--ease) infinite; }
+.e-b-v1 { animation: d-b-v1 47.0s var(--ease) infinite; }
+.e-b-fill2 { animation: d-b-fill2 47.0s var(--ease) infinite; }
+.e-b-v2 { animation: d-b-v2 47.0s var(--ease) infinite; }
+.e-b-fill3 { animation: d-b-fill3 47.0s var(--ease) infinite; }
+.e-b-v3 { animation: d-b-v3 47.0s var(--ease) infinite; }
+.e-b-panel { animation: d-b-panel 47.0s var(--ease) infinite; }
+.e-b-tail { animation: d-b-tail 47.0s var(--ease) infinite; }
+.e-b-toast { animation: d-b-toast 47.0s var(--ease) infinite; }
+.e-c-typed { animation: d-c-typed 47.0s linear infinite, d-caret 1s linear infinite; }
+.e-c-user { animation: d-c-user 47.0s var(--ease) infinite; }
+.e-c-act { animation: d-c-act 47.0s var(--ease) infinite; }
+.m-act-a.e-c-acta { animation: d-c-acta 47.0s var(--ease) infinite; }
+.m-spin.e-c-acta { animation: d-c-acta 47.0s var(--ease) infinite, spin 0.7s linear infinite; }
+.e-c-actb { animation: d-c-actb 47.0s var(--ease) infinite; }
+.e-c-content { animation: d-c-content 47.0s var(--ease) infinite; }
+.e-c-bot { animation: d-c-bot 47.0s var(--ease) infinite; }
+.e-c-caret::after { animation: d-c-caret 47.0s var(--ease) infinite; }
+.e-c-fill1 { animation: d-c-fill1 47.0s var(--ease) infinite; }
+.e-c-v1 { animation: d-c-v1 47.0s var(--ease) infinite; }
+.e-c-fill2 { animation: d-c-fill2 47.0s var(--ease) infinite; }
+.e-c-v2 { animation: d-c-v2 47.0s var(--ease) infinite; }
+.e-c-fill3 { animation: d-c-fill3 47.0s var(--ease) infinite; }
+.e-c-v3 { animation: d-c-v3 47.0s var(--ease) infinite; }
+.e-c-panel { animation: d-c-panel 47.0s var(--ease) infinite; }
+.e-c-tail { animation: d-c-tail 47.0s var(--ease) infinite; }
+.e-c-toast { animation: d-c-toast 47.0s var(--ease) infinite; }
 
-.app-msgs  { animation: d-fade 16s linear infinite; }
-.app-typed { animation: d-type 16s linear infinite, d-caret 1s linear infinite; }
-.app-ph    { animation: d-ph 16s var(--ease) infinite; }
-.m-empty   { animation: d-empty 16s var(--ease) infinite; }
-.m-user    { animation: d-user 16s var(--ease) infinite; }
-.m-act     { animation: d-act 16s var(--ease) infinite; }
-.m-act-a   { animation: d-act-a 16s var(--ease) infinite; }
-.m-spin    { animation: d-act-a 16s var(--ease) infinite, spin 0.7s linear infinite; }
-.m-act-b, .m-act-n { animation: d-act-b 16s var(--ease) infinite; }
-.m-cards   { animation: d-cards 16s var(--ease) infinite; }
-.m-card:nth-child(1) { animation: d-card1 16s var(--ease) infinite; }
-.m-card:nth-child(2) { animation: d-card2 16s var(--ease) infinite; }
-.m-card:nth-child(3) { animation: d-card3 16s var(--ease) infinite; }
-.m-bot     { animation: d-bot 16s var(--ease) infinite; }
-.m-bot > span::after { animation: d-bot-caret 16s var(--ease) infinite; }
-.m-panel   { animation: d-panel 16s var(--ease) infinite; }
-.m-fill.f1 { animation: d-fill-1 16s var(--ease) infinite; }
-.m-fill.f2 { animation: d-fill-2 16s var(--ease) infinite; }
-.m-fill.f3 { animation: d-fill-3 16s var(--ease) infinite; }
-.m-v.v1 { animation: d-v1 16s var(--ease) infinite; }
-.m-v.v2 { animation: d-v2 16s var(--ease) infinite; }
-.m-v.v3 { animation: d-v3 16s var(--ease) infinite; }
-.m-tail    { animation: d-tail 16s var(--ease) infinite; }
-.app-toast { animation: d-toast 16s var(--ease) infinite; }
+/* Reduced motion: freeze on the last exchange, finished, rather than on an
+   empty window. Seeks every paused animation to 44.0 s. */
+@media (prefers-reduced-motion: reduce) {
+  .m-empty { animation: d-empty 47.0s linear -44.0s infinite paused !important; }
+  .app-msgs { animation: d-fade 47.0s linear -44.0s infinite paused !important; }
+  .app-ph { animation: d-ph 47.0s linear -44.0s infinite paused !important; }
+  .e-a-typed { animation: d-a-typed 47.0s linear -44.0s infinite paused !important; }
+  .e-a-user { animation: d-a-user 47.0s linear -44.0s infinite paused !important; }
+  .e-a-act { animation: d-a-act 47.0s linear -44.0s infinite paused !important; }
+  .m-act-a.e-a-acta { animation: d-a-acta 47.0s linear -44.0s infinite paused !important; }
+  .m-spin.e-a-acta { animation: d-a-acta 47.0s linear -44.0s infinite paused !important; }
+  .e-a-actb { animation: d-a-actb 47.0s linear -44.0s infinite paused !important; }
+  .e-a-content { animation: d-a-content 47.0s linear -44.0s infinite paused !important; }
+  .e-a-card1 { animation: d-a-card1 47.0s linear -44.0s infinite paused !important; }
+  .e-a-card2 { animation: d-a-card2 47.0s linear -44.0s infinite paused !important; }
+  .e-a-card3 { animation: d-a-card3 47.0s linear -44.0s infinite paused !important; }
+  .e-a-bot { animation: d-a-bot 47.0s linear -44.0s infinite paused !important; }
+  .e-a-caret::after { animation: d-a-caret 47.0s linear -44.0s infinite paused !important; }
+  .e-a-fill1 { animation: d-a-fill1 47.0s linear -44.0s infinite paused !important; }
+  .e-a-v1 { animation: d-a-v1 47.0s linear -44.0s infinite paused !important; }
+  .e-a-fill2 { animation: d-a-fill2 47.0s linear -44.0s infinite paused !important; }
+  .e-a-v2 { animation: d-a-v2 47.0s linear -44.0s infinite paused !important; }
+  .e-a-fill3 { animation: d-a-fill3 47.0s linear -44.0s infinite paused !important; }
+  .e-a-v3 { animation: d-a-v3 47.0s linear -44.0s infinite paused !important; }
+  .e-a-panel { animation: d-a-panel 47.0s linear -44.0s infinite paused !important; }
+  .e-a-tail { animation: d-a-tail 47.0s linear -44.0s infinite paused !important; }
+  .e-a-toast { animation: d-a-toast 47.0s linear -44.0s infinite paused !important; }
+  .e-b-typed { animation: d-b-typed 47.0s linear -44.0s infinite paused !important; }
+  .e-b-user { animation: d-b-user 47.0s linear -44.0s infinite paused !important; }
+  .e-b-act { animation: d-b-act 47.0s linear -44.0s infinite paused !important; }
+  .m-act-a.e-b-acta { animation: d-b-acta 47.0s linear -44.0s infinite paused !important; }
+  .m-spin.e-b-acta { animation: d-b-acta 47.0s linear -44.0s infinite paused !important; }
+  .e-b-actb { animation: d-b-actb 47.0s linear -44.0s infinite paused !important; }
+  .e-b-content { animation: d-b-content 47.0s linear -44.0s infinite paused !important; }
+  .e-b-bot { animation: d-b-bot 47.0s linear -44.0s infinite paused !important; }
+  .e-b-caret::after { animation: d-b-caret 47.0s linear -44.0s infinite paused !important; }
+  .e-b-fill1 { animation: d-b-fill1 47.0s linear -44.0s infinite paused !important; }
+  .e-b-v1 { animation: d-b-v1 47.0s linear -44.0s infinite paused !important; }
+  .e-b-fill2 { animation: d-b-fill2 47.0s linear -44.0s infinite paused !important; }
+  .e-b-v2 { animation: d-b-v2 47.0s linear -44.0s infinite paused !important; }
+  .e-b-fill3 { animation: d-b-fill3 47.0s linear -44.0s infinite paused !important; }
+  .e-b-v3 { animation: d-b-v3 47.0s linear -44.0s infinite paused !important; }
+  .e-b-panel { animation: d-b-panel 47.0s linear -44.0s infinite paused !important; }
+  .e-b-tail { animation: d-b-tail 47.0s linear -44.0s infinite paused !important; }
+  .e-b-toast { animation: d-b-toast 47.0s linear -44.0s infinite paused !important; }
+  .e-c-typed { animation: d-c-typed 47.0s linear -44.0s infinite paused !important; }
+  .e-c-user { animation: d-c-user 47.0s linear -44.0s infinite paused !important; }
+  .e-c-act { animation: d-c-act 47.0s linear -44.0s infinite paused !important; }
+  .m-act-a.e-c-acta { animation: d-c-acta 47.0s linear -44.0s infinite paused !important; }
+  .m-spin.e-c-acta { animation: d-c-acta 47.0s linear -44.0s infinite paused !important; }
+  .e-c-actb { animation: d-c-actb 47.0s linear -44.0s infinite paused !important; }
+  .e-c-content { animation: d-c-content 47.0s linear -44.0s infinite paused !important; }
+  .e-c-bot { animation: d-c-bot 47.0s linear -44.0s infinite paused !important; }
+  .e-c-caret::after { animation: d-c-caret 47.0s linear -44.0s infinite paused !important; }
+  .e-c-fill1 { animation: d-c-fill1 47.0s linear -44.0s infinite paused !important; }
+  .e-c-v1 { animation: d-c-v1 47.0s linear -44.0s infinite paused !important; }
+  .e-c-fill2 { animation: d-c-fill2 47.0s linear -44.0s infinite paused !important; }
+  .e-c-v2 { animation: d-c-v2 47.0s linear -44.0s infinite paused !important; }
+  .e-c-fill3 { animation: d-c-fill3 47.0s linear -44.0s infinite paused !important; }
+  .e-c-v3 { animation: d-c-v3 47.0s linear -44.0s infinite paused !important; }
+  .e-c-panel { animation: d-c-panel 47.0s linear -44.0s infinite paused !important; }
+  .e-c-tail { animation: d-c-tail 47.0s linear -44.0s infinite paused !important; }
+  .e-c-toast { animation: d-c-toast 47.0s linear -44.0s infinite paused !important; }
+}
+/* demo-timeline:end */
 
 /* ---------- scroll reveal ----------
    Gated on .js, set by the inline script in <head> before first paint. */
@@ -496,9 +719,8 @@ h1 {
 }
 
 /* ---------- reduced motion ----------
-   Everything freezes, except that the demo must not freeze on its FIRST frame
-   (an empty window). A negative delay of -14.25 s seeks each paused animation to
-   89% of its cycle — the finished screenshot, toast included. */
+   Everything freezes; the demo's own reduced-motion rules (generated, above)
+   seek it to a finished frame instead of an empty window. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;
@@ -508,27 +730,5 @@ h1 {
   }
   .js .reveal { opacity: 1; transform: none; }
 
-  .app-msgs  { animation: d-fade 16s linear -14.25s infinite paused !important; }
-  .app-typed { animation: d-type 16s linear -14.25s infinite paused !important; }
-  .app-ph    { animation: d-ph 16s linear -14.25s infinite paused !important; }
-  .m-empty   { animation: d-empty 16s linear -14.25s infinite paused !important; }
-  .m-user    { animation: d-user 16s linear -14.25s infinite paused !important; }
-  .m-act     { animation: d-act 16s linear -14.25s infinite paused !important; }
-  .m-act-a, .m-spin { animation: d-act-a 16s linear -14.25s infinite paused !important; }
-  .m-act-b, .m-act-n { animation: d-act-b 16s linear -14.25s infinite paused !important; }
-  .m-cards   { animation: d-cards 16s linear -14.25s infinite paused !important; }
-  .m-card:nth-child(1) { animation: d-card1 16s linear -14.25s infinite paused !important; }
-  .m-card:nth-child(2) { animation: d-card2 16s linear -14.25s infinite paused !important; }
-  .m-card:nth-child(3) { animation: d-card3 16s linear -14.25s infinite paused !important; }
-  .m-bot     { animation: d-bot 16s linear -14.25s infinite paused !important; }
-  .m-bot > span::after { animation: d-bot-caret 16s linear -14.25s infinite paused !important; }
-  .m-panel   { animation: d-panel 16s linear -14.25s infinite paused !important; }
-  .m-fill.f1 { animation: d-fill-1 16s linear -14.25s infinite paused !important; }
-  .m-fill.f2 { animation: d-fill-2 16s linear -14.25s infinite paused !important; }
-  .m-fill.f3 { animation: d-fill-3 16s linear -14.25s infinite paused !important; }
-  .m-v.v1 { animation: d-v1 16s linear -14.25s infinite paused !important; }
-  .m-v.v2 { animation: d-v2 16s linear -14.25s infinite paused !important; }
-  .m-v.v3 { animation: d-v3 16s linear -14.25s infinite paused !important; }
-  .m-tail    { animation: d-tail 16s linear -14.25s infinite paused !important; }
-  .app-toast { animation: d-toast 16s linear -14.25s infinite paused !important; }
+}
 }
