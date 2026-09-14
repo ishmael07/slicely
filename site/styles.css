@@ -255,11 +255,7 @@ h1 {
   flex: 0 0 auto; width: 190px; border-radius: 11px; overflow: hidden;
   background: var(--panel); border: 0.5px solid var(--line); display: flex; flex-direction: column;
 }
-.m-thumb {
-  height: 120px; padding: 26px 48px; color: rgba(255, 255, 255, 0.42);
-  background: linear-gradient(160deg, rgba(255, 122, 69, 0.14), var(--panel-2));
-}
-.m-thumb svg { stroke-width: 2.2; }
+.m-thumb { display: block; width: 100%; height: 120px; object-fit: cover; background: var(--panel-2); }
 .m-meta { padding: 9px 10px 10px; display: flex; flex-direction: column; gap: 5px; }
 .m-meta b { font-size: 12.5px; font-weight: 650; line-height: 1.3; }
 .m-sub { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--faint); }
