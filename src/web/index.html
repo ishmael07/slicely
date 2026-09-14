@@ -93,6 +93,18 @@
           <button class="sheet-close" id="settingsClose" aria-label="Close settings">&times;</button>
         </div>
 
+        <!-- Who is signed in and what is left of their free credit. Hidden
+             unless this deploy has accounts AND somebody is signed in — on
+             desktop and on a BYO-only server it never renders. Filled in by
+             settings.ts from the one account store. -->
+        <section class="group hidden" id="accountGroup">
+          <div class="group-head">
+            <h3>Account</h3>
+            <p>Who you are, and what's left of your free credit.</p>
+          </div>
+          <div id="accountBody" class="ai-body"></div>
+        </section>
+
         <!-- Slicely runs on the user's own Anthropic or OpenAI key: this is the
              one place it is connected, replaced or removed. One row per
              provider, then the model and effort those keys pay for. -->
@@ -101,9 +113,12 @@
             <h3>AI</h3>
             <p>Your key is encrypted, sent only to its own provider, and billed by them.</p>
           </div>
+          <!-- One line saying what free credit runs on, for the people who have
+               no key of their own yet. Filled in (and hidden) by settings.ts. -->
+          <p id="freeModelNote" class="sheet-hint hidden"></p>
           <div id="aiBody" class="ai-body"></div>
-          <div class="fields">
-            <div class="field">
+          <div class="fields" id="aiModelFields">
+            <div class="field" id="ssModelRow">
               <label for="ssModel">Model</label>
               <div class="select-wrap"><select id="ssModel"></select></div>
             </div>

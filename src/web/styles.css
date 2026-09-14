@@ -2377,6 +2377,14 @@ button.menu-item:disabled {
   color: var(--text);
 }
 
+/* What free credit runs on. A real sentence in the panel's own voice, dim
+   rather than small — it is the only thing Settings → AI has to say to somebody
+   who has no key of their own. */
+#freeModelNote {
+  color: var(--text-dim);
+  margin-bottom: var(--sp-1);
+}
+
 /* ── The end of the free credit ─────────────────────────────────────────────
    Not a failure, so not the red card: a free trial finishing is an ordinary
    thing, and the two ways on from it are what the card is for. Same panel and

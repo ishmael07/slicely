@@ -127,7 +127,7 @@ if ((window as unknown as { slicely?: unknown }).slicely) {
 initUi();
 
 const accounts = initAccount({ openAiSettings });
-const settings = initSettings({ onError: renderError });
+const settings = initSettings({ onError: renderError, openWaitlist });
 initPrinters({ multiUser: () => config().multiUser });
 initJobs({ mountSend: attachSendSlot, planOptions });
 initChat({

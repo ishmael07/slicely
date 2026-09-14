@@ -8,20 +8,36 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability, SourceStatus } from "../shared/sourcing";
-import { del, errorMessage, getJson, patchJson, resetSession } from "./api.js";
+import { account, del, errorMessage, getJson, patchJson, resetSession, setAccount } from "./api.js";
 import { byId, confirmDialog, errorCard, externalLink, make, menu, skeleton, toast } from "./ui.js";
 import {
   config,
   configLoaded,
+  freeTier,
+  hasKey,
   providerLabel,
   providersWithKeys,
   renderAboutSection,
   renderAiSection,
 } from "./onboarding.js";
+import { signOut } from "./account.js";
 
 export interface SettingsDeps {
   /** Report a failed change where the user will see it. */
   onError(message: string): void;
+  /** The user asked to join the waitlist for a paid plan. */
+  openWaitlist(): void;
+}
+
+/**
+ * Is this session spending Slicely's credit rather than its own key?
+ *
+ * The one question that decides whether a model can be chosen at all: free
+ * credit runs on one model at one effort, so offering the pickers would be
+ * offering something the server will refuse.
+ */
+function onFreeCredit(): boolean {
+  return !hasKey() && account().signedIn;
 }
 
 export interface SettingsApi {
@@ -59,6 +75,11 @@ let ssBrimWidth: HTMLInputElement;
 let ssModel: HTMLSelectElement;
 let ssEffortRow: HTMLElement;
 let ssEffort: HTMLElement;
+
+let aiModelFields: HTMLElement;
+let freeModelNote: HTMLElement;
+let accountGroup: HTMLElement;
+let accountBody: HTMLElement;
 
 let sourcesListEl: HTMLElement;
 let aiBody: HTMLElement;
@@ -169,7 +190,12 @@ function renderModelEffort(): void {
   const { current, models } = settings;
   const chosen = models.find((m) => m.id === current.model);
   modelTriggerLabel.textContent = chosen?.label ?? current.model;
-  effortTriggerBtn.classList.toggle("hidden", !(chosen?.supportsEffort ?? false));
+  // On free credit there is one model at one effort, so the two pickers are not
+  // a choice — they are two controls that would be refused. They come back the
+  // moment a key of their own is connected.
+  const onCredit = onFreeCredit();
+  modelTriggerBtn.classList.toggle("hidden", onCredit);
+  effortTriggerBtn.classList.toggle("hidden", onCredit || !(chosen?.supportsEffort ?? false));
   effortTriggerLabel.textContent = effortLabel(current.effort);
   renderAiModelFields();
 }
@@ -182,10 +208,33 @@ function renderModelEffort(): void {
  * no key has its whole group disabled and says why in the group's own label,
  * which is the one place a `<select>` can carry a hint.
  */
+/**
+ * The one line above Settings → AI's rows, and the model/effort fields below
+ * them.
+ *
+ * Said only to somebody with no key of their own, for whom it is the whole
+ * story: this is the model, this is the effort, and a key of your own is how
+ * you change either. Returns true when the fields are hidden, so the caller can
+ * stop before filling in controls nobody can see.
+ */
+function renderFreeModelNote(): boolean {
+  const free = freeTier();
+  const sayFree = Boolean(free) && !hasKey();
+  freeModelNote.classList.toggle("hidden", !sayFree);
+  if (free && sayFree) {
+    freeModelNote.textContent = `Free credit runs on ${free.modelLabel} at ${free.effort} effort. Add your own key to choose models.`;
+  }
+  const onCredit = onFreeCredit();
+  aiModelFields.classList.toggle("hidden", onCredit);
+  return onCredit;
+}
+
 function renderAiModelFields(): void {
   if (!settings || !ssModel) return;
   const { current, models, efforts } = settings;
   const connected = new Set(providersWithKeys());
+
+  if (renderFreeModelNote()) return;
 
   ssModel.replaceChildren();
   const seen = new Set<string>();
@@ -440,6 +489,7 @@ function sourceRow(s: SourceAvailability): HTMLElement {
  * then reloads into a clean one.
  */
 function renderDataSection(): void {
+  const signedIn = account().signedIn;
   dataBody.replaceChildren();
   dataBody.appendChild(
     make(
@@ -448,19 +498,35 @@ function renderDataSection(): void {
       "Everything Slicely holds for you lives in one session: your key, chats, printer connections and files.",
     ),
   );
+  // Said before the button, not only in the dialog: deleting is the one action
+  // here that cannot be undone, and free credit is not granted twice.
+  if (signedIn) {
+    dataBody.appendChild(
+      make(
+        "p",
+        "sheet-hint",
+        "This also deletes your Slicely account. Free credit isn't granted twice, so signing in again won't give you a new balance.",
+      ),
+    );
+  }
   const btn = make("button", "btn ghost small danger", "Delete my data");
   btn.type = "button";
   btn.addEventListener("click", () => {
     void (async () => {
       const ok = await confirmDialog({
         title: "Delete everything?",
-        body: "Your key, chats, printer connections and workspace files are deleted from the server. This cannot be undone.",
+        body: signedIn
+          ? "Your account, key, chats, printer connections and workspace files are deleted from the server. Free credit isn't granted twice, so signing in again won't give you a new balance. This cannot be undone."
+          : "Your key, chats, printer connections and workspace files are deleted from the server. This cannot be undone.",
         confirmLabel: "Delete my data",
         danger: true,
       });
       if (!ok) return;
       try {
         await del("/api/session");
+        // The account went with the session, so nothing in this page should
+        // still be claiming a balance while the reload happens.
+        setAccount({ signedIn: false });
         // The cookie we were holding now names a session the server has thrown
         // away (hosted) or emptied (desktop), and api.ts caches the boot promise
         // for the life of the page. Without this, the first call after the delete
@@ -476,15 +542,76 @@ function renderDataSection(): void {
   dataBody.appendChild(btn);
 }
 
-/** Redraw the three sections that describe the account rather than a slice.
+// ── Settings → Account ───────────────────────────────────────────────────────
+
+/** One labelled row in the Account section, reusing Settings → AI's row so the
+ *  two panels read as one column rather than two designs. */
+function accountRow(name: string, value: string, action?: HTMLElement): HTMLElement {
+  const row = make("div", "ai-row");
+  const head = make("div", "ai-row-head");
+  const text = make("div", "ai-text");
+  text.append(make("span", "ai-name", name), make("span", "ai-status", value));
+  head.appendChild(text);
+  if (action) {
+    const actions = make("div", "ai-actions");
+    actions.appendChild(action);
+    head.appendChild(actions);
+  }
+  row.appendChild(head);
+  return row;
+}
+
+function ghostButton(label: string, onClick: () => void): HTMLButtonElement {
+  const b = make("button", "btn ghost small", label);
+  b.type = "button";
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+/**
+ * Settings → Account: who you are, what is left, and the two things you can do
+ * about it.
+ *
+ * Hidden outright unless somebody is actually signed in — on desktop, on a
+ * BYO-only server, and for a visitor who pasted a key without signing in, there
+ * is no account to describe and an empty section would be a lie.
+ */
+function renderAccountSection(): void {
+  const me = account();
+  const acct = me.signedIn ? me.account : undefined;
+  const show = configLoaded() && config().accountsEnabled && Boolean(acct);
+  accountGroup.classList.toggle("hidden", !show);
+  accountBody.replaceChildren();
+  if (!acct) return;
+
+  const free = freeTier();
+  const rows = make("div", "ai-rows");
+  rows.append(
+    accountRow("Signed in as", acct.email, ghostButton("Sign out", () => void signOut())),
+    accountRow("Free credit", `${acct.balanceLabel} left of ${acct.grantedLabel}`),
+    accountRow("Chats today", `${acct.chatsToday} of ${acct.chatsPerDay}`),
+  );
+  if (free) rows.appendChild(accountRow("Running on", `${free.modelLabel}, ${free.effort} effort`));
+  rows.appendChild(
+    accountRow("Paid plans", "Coming soon", ghostButton("Join the waitlist", () => deps.openWaitlist())),
+  );
+  accountBody.appendChild(rows);
+}
+
+/** Redraw the sections that describe the account rather than a slice.
  *
  *  With no /api/config there is nothing truthful to say about a key, so the AI
  *  section stays hidden rather than claiming one is connected. */
 export function renderAccount(): void {
+  renderAccountSection();
   byId<HTMLElement>("aiGroup").classList.toggle("hidden", !configLoaded());
   if (configLoaded()) {
     renderAiSection(aiBody);
-    renderAiModelFields();
+    renderFreeModelNote();
+    // The composer's pickers answer to the same question this panel does — is
+    // this session spending its own key or Slicely's credit — so they are
+    // repainted here too, not only when settings are fetched.
+    renderModelEffort();
   }
   renderDataSection();
   renderAboutSection(aboutBody);
@@ -517,6 +644,10 @@ export function initSettings(d: SettingsDeps): SettingsApi {
   ssModel = byId<HTMLSelectElement>("ssModel");
   ssEffortRow = byId<HTMLElement>("ssEffortRow");
   ssEffort = byId<HTMLElement>("ssEffort");
+  aiModelFields = byId<HTMLElement>("aiModelFields");
+  freeModelNote = byId<HTMLElement>("freeModelNote");
+  accountGroup = byId<HTMLElement>("accountGroup");
+  accountBody = byId<HTMLElement>("accountBody");
   sourcesListEl = byId<HTMLElement>("sourcesList");
   aiBody = byId<HTMLElement>("aiBody");
   dataBody = byId<HTMLElement>("dataBody");

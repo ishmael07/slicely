@@ -191,7 +191,10 @@ function openAccountMenu(): void {
   );
 }
 
-async function signOut(): Promise<void> {
+/** Sign out: the account is forgotten, everything else — the workspace, the
+ *  chats, any key of their own — stays exactly where it was. Shared with the
+ *  Settings row, so there is one place that knows what signing out means. */
+export async function signOut(): Promise<void> {
   try {
     await postJson("/api/auth/signout", {});
     // The workspace, the chats and any key of their own all stay — signing out
