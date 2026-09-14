@@ -1,0 +1,336 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// The account store — one small JSON file per person, one index, no lost writes.
+//
+// An account is the only durable record Slicely keeps about a human, and it is
+// deliberately tiny: who they are at their provider, the email to show them,
+// what was granted, what has been spent, and today's chat count. No IP, no
+// access token, no refresh token, no avatar URL, no prompt text. A test reads
+// the file back and asserts exactly that, because the cheapest way to keep a
+// promise about what we store is to store almost nothing.
+//
+// TWO LOOKUPS, ONE IDENTITY. `byProviderUser` ("google:1078…") is the fast,
+// stable path for a repeat sign-in — it survives the person changing their
+// address at the provider. `byEmail` (the NORMALISED address, see email.ts) is
+// what makes one human one account: signing in with Google and later with
+// GitHub on the same verified address resolves to the same file, and therefore
+// to one grant rather than two.
+//
+// THE GRANT HAPPENS ONCE. `grantedMicros` is written at creation and never
+// changed. Deleting an account does not clear the debt: the normalised email
+// goes onto `retired`, so signing up again gets a working account with a zero
+// balance rather than another 50 cents. Without that, "delete my data" would be
+// a coupon generator.
+//
+// ATOMIC WRITES, EVERYWHERE. A temp sibling then `rename`, mode 0600 — the same
+// shape as userkey.ts and printers/registry.ts. A plain write truncates first,
+// so a crash mid-write would leave a zero-length account file, which reads as a
+// person who never existed and whose spend is forgotten.
+//
+// AND A LOCK. One process serving two tabs still races: read balance, add cost,
+// write — twice concurrently — loses one charge. `withAccountLock` is a promise
+// chain per key, so every read-modify-write against one account (or one day's
+// spend total) is serialised. It is keyed on an arbitrary string so meter.ts can
+// take `spend:<day>` out of the same map without a second lock table.
+// ─────────────────────────────────────────────────────────────────────────────
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { accountFile, indexFile, utcDay } from "./paths";
+
+export type AccountProvider = "google" | "github";
+
+/**
+ * One person's account.
+ *
+ * Money is in µ¢ — millionths of a cent, 1,000,000 µ¢ = 1¢ (see pricing.ts).
+ * Integers throughout, so nothing rounds to zero and nothing drifts.
+ */
+export interface Account {
+  version: 1;
+  /** 16 random bytes, hex. Never derived from the email or the provider id. */
+  id: string;
+  provider: AccountProvider;
+  /** Google's `sub`, GitHub's numeric `id`. Opaque; never displayed. */
+  providerUserId: string;
+  /** As the provider gave it, for display. */
+  email: string;
+  /** The grant key — see email.ts's `normalizeEmail`. */
+  normalizedEmail: string;
+  name?: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** What was granted, once, at creation. Never changes. */
+  grantedMicros: number;
+  /** Monotonic. The balance is `granted − spent`, floored at 0. */
+  spentMicros: number;
+  /** "YYYY-MM-DD" in UTC — which day `chatCount` counts. */
+  chatDay: string;
+  chatCount: number;
+  /** Set by hand by the owner. Answers `email_blocked`. */
+  blocked?: true;
+}
+
+/** The lookup maps plus the retired list. Rewritten whole on every change — it
+ *  is a few hundred bytes per account and a single file cannot half-update. */
+export interface AccountIndex {
+  version: 1;
+  /** "<provider>:<providerUserId>" → accountId */
+  byProviderUser: Record<string, string>;
+  /** normalizedEmail → accountId */
+  byEmail: Record<string, string>;
+  /** normalizedEmails that once held credit and were deleted. */
+  retired: string[];
+}
+
+/** What a completed OAuth flow knows about the person, before any account
+ *  exists. Produced by the provider modules (src/server/oauth/), which have
+ *  already verified the address. */
+export interface SignInProfile {
+  provider: AccountProvider;
+  providerUserId: string
+  email: string;
+  normalizedEmail: string;
+  name?: string;
+}
+
+export interface SignInOutcome {
+  account: Account;
+  /** True only the very first time a normalised email is seen. Drives the IP counter. */
+  granted: boolean;
+}
+
+/** The index, read once and then held. `undefined` means "not read yet". */
+let index: AccountIndex | undefined;
+
+/** Read-through cache of account files, keyed by id. Entries are the LIVE
+ *  objects callers mutate under the lock, so a charge and a chat count in the
+ *  same turn see each other. */
+const accounts = new Map<string, Account>();
+
+/** One promise chain per lock key — see `withAccountLock`. */
+const locks = new Map<string, Promise<unknown>>();
+
+function emptyIndex(): AccountIndex {
+  return { version: 1, byProviderUser: {}, byEmail: {}, retired: [] };
+}
+
+/**
+ * The index, off disk on first use.
+ *
+ * A MALFORMED FILE IS REPLACED, NOT THROWN ON. The index is a derived cache of
+ * what the `by-id/` files already say; a hand-edited or half-written one must
+ * not brick sign-in for everybody. The cost of rebuilding from empty is that a
+ * returning visitor gets a second account — and `retired` is the list that
+ * keeps even that from minting a second grant, which is why it lives here
+ * rather than being inferred.
+ */
+function loadIndex(): AccountIndex {
+  if (index) return index;
+  try {
+    const parsed = JSON.parse(readFileSync(indexFile(), "utf8")) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const raw = parsed as Partial<AccountIndex>;
+      index = {
+        version: 1,
+        byProviderUser: isRecord(raw.byProviderUser) ? raw.byProviderUser : {},
+        byEmail: isRecord(raw.byEmail) ? raw.byEmail : {},
+        retired: Array.isArray(raw.retired) ? raw.retired.filter((e) => typeof e === "string") : [],
+      };
+      return index;
+    }
+  } catch {
+    /* no file yet, or unreadable — an empty index is the honest reading */
+  }
+  index = emptyIndex();
+  return index;
+}
+
+function isRecord(v: unknown): v is Record<string, string> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  return Object.values(v as Record<string, unknown>).every((x) => typeof x === "string");
+}
+
+function writeIndex(next: AccountIndex): void {
+  index = next;
+  writeAtomic(indexFile(), JSON.stringify(next, null, 2));
+}
+
+/**
+ * Replace a file atomically: write a temp sibling at 0600, then `rename`.
+ *
+ * `rename` within a directory is atomic, so a reader sees either the old file
+ * or the new one — never a truncated account whose spend has been forgotten.
+ * The temp is removed if the rename fails, so a failed write never leaves a
+ * readable copy of the record beside it.
+ */
+function writeAtomic(path: string, text: string): void {
+  const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  try {
+    // writeFileSync's `mode` only applies when it CREATES the file.
+    chmodSync(tmp, 0o600);
+  } catch {
+    /* best-effort on platforms without POSIX permission bits */
+  }
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** The account with this id, off disk on first ask. The returned object is the
+ *  cached, live one: mutate it under `withAccountLock` and `writeAccount` it. */
+export function getAccount(id: string): Account | undefined {
+  const hit = accounts.get(id);
+  if (hit) return hit;
+  if (!/^[0-9a-f]{32}$/.test(id)) return undefined;
+  const path = accountFile(id);
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Account;
+    if (!parsed || typeof parsed !== "object" || parsed.id !== id) return undefined;
+    accounts.set(id, parsed);
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Persist one account. Atomic; also refreshes the read-through cache, so the
+ *  next reader cannot see a staler object than the one just written. */
+export function writeAccount(account: Account): void {
+  accounts.set(account.id, account);
+  writeAtomic(accountFile(account.id), JSON.stringify(account, null, 2));
+}
+
+/** What is left to spend: `granted − spent`, floored at zero. The floor is real
+ *  — the last call of a turn is charged after it happened, so `spentMicros` can
+ *  overshoot `grantedMicros` by at most one call. */
+export function balanceMicros(account: Account): number {
+  return Math.max(0, account.grantedMicros - account.spentMicros);
+}
+
+/** True when this normalised email has already had a grant and given it back.
+ *  Asked before every new account is created. */
+export function isRetired(normalizedEmail: string): boolean {
+  return loadIndex().retired.includes(normalizedEmail);
+}
+
+/**
+ * Find the account this sign-in belongs to, or create one with the grant.
+ *
+ * The two lookups are tried in order — provider identity first (stable and
+ * exact), then the normalised email (which is what makes two providers one
+ * person). A hit refreshes what the provider just told us, adds the new
+ * provider identity if this is a second way in, and grants nothing.
+ */
+export function findOrCreateAccount(profile: SignInProfile, grantMicros: number): SignInOutcome {
+  const idx = loadIndex();
+  const providerKey = `${profile.provider}:${profile.providerUserId}`;
+  const existingId = idx.byProviderUser[providerKey] ?? idx.byEmail[profile.normalizedEmail];
+  const existing = existingId ? getAccount(existingId) : undefined;
+
+  if (existing) {
+    // The provider is the authority on the display email and the name; both can
+    // change between sign-ins and neither is an identity.
+    existing.email = profile.email;
+    if (profile.name) existing.name = profile.name;
+    existing.lastSeenAt = Date.now();
+    writeAccount(existing);
+    // A second way into the same person — record it so next time is one lookup.
+    if (idx.byProviderUser[providerKey] !== existing.id) {
+      writeIndex({
+        ...idx,
+        byProviderUser: { ...idx.byProviderUser, [providerKey]: existing.id },
+        byEmail: { ...idx.byEmail, [profile.normalizedEmail]: existing.id },
+      });
+    }
+    return { account: existing, granted: false };
+  }
+
+  // A retired email gets a working account with nothing in it. Deleting an
+  // account must not be a way to ask for the grant again.
+  const grantedMicros = isRetired(profile.normalizedEmail) ? 0 : grantMicros;
+  const now = Date.now();
+  const account: Account = {
+    version: 1,
+    id: randomBytes(16).toString("hex"),
+    provider: profile.provider,
+    providerUserId: profile.providerUserId,
+    email: profile.email,
+    normalizedEmail: profile.normalizedEmail,
+    ...(profile.name ? { name: profile.name } : {}),
+    createdAt: now,
+    lastSeenAt: now,
+    grantedMicros,
+    spentMicros: 0,
+    chatDay: utcDay(now),
+    chatCount: 0,
+  };
+  writeAccount(account);
+  writeIndex({
+    ...idx,
+    byProviderUser: { ...idx.byProviderUser, [providerKey]: account.id },
+    byEmail: { ...idx.byEmail, [profile.normalizedEmail]: account.id },
+  });
+  return { account, granted: grantedMicros > 0 };
+}
+
+/**
+ * Remove an account and retire its email.
+ *
+ * Both index entries go, the normalised email joins `retired` (deduped), the
+ * file is deleted and the cache entry dropped. The retirement is the point: the
+ * ledger lines stay (they are the owner's audit trail and name no person), but
+ * the 50 cents is spent whether or not the record survives.
+ */
+export function deleteAccount(id: string): void {
+  const account = getAccount(id);
+  const idx = loadIndex();
+  const byProviderUser = { ...idx.byProviderUser };
+  const byEmail = { ...idx.byEmail };
+  for (const [key, value] of Object.entries(byProviderUser)) {
+    if (value === id) delete byProviderUser[key];
+  }
+  for (const [key, value] of Object.entries(byEmail)) {
+    if (value === id) delete byEmail[key];
+  }
+  const retired = [...idx.retired];
+  if (account && !retired.includes(account.normalizedEmail)) {
+    retired.push(account.normalizedEmail);
+  }
+  writeIndex({ version: 1, byProviderUser, byEmail, retired });
+  accounts.delete(id);
+  rmSync(accountFile(id), { force: true });
+}
+
+/**
+ * Run `fn` with nothing else running under the same key.
+ *
+ * A promise chain, not a mutex library: each caller waits on the current tail
+ * and becomes the new tail. The `finally` clears the map entry only when it is
+ * still the tail, so the map does not grow per account forever and a late
+ * arrival never chains onto a dead promise.
+ *
+ * A REJECTION MUST NOT POISON THE CHAIN — the tail is stored already-caught, so
+ * one failed charge cannot make every later charge for that account reject.
+ */
+export function withAccountLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const previous = locks.get(id) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  const tail = run.catch(() => undefined);
+  locks.set(id, tail);
+  void tail.finally(() => {
+    if (locks.get(id) === tail) locks.delete(id);
+  });
+  return run;
+}
+
+/** Tests only: drop the in-memory index and account caches, as if the server
+ *  had just started. The files on disk are the truth. */
+export function resetAccountsForTests(): void {
+  index = undefined;
+  accounts.clear();
+  locks.clear();
+}
