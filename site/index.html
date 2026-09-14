@@ -34,7 +34,7 @@
        on .js means a reader with JavaScript off gets the whole page immediately
        rather than a blank canvas. -->
   <script>document.documentElement.classList.add('js');</script>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
   <script src="config.js"></script>
 </head>
 <body>
@@ -174,7 +174,6 @@
           <p>Slicely picks the orientation and settings, then sends the G-code to your printer.</p>
         </li>
       </ol>
-      <p class="note reveal" data-delay="3">Nothing prints until you arm it. Slicely never starts a printer on its own.</p>
     </section>
 
     <!-- ================= features ================= -->
@@ -221,52 +220,40 @@
     <section class="section" id="web-or-mac">
       <div class="section-head reveal">
         <h2>Web or Mac</h2>
-        <p>One codebase, two ways to run it. The difference is which printers each one can reach.</p>
       </div>
-      <div class="table-wrap reveal" data-delay="1">
-        <table class="compare">
-          <thead>
-            <tr>
-              <th scope="col"><span class="vh">Feature</span></th>
-              <th scope="col">Web</th>
-              <th scope="col">macOS app</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><th scope="row">Install</th><td>None</td><td>Download the DMG</td></tr>
-            <tr><th scope="row">Slicing</th><td>Server-side, headless PrusaSlicer</td><td>Your local PrusaSlicer</td></tr>
-            <tr><th scope="row">Cloud printers <small>Bambu, Prusa Connect</small></th><td class="yes">Yes</td><td class="yes">Yes</td></tr>
-            <tr><th scope="row">LAN printers <small>OctoPrint, Klipper, PrusaLink</small></th><td>Only when self-hosted on your network</td><td class="yes">Yes</td></tr>
-            <tr><th scope="row">Open in the PrusaSlicer GUI</th><td class="no">—</td><td class="yes">Yes</td></tr>
-          </tbody>
-        </table>
+      <div class="ways">
+        <div class="way reveal" data-delay="1">
+          <h3>Web</h3>
+          <ul>
+            <li>Nothing to install</li>
+            <li>Slices on our server</li>
+            <li>Cloud printers: Bambu, Prusa Connect</li>
+          </ul>
+          <a class="btn btn-primary" href="https://slicely.fly.dev" data-href="APP_URL">Open the web app</a>
+        </div>
+        <div class="way reveal" data-delay="2">
+          <h3>Mac</h3>
+          <ul>
+            <li>Slices with your own PrusaSlicer</li>
+            <li>Every printer, including OctoPrint, Klipper and PrusaLink on your LAN</li>
+            <li>Opens the result in PrusaSlicer</li>
+          </ul>
+          <a class="btn btn-ghost" href="https://github.com/ishmael07/slicely/releases/latest" data-href="DOWNLOAD_URL"><svg class="apple" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.37 12.7c-.02-2.3 1.88-3.4 1.96-3.45-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.15-2.76.83-3.48.83-.72 0-1.83-.81-3-.79-1.55.02-2.97.9-3.77 2.28-1.6 2.78-.41 6.9 1.15 9.16.77 1.1 1.68 2.35 2.88 2.3 1.16-.05 1.6-.75 3-.75s1.79.75 3.01.73c1.24-.02 2.03-1.13 2.79-2.24.88-1.29 1.24-2.53 1.26-2.6-.03-.01-2.42-.93-2.44-3.67ZM14.09 5.96c.64-.77 1.07-1.85.95-2.92-.92.04-2.03.61-2.69 1.38-.59.68-1.11 1.78-.97 2.83 1.03.08 2.07-.52 2.71-1.29Z"/></svg>Download for Mac</a>
+        </div>
       </div>
     </section>
 
     <!-- ================= your key ================= -->
     <section class="section" id="byo-ai">
-      <div class="byo reveal">
+      <div class="keys reveal">
         <div>
           <h2>Bring your own key.</h2>
-          <p>
-            Anthropic or OpenAI — connect either, or both, and pick any model from the provider
-            you chose. Your key stays encrypted on your side, your chats go only to that provider,
-            and you pay them directly. No account, no subscription lock-in.
-          </p>
-          <p class="fine">
-            Get a key at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
-            or <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a>.
-          </p>
+          <p>Anthropic or OpenAI. Encrypted, sent only to that provider, billed to you. No account.</p>
         </div>
-        <ul class="needs">
-          <li><b>On the web</b><span>A browser.</span></li>
-          <li><b>On a Mac</b><span><a href="https://www.prusa3d.com/page/prusaslicer_424/" target="_blank" rel="noopener">PrusaSlicer</a> installed, for the slicing itself.</span></li>
-          <li><b>Either way</b><span>An Anthropic or OpenAI API key, and a printer when you want to send something to one.</span></li>
-        </ul>
-      </div>
-      <div class="final-cta reveal" data-delay="1">
-        <a class="btn btn-primary btn-lg" href="https://slicely.fly.dev" data-href="APP_URL">Open the web app</a>
-        <a class="btn btn-ghost btn-lg" href="https://github.com/ishmael07/slicely/releases/latest" data-href="DOWNLOAD_URL"><svg class="apple" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.37 12.7c-.02-2.3 1.88-3.4 1.96-3.45-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.15-2.76.83-3.48.83-.72 0-1.83-.81-3-.79-1.55.02-2.97.9-3.77 2.28-1.6 2.78-.41 6.9 1.15 9.16.77 1.1 1.68 2.35 2.88 2.3 1.16-.05 1.6-.75 3-.75s1.79.75 3.01.73c1.24-.02 2.03-1.13 2.79-2.24.88-1.29 1.24-2.53 1.26-2.6-.03-.01-2.42-.93-2.44-3.67ZM14.09 5.96c.64-.77 1.07-1.85.95-2.92-.92.04-2.03.61-2.69 1.38-.59.68-1.11 1.78-.97 2.83 1.03.08 2.07-.52 2.71-1.29Z"/></svg>Download for Mac</a>
+        <div class="key-links">
+          <a href="https://console.anthropic.com" target="_blank" rel="noopener">Anthropic key <span aria-hidden="true">→</span></a>
+          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI key <span aria-hidden="true">→</span></a>
+        </div>
       </div>
     </section>
   </main>
@@ -282,11 +269,7 @@
         <span>Made by ishmael07</span>
       </nav>
     </div>
-    <p class="footer-fine">
-      Slicely's hosted slicing runs PrusaSlicer, which is AGPLv3: the exact source commit the
-      server is running is linked from the app's own Settings → About, as AGPL §13 requires.
-      PrusaSlicer is a trademark of Prusa Research; Slicely is not affiliated.
-    </p>
+    <p class="footer-fine">PrusaSlicer is a trademark of Prusa Research. Slicely is not affiliated.</p>
   </footer>
 
   <script src="main.js"></script>
