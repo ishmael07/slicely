@@ -13,7 +13,12 @@ import { loadJobsApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
 import type { JobsApi, PlanJobPartInput } from "../facades";
 import type { JobEvent, JobPlanOptions } from "../../shared/jobs";
-import { adoptGcodeFile, isInsideDir, type SessionRecord } from "../session";
+import {
+  adoptGcodeFile,
+  resolveSessionPath,
+  workspaceRelPath,
+  type SessionRecord,
+} from "../session";
 import { sendError, sendScrubbed, toWire, WireError } from "../errors";
 import { withSliceQueueLimit, REST_SLICE_QUEUE_MS } from "../../main/prusaslicer";
 
@@ -40,15 +45,21 @@ export function createJobsRouter(
       sendError(res, new WireError(400, "parts is required"));
       return;
     }
+    // Each part's path arrives the way the client was told about it
+    // ("uploads/part1.stl") or absolute; either way it must resolve INSIDE this
+    // session's directory, and the planner is handed the absolute path that
+    // check was made about — never the string the client sent.
+    const vetted: Array<Record<string, unknown>> = [];
     for (const part of parts) {
-      const p = (part as { path?: unknown }).path;
-      if (typeof p !== "string" || !isInsideDir(session.dir, p)) {
+      const abs = resolveSessionPath(session, (part as { path?: unknown }).path);
+      if (!abs) {
         sendError(
           res,
           new WireError(400, "One or more of those files isn't in your workspace.", "not_in_workspace"),
         );
         return;
       }
+      vetted.push({ ...(part as Record<string, unknown>), path: abs });
     }
     const opts = (body.opts ?? {}) as JobPlanOptions;
     // The bed is the one option planning cannot invent: packing, oversize
@@ -62,12 +73,12 @@ export function createJobsRouter(
       return;
     }
     try {
-      const job = await api.planJob(parts as PlanJobPartInput[], opts);
+      const job = await api.planJob(vetted as unknown as PlanJobPartInput[], opts);
       // Record ownership: main/jobs/store.ts is process-wide, so this set is
       // what keeps one visitor's jobs invisible to every other visitor.
       session.jobIds.add(job.id);
       session.lastActiveAt = Date.now();
-      res.json(job);
+      res.json(toWireJob(session, job));
     } catch (err) {
       // The planner's own complaints ("planJob requires at least one part.",
       // "part is larger than the bed") are exactly what the user needs to read,
@@ -148,7 +159,7 @@ export function createJobsRouter(
   router.get("/jobs", async (req: Request, res: Response) => {
     const session = req.session!;
     const all = await api.listJobs();
-    res.json(all.filter((j) => session.jobIds.has(j.id)));
+    res.json(all.filter((j) => session.jobIds.has(j.id)).map((j) => toWireJob(session, j)));
   });
 
   /** Geometry for a whole plate, so the UI can show the real arrangement. */
@@ -186,7 +197,7 @@ export function createJobsRouter(
       sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
-    res.json(job);
+    res.json(toWireJob(session, job));
   });
 
   return router;
@@ -217,6 +228,48 @@ function describeBadBed(bed: JobPlanOptions["bed"] | undefined): string | undefi
   return undefined;
 }
 
+/**
+ * A job as the CLIENT may see it: every absolute server path gone.
+ *
+ * The job contract is full of them — `JobPart.path`, `JobPlate.gcodePath` and
+ * `.projectPath`, `SliceMetrics.gcodePath`, `ColourAssignment.partPath` — and
+ * all of them named `<workdir>/sessions/<id>/…`, so planning a job handed the
+ * browser the sessions root and its own session id. The client has never used
+ * any of them: it downloads and prints by opaque id (`gcodeId`, `projectId`)
+ * and labels rows with `name`.
+ *
+ * So a part's path becomes a workspace-relative `relPath` (the same reference
+ * POST /api/upload hands out, and the one form this router accepts back), and
+ * the output paths are dropped outright — their ids are already on the wire.
+ *
+ * Written as a walk over the object rather than a field-by-field mapper on
+ * purpose: a new nested field carrying a path would otherwise ship the moment
+ * somebody added it, which is exactly how these got here.
+ */
+const RENAMED_PATH_KEYS = new Map([
+  ["path", "relPath"],
+  ["partPath", "partRelPath"],
+]);
+/** Paths to an OUTPUT we already address by token — nothing is lost by
+ *  dropping them (see adoptGcodeFile). */
+const DROPPED_PATH_KEYS = new Set(["gcodePath", "projectPath", "filePath"]);
+
+export function toWireJob<T>(session: SessionRecord, job: T): unknown {
+  if (Array.isArray(job)) return job.map((entry) => toWireJob(session, entry));
+  if (!job || typeof job !== "object") return job;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(job as Record<string, unknown>)) {
+    const renamed = RENAMED_PATH_KEYS.get(key);
+    if (renamed && typeof value === "string") {
+      out[renamed] = workspaceRelPath(session, value);
+      continue;
+    }
+    if (DROPPED_PATH_KEYS.has(key)) continue;
+    out[key] = toWireJob(session, value);
+  }
+  return out;
+}
+
 export async function relocateJobEventGcode(
   session: SessionRecord,
   event: JobEvent,
@@ -228,8 +281,11 @@ export async function relocateJobEventGcode(
   // is the closest a web page can get to "open it in the slicer".
   if (event.type === "plate_done") {
     const adopted = await adoptGcodeFile(session, event.metrics.gcodePath).catch(() => undefined);
-    if (!adopted) return wire;
-    return { ...wire, metrics: { ...event.metrics, gcodePath: adopted.path }, gcodeId: adopted.id };
+    if (!adopted) return toWireJob(session, wire) as Record<string, unknown>;
+    return toWireJob(session, { ...wire, metrics: event.metrics, gcodeId: adopted.id }) as Record<
+      string,
+      unknown
+    >;
   }
 
   if (event.type === "job_planned" || event.type === "job_done") {
@@ -256,8 +312,8 @@ export async function relocateJobEventGcode(
         return out;
       }),
     );
-    return { ...wire, job: { ...event.job, plates } };
+    return toWireJob(session, { ...wire, job: { ...event.job, plates } }) as Record<string, unknown>;
   }
 
-  return wire;
+  return toWireJob(session, wire) as Record<string, unknown>;
 }

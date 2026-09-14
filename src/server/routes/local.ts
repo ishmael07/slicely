@@ -38,6 +38,7 @@ import { isDesktop } from "../../main/mode";
 import { resolveInsideSessionWorkspace } from "../../main/session-context";
 import { acceptUploads } from "../../main/uploads";
 import { WireError, sendError } from "../errors";
+import { toWorkspaceFile } from "../session";
 import { noLimit, type RouteLimitOptions } from "../security";
 
 /** The same per-request file count POST /api/upload allows. */
@@ -103,7 +104,12 @@ export function createLocalRouter(opts: RouteLimitOptions = {}): Router {
 
       session.activeModelPaths = uploaded.map((u) => u.localPath);
       session.lastActiveAt = Date.now();
-      res.json({ uploaded, rejected: [] });
+      // The same shape POST /api/upload answers with, so the client keeps one
+      // code path — which means the same workspace-relative reference, not the
+      // absolute path (see toWorkspaceFile). The client sent us a path here, but
+      // that is no reason to hand a fresh one back: what it gets is a reference
+      // into its own workspace, which is where the file now lives.
+      res.json({ uploaded: uploaded.map((u) => toWorkspaceFile(session, u)), rejected: [] });
     } catch (err) {
       sendError(res, err);
     }

@@ -74,10 +74,15 @@ test("a printer added by one session is invisible and untouchable to another", a
     }),
   );
   try {
+    // ── Session A boots, which is the one call that mints a workspace ──────
+    // Every other endpoint answers 401 `no_session` without a cookie (see
+    // session.ts's MINTING_ROUTES), exactly as a browser's boot does.
+    const cookieA = cookieOf(await fetch(`${base}/api/config`));
+
     // ── Session A adds a cloud printer with a credential ───────────────────
     const add = await fetch(`${base}/api/printers`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie: cookieA },
       body: JSON.stringify({
         transport: "prusa-connect",
         label: "A's MK4",
@@ -87,14 +92,13 @@ test("a printer added by one session is invisible and untouchable to another", a
     });
     const addText = await add.text();
     assert.equal(add.status, 201, addText);
-    const cookieA = cookieOf(add);
     const idA = (JSON.parse(addText) as { printer: { id: string } }).printer.id;
     assert.ok(idA);
     assert.ok(!addText.includes("tok-A"), "the credential must never come back over the wire");
 
-    // ── Session B: a different browser, no cookie ──────────────────────────
-    const listB = await fetch(`${base}/api/printers`);
-    const cookieB = cookieOf(listB);
+    // ── Session B: a different browser, its own boot call ──────────────────
+    const cookieB = cookieOf(await fetch(`${base}/api/config`));
+    const listB = await fetch(`${base}/api/printers`, { headers: { cookie: cookieB } });
     assert.deepEqual(await listB.json(), [], "B's printer list is its own, and empty");
 
     const patch = await fetch(`${base}/api/printers/${idA}`, {

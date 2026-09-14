@@ -50,10 +50,32 @@ function hostAllowed(host: string): boolean {
  * not a compression policy.
  */
 const MAX_BYTES = 16 * 1024 * 1024;
-const TIMEOUT_MS = 8000;
+/**
+ * How long we wait for a source's image server.
+ *
+ * 8 s was too short to be honest about what these URLs are: the sources serve
+ * the listing's FULL-RESOLUTION upload (see MAX_BYTES above), so a 3 MB photo
+ * on a slow CDN legitimately takes ten seconds — three to five cards in a
+ * twelve-result search came back 502 and rendered as ◆ placeholders, measured
+ * against Printables and MyMiniFactory. 15 s covers the real ones; anything
+ * beyond that is a dead host, and a card without a picture is still usable.
+ *
+ * Exported so the test can assert the number this route actually waits, rather
+ * than a copy of it written out again in the test.
+ */
+export const THUMB_TIMEOUT_MS = 15_000;
 
-export function createThumbsRouter(): Router {
+/** What this router needs to reach the internet. Injectable ONLY so a test can
+ *  see which URL and which timeout the route asked for without a network; the
+ *  default is the SSRF-guarded fetch and nothing else may be passed in
+ *  production (index.ts calls this with no options). */
+export interface ThumbsRouterOptions {
+  fetch?: typeof guardedFetch;
+}
+
+export function createThumbsRouter(opts: ThumbsRouterOptions = {}): Router {
   const router = Router();
+  const fetchUpstream = opts.fetch ?? guardedFetch;
 
   router.get("/thumb", async (req: Request, res: Response) => {
     const raw = typeof req.query.url === "string" ? req.query.url : "";
@@ -80,7 +102,7 @@ export function createThumbsRouter(): Router {
       // URL nobody has checked — so the fetch goes through the shared guard,
       // which follows the chain itself and re-applies BOTH the SSRF ranges and
       // the `allow` predicate below to every hop.
-      const upstream = await guardedFetch(
+      const upstream = await fetchUpstream(
         url.toString(),
         {
           headers: {
@@ -90,7 +112,7 @@ export function createThumbsRouter(): Router {
           },
           guard: { allow: (u) => u.protocol === "https:" && hostAllowed(u.hostname) },
         },
-        TIMEOUT_MS,
+        THUMB_TIMEOUT_MS,
       );
       if (!upstream.ok) {
         res.status(502).end();

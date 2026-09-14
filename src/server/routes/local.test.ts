@@ -21,7 +21,7 @@ import { DESKTOP_HEADER } from "../desktop-token";
 import { SessionStore } from "../session";
 import { resetConfigForTests } from "../../main/config";
 import { DEFAULT_SESSION_ID } from "../../main/session-context";
-import type { UploadResult } from "../../shared/types";
+import type { WorkspaceFile } from "../../shared/types";
 
 const WORKDIR = mkdtempSync(join(tmpdir(), "slicely-attach-work-"));
 process.env.SLICELY_WORKDIR = WORKDIR;
@@ -70,10 +70,17 @@ async function withApp(mode: "hosted" | "desktop", fn: (h: Harness) => Promise<v
   }
 }
 
-function attach(base: string, paths: unknown): Promise<Response> {
+async function attach(base: string, paths: unknown): Promise<Response> {
+  // Boot first: in hosted mode GET /api/config is the only call that may mint a
+  // workspace, so without its cookie /api/attach-local answers 401 `no_session`
+  // and never reaches the refusal this file is about. (Desktop mode mints
+  // nothing — there is one workspace and it already exists — so the cookie is
+  // harmless there.)
+  const boot = await fetch(`${base}/api/config`, { headers: { [DESKTOP_HEADER]: TOKEN } });
+  const cookie = (boot.headers.get("set-cookie") ?? "").split(";")[0];
   return fetch(`${base}/api/attach-local`, {
     method: "POST",
-    headers: { "content-type": "application/json", [DESKTOP_HEADER]: TOKEN },
+    headers: { "content-type": "application/json", [DESKTOP_HEADER]: TOKEN, cookie },
     body: JSON.stringify({ paths }),
   });
 }
@@ -115,10 +122,14 @@ test("desktop: a mesh under the user's home is copied into the session's uploads
     const text = await resp.text();
     assert.equal(resp.status, 200, text);
 
-    const body = JSON.parse(text) as { uploaded?: UploadResult[]; rejected?: string[] };
+    // The wire shape is a WorkspaceFile: a name and a workspace-RELATIVE path,
+    // never the absolute one (see toWorkspaceFile).
+    const body = JSON.parse(text) as { uploaded?: WorkspaceFile[]; rejected?: string[] };
     assert.equal(body.uploaded?.length, 1);
-    assert.equal(body.uploaded![0].fileName, "bracket.stl");
+    assert.equal(body.uploaded![0].name, "bracket.stl");
+    assert.equal(body.uploaded![0].relPath, "uploads/bracket.stl");
     assert.equal(body.uploaded![0].sliceable, true);
+    assert.ok(!text.includes(desktopDir), "no absolute server path may appear in the body");
     assert.deepEqual(body.rejected, []);
 
     // It really is in the workspace, and the original is untouched.

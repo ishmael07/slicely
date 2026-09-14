@@ -61,6 +61,15 @@ function cookieOf(resp: Response): string {
   return raw.split(";")[0];
 }
 
+/** Boot a session the way the client does: GET /api/config is the one call that
+ *  may mint a workspace (see session.ts's MINTING_ROUTES), and everything else
+ *  is 401 `no_session` until its cookie is in hand. */
+async function boot(base: string): Promise<string> {
+  const resp = await fetch(`${base}/api/config`);
+  assert.equal(resp.status, 200);
+  return cookieOf(resp);
+}
+
 test("a badly-shaped key is refused with a code the UI can branch on, and nothing is stored", async () => {
   const root = tmpRoot();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
@@ -68,13 +77,13 @@ test("a badly-shaped key is refused with a code the UI can branch on, and nothin
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
   );
   try {
+    const cookie = await boot(base);
     const bad = await fetch(`${base}/api/key`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ apiKey: "not-a-key" }),
     });
     assert.equal(bad.status, 400);
-    const cookie = cookieOf(bad);
     assert.equal(((await bad.json()) as { code?: string }).code, "key_invalid_format");
 
     // A Claude Pro/Max subscription token is refused the same way: it is not an
@@ -106,13 +115,13 @@ test("a well-formed key Anthropic rejects is not stored either", async () => {
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "rejected" }),
   );
   try {
+    const cookie = await boot(base);
     const resp = await fetch(`${base}/api/key`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ apiKey: GOOD_KEY }),
     });
     assert.equal(resp.status, 401);
-    const cookie = cookieOf(resp);
     assert.equal(((await resp.json()) as { code?: string }).code, "key_rejected");
 
     const cfg = await fetch(`${base}/api/config`, { headers: { cookie } });
@@ -131,13 +140,13 @@ test("an accepted key is connected, reported only as a hint, and never echoed ba
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
   );
   try {
+    const cookie = await boot(base);
     const put = await fetch(`${base}/api/key`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ apiKey: GOOD_KEY }),
     });
     assert.equal(put.status, 200);
-    const cookie = cookieOf(put);
     const putText = await put.text();
     const putBody = JSON.parse(putText) as { hasKey: boolean; keyHint?: string };
     assert.equal(putBody.hasKey, true);
@@ -174,13 +183,13 @@ test("DELETE /api/key disconnects it; DELETE /api/session takes the workspace wi
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
   );
   try {
+    const cookie = await boot(base);
     const put = await fetch(`${base}/api/key`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ apiKey: GOOD_KEY }),
     });
     assert.equal(put.status, 200);
-    const cookie = cookieOf(put);
     const sid = decodeURIComponent(cookie.split("=")[1]).split(".")[0];
     const dir = store.get(sid)?.dir;
     assert.ok(dir && existsSync(dir), "the session should own a directory on disk");
@@ -219,12 +228,17 @@ test("changing the key drops the agent built from the old one", async () => {
     createApp({ sessionStore: store, chatAgentFactory: counting, keyValidator: async () => "ok" }),
   );
   try {
-    const put = await fetch(`${base}/api/key`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey: GOOD_KEY }),
-    });
-    const cookie = cookieOf(put);
+    const cookie = await boot(base);
+    assert.equal(
+      (
+        await fetch(`${base}/api/key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", cookie },
+          body: JSON.stringify({ apiKey: GOOD_KEY }),
+        })
+      ).status,
+      200,
+    );
     const chat = async () => {
       const resp = await fetch(`${base}/api/chat`, {
         method: "POST",
@@ -264,12 +278,12 @@ test("no API response is cacheable — a proxy must never hand one visitor's key
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
   );
   try {
+    const cookie = await boot(base);
     const put = await fetch(`${base}/api/key`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ apiKey: GOOD_KEY }),
     });
-    const cookie = cookieOf(put);
     assert.equal(put.headers.get("cache-control"), "no-store");
 
     const cfg = await fetch(`${base}/api/config`, { headers: { cookie } });
@@ -295,9 +309,10 @@ test("chat with no key is a 409 with code no_key — answered BEFORE any SSE hea
     createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
   );
   try {
+    const cookie = await boot(base);
     const resp = await fetch(`${base}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie },
       body: JSON.stringify({ message: "hello" }),
     });
     assert.equal(resp.status, 409);
@@ -306,13 +321,17 @@ test("chat with no key is a 409 with code no_key — answered BEFORE any SSE hea
     assert.equal(body.code, "no_key");
     assert.ok(!/\.env/.test(body.error), "no talk of files the user cannot see");
 
-    // With a key connected, the same request streams as usual.
-    const put = await fetch(`${base}/api/key`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey: GOOD_KEY }),
-    });
-    const cookie = cookieOf(put);
+    // With a key connected, the same request streams as usual — same session.
+    assert.equal(
+      (
+        await fetch(`${base}/api/key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", cookie },
+          body: JSON.stringify({ apiKey: GOOD_KEY }),
+        })
+      ).status,
+      200,
+    );
     const ok = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json", cookie },

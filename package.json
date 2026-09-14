@@ -57,6 +57,7 @@
       "site/privacy.html",
       "site/favicon.svg",
       "site/styles.css",
+      "site/fonts/*.woff2",
       "package.json",
       "!dist/web/**",
       "!dist-web/shared/**",

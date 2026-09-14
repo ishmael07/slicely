@@ -125,8 +125,9 @@ async function chatsApp(): Promise<{
   const { port } = server.address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;
 
-  // One request to mint the session, then reuse its cookie for everything.
-  const first = await fetch(`${base}/api/chats`);
+  // The boot call mints the session — it is the only endpoint that may (see
+  // session.ts's MINTING_ROUTES) — then its cookie is reused for everything.
+  const first = await fetch(`${base}/api/config`);
   const raw = first.headers.get("set-cookie");
   assert.ok(raw, "the first API call should mint a session cookie");
   const cookie = raw.split(";")[0];

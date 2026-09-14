@@ -28,6 +28,7 @@ import { ACCEPTED_UPLOAD_EXTS } from "../../shared/types";
 import type { UploadResult } from "../../shared/types";
 import { acceptUploads } from "../../main/uploads";
 import { WireError, sendError } from "../errors";
+import { toWorkspaceFile } from "../session";
 import {
   MAX_UPLOAD_BATCH_BYTES,
   MAX_UPLOAD_BYTES,
@@ -301,7 +302,13 @@ export function createUploadRouter(opts: RouteLimitOptions = {}): Router {
 
       session.activeModelPaths = relocated.map((r) => r.localPath);
       session.lastActiveAt = Date.now();
-      res.json({ uploaded: relocated, rejected });
+      // THE WIRE CARRIES A WORKSPACE-RELATIVE REFERENCE, NEVER AN ABSOLUTE PATH.
+      // This body used to include `localPath` (`/…/sessions/<id>/uploads/cube.stl`)
+      // and the client pasted it into the chat prompt, so the deployment layout
+      // and the session id reached both the browser and Anthropic. `relPath`
+      // ("uploads/cube.stl") is what the agent's tools need and all they need —
+      // see toWorkspaceFile and main/session-context.ts.
+      res.json({ uploaded: relocated.map((r) => toWorkspaceFile(session, r)), rejected });
     });
   });
 

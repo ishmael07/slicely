@@ -15,7 +15,14 @@ import type { AddressInfo } from "node:net";
 import type { Express } from "express";
 import { createApp } from "./index";
 import { DESKTOP_HEADER } from "./desktop-token";
-import { SessionStore, isInsideDir, __disposeCallsForTests, type ChatAgent } from "./session";
+import {
+  SessionStore,
+  isInsideDir,
+  resolveSessionPath,
+  workspaceRelPath,
+  __disposeCallsForTests,
+  type ChatAgent,
+} from "./session";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "slicely-test-"));
@@ -355,5 +362,140 @@ test("a hosted cookie is read back under its own name", async () => {
     rmSync(root, { recursive: true, force: true });
     if (prev === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prev;
+  }
+});
+
+// ── Only the boot call may mint (D-2) ────────────────────────────────────────
+
+test("a cookieless fan-out mints nothing and is answered 401 no_session", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  // The `api` tier is out of the way: this is about minting, not throughput.
+  const app = createApp({
+    sessionStore: store,
+    chatAgentFactory: stubAgent,
+    limits: { api: { capacity: 1000 } },
+  });
+  const { base, close } = await listen(app);
+  try {
+    // Exactly what the browser used to do on load: several API calls at once,
+    // none of them carrying a cookie yet. Each one used to mint its own
+    // workspace, so one page load cost 7–12 of them.
+    const fanout = await Promise.all(
+      Array.from({ length: 5 }, () => fetch(`${base}/api/chats`)),
+    );
+    for (const resp of fanout) {
+      assert.equal(resp.status, 401, "a cookieless call that isn't the boot call is refused");
+      assert.equal(setCookieValue(resp), undefined, "and it must not set a cookie");
+      const body = (await resp.json()) as { error: string; code?: string };
+      assert.equal(body.code, "no_session");
+      assert.match(body.error, /session/i);
+    }
+    assert.equal(store.count(), 0, "five parallel cookieless requests mint ZERO sessions");
+
+    // The boot call mints exactly one, and then the same cookie gets the rest
+    // of the app — which is the whole contract the client now follows.
+    const boot = await fetch(`${base}/api/config`);
+    assert.equal(boot.status, 200);
+    const cookie = setCookieValue(boot);
+    assert.ok(cookie, "GET /api/config is the one call that mints");
+    assert.equal(store.count(), 1, "one boot call, one workspace");
+
+    const after = await fetch(`${base}/api/chats`, { headers: { cookie: cookie! } });
+    assert.equal(after.status, 200, "with the cookie, everything else answers normally");
+    assert.equal(store.count(), 1, "and still only one workspace exists");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a cookieless fan-out does not spend the per-IP mint budget either", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({
+    sessionStore: store,
+    chatAgentFactory: stubAgent,
+    limits: { api: { capacity: 1000 }, mintPerHour: 2 },
+  });
+  const { base, close } = await listen(app);
+  try {
+    // Ten refusals must cost nothing: the point of the gate is that a boot
+    // storm (or a crawler) cannot exhaust the cap it used to exhaust.
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await fetch(`${base}/api/status`)).status, 401);
+    }
+    assert.equal((await fetch(`${base}/api/config`)).status, 200, "mint 1 of 2");
+    assert.equal((await fetch(`${base}/api/config`)).status, 200, "mint 2 of 2");
+    assert.equal((await fetch(`${base}/api/config`)).status, 429, "the cap itself still bites");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("desktop mode is unaffected: any endpoint answers without a prior boot call", async () => {
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = "desktop";
+  const root = tmpRoot();
+  const store = new SessionStore({
+    sessionsRoot: root,
+    secretDir: root,
+    desktopDir: join(root, "desktop"),
+    sweepIntervalMs: 0,
+  });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent, desktopToken: TOKEN });
+  const { base, close } = await listen(app);
+  try {
+    // There is one workspace and it already exists, so there is nothing to
+    // mint and nothing to refuse — the Mac app must not need a boot call to
+    // read its own chats.
+    const resp = await fetch(`${base}/api/chats`, { headers: { [DESKTOP_HEADER]: TOKEN } });
+    assert.equal(resp.status, 200);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+});
+
+// ── Workspace-relative file references (D-7a) ────────────────────────────────
+
+test("resolveSessionPath accepts the client's relative reference and refuses escapes", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  const { base, close } = await listen(app);
+  try {
+    const cookie = setCookieValue(await fetch(`${base}/api/config`))!;
+    const session = store.get(sessionIdFrom(cookie))!;
+
+    // The form the wire now carries.
+    assert.equal(
+      resolveSessionPath(session, "uploads/x.stl"),
+      join(session.dir, "uploads", "x.stl"),
+    );
+    // Absolute still works (the desktop's attach-local, the agent's own paths).
+    assert.equal(
+      resolveSessionPath(session, join(session.uploadsDir, "x.stl")),
+      join(session.dir, "uploads", "x.stl"),
+    );
+    // And nothing else does.
+    assert.equal(resolveSessionPath(session, "../x.stl"), undefined);
+    assert.equal(resolveSessionPath(session, "uploads/../../x.stl"), undefined);
+    assert.equal(resolveSessionPath(session, "/etc/passwd"), undefined);
+    assert.equal(resolveSessionPath(session, ""), undefined);
+    assert.equal(resolveSessionPath(session, undefined), undefined);
+
+    // The reverse direction: what the client is told, POSIX-separated.
+    assert.equal(workspaceRelPath(session, join(session.uploadsDir, "cube.stl")), "uploads/cube.stl");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
   }
 });

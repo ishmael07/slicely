@@ -20,7 +20,7 @@ import {
   type RecommendInput,
 } from "../../main/prusaslicer";
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
-import { adoptGcodeFile, isInsideDir } from "../session";
+import { adoptGcodeFile, resolveSessionPath } from "../session";
 import { sendError, WireError } from "../errors";
 import { loadPrintersApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
@@ -42,19 +42,24 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
     const session = req.session!;
     const body = (req.body ?? {}) as Record<string, unknown>;
 
-    const requestedPaths =
+    const rawPaths =
       Array.isArray(body.paths) && body.paths.every((p) => typeof p === "string")
         ? (body.paths as string[])
         : session.activeModelPaths;
 
-    if (requestedPaths.length === 0) {
+    if (rawPaths.length === 0) {
       sendError(res, new WireError(400, "No model to slice — upload, import, or pass { paths }."));
       return;
     }
     // Never slice an arbitrary server path a client might pass in `paths` —
-    // only files this session itself uploaded/imported/sliced-before.
-    for (const p of requestedPaths) {
-      if (!isInsideDir(session.dir, p)) {
+    // only files this session itself uploaded/imported/sliced-before. A client
+    // names them the way it was told about them ("uploads/cube.stl"), which
+    // `resolveSessionPath` turns into an absolute path INSIDE this session's
+    // directory or into nothing at all.
+    const requestedPaths: string[] = [];
+    for (const p of rawPaths) {
+      const abs = resolveSessionPath(session, p);
+      if (!abs) {
         // 400 with the stable code, and a sentence that names nothing: the
         // reply used to be a 403, which — combined with the 404 an unknown
         // file gets elsewhere — let a caller tell "that file exists but isn't
@@ -68,6 +73,7 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
         );
         return;
       }
+      requestedPaths.push(abs);
     }
 
     const goal =
@@ -166,12 +172,15 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
    */
   router.get("/preview", async (req: Request, res: Response) => {
     const session = req.session!;
-    const path = typeof req.query.path === "string" ? req.query.path : "";
-    if (!path) {
+    const raw = typeof req.query.path === "string" ? req.query.path : "";
+    if (!raw) {
       sendError(res, new WireError(400, "path is required"));
       return;
     }
-    if (!isInsideDir(session.dir, path)) {
+    // Workspace-relative ("uploads/cube.stl") or absolute; either way it has to
+    // land inside this session's own directory. See resolveSessionPath.
+    const path = resolveSessionPath(session, raw);
+    if (!path) {
       // Same answer, same reason, as POST /slice above.
       sendError(
         res,

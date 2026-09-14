@@ -243,7 +243,20 @@ function workspaceRoots(): string[] {
  */
 export function resolveInsideSessionWorkspace(p: string): string | undefined {
   if (typeof p !== "string" || p.trim().length === 0) return undefined;
-  const target = realPath(p);
+  // A RELATIVE path means "inside my workspace", never "inside whatever
+  // directory this process happens to have been started in".
+  //
+  // This matters now that the wire carries workspace-relative references
+  // ("uploads/cube.stl" — see WorkspaceFile): the client puts that in the chat
+  // prompt, the model passes it to a tool, and the tool asks here. Left to
+  // `resolve()`, it would have been joined to `process.cwd()` — the repo root in
+  // dev, `/` for a packaged app — and then refused for being outside the
+  // workspace, so the agent could not open the file the user had just attached.
+  // Resolving against the session's own directory also keeps `../` honest:
+  // `../other-session/uploads/x.stl` still lands outside every root below and is
+  // still refused.
+  const absolute = isAbsolute(p) ? p : join(currentSession().dir, p);
+  const target = realPath(absolute);
   const desktop = isDesktop();
   for (const root of workspaceRoots()) {
     const realRoot = realPath(root);

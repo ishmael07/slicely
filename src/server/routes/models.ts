@@ -8,6 +8,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { loadSourcingApi } from "../facades";
 import { sendError, WireError } from "../errors";
+import { workspaceRelPath } from "../session";
 import { noLimit, type RouteLimitOptions } from "../security";
 import type { SourcingApi } from "../facades";
 import type { SourceId, SearchOptions } from "../../shared/sourcing";
@@ -93,7 +94,25 @@ export function createModelsRouter(
         ? result.parts.map((p) => p.localPath)
         : [result.localPath];
       session.lastActiveAt = Date.now();
-      res.json(result);
+      // Same rule as POST /api/upload: the download landed in this session's
+      // downloads directory, and what the client is told is where it sits
+      // relative to its own workspace ("downloads/bracket.stl") — never the
+      // absolute path, which the client used to paste straight into the prompt
+      // it sends to Anthropic.
+      const { localPath, parts, ...rest } = result;
+      res.json({
+        ...rest,
+        relPath: workspaceRelPath(session, localPath),
+        ...(parts?.length
+          ? {
+              parts: parts.map(({ localPath: partPath, fileName, ...part }) => ({
+                ...part,
+                name: fileName,
+                relPath: workspaceRelPath(session, partPath),
+              })),
+            }
+          : {}),
+      });
     } catch (err) {
       sendSourcingError(res, err, "That model couldn't be downloaded.");
     }

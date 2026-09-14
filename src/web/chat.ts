@@ -9,7 +9,7 @@
 // The chat stream and the job stream share api.ts's streamSse(); there is no
 // second SSE parser anywhere in the client.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, UploadResult } from "../shared/types";
+import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, WorkspaceFile } from "../shared/types";
 import type { PrintJob } from "../shared/jobs";
 import type { SearchOutcome, UrlResolution } from "../shared/sourcing";
 import type { JobPanel, WireJob, WireJobEvent } from "./jobs.js";
@@ -35,7 +35,7 @@ export interface ChatDeps {
   jobPanel(id: string, seed?: WireJob): JobPanel;
   /** Plan a multi-part job from the staged files. Resolves true when a job was
    *  planned — only then is the tray cleared. */
-  planStagedJob(files: UploadResult[]): Promise<boolean>;
+  planStagedJob(files: WorkspaceFile[]): Promise<boolean>;
   /** Mount a live "Send to printer" button (printers.ts). */
   mountSend: SendMount;
   /** A `status` AgentEvent arrived — the header/banner belong to app.ts. */
@@ -525,10 +525,10 @@ function cancelTurn(): void {
 // active model, inspected/sliced conversationally), or planned as a multi-part
 // JOB via the button that appears in the tray once >=1 file is staged.
 
-const stagedFiles: UploadResult[] = [];
+const stagedFiles: WorkspaceFile[] = [];
 
-function removeStaged(localPath: string): void {
-  const idx = stagedFiles.findIndex((f) => f.localPath === localPath);
+function removeStaged(relPath: string): void {
+  const idx = stagedFiles.findIndex((f) => f.relPath === relPath);
   if (idx >= 0) stagedFiles.splice(idx, 1);
   renderAttachTray();
   updateSendEnabled();
@@ -542,12 +542,12 @@ function renderAttachTray(): void {
   const chipRow = make("div", "attach-chip-row");
   for (const f of stagedFiles) {
     const chip = make("div", "attach-chip");
-    chip.appendChild(make("span", "name", f.fileName));
+    chip.appendChild(make("span", "name", f.name));
     const rm = make("button", "", "×");
     rm.type = "button";
-    rm.title = `Remove ${f.fileName}`;
-    rm.setAttribute("aria-label", `Remove ${f.fileName}`);
-    rm.onclick = () => removeStaged(f.localPath);
+    rm.title = `Remove ${f.name}`;
+    rm.setAttribute("aria-label", `Remove ${f.name}`);
+    rm.onclick = () => removeStaged(f.relPath);
     chip.appendChild(rm);
     chipRow.appendChild(chip);
   }
@@ -571,10 +571,10 @@ function renderAttachTray(): void {
   attachTray.appendChild(planBtn);
 }
 
-function stageResults(results: UploadResult[]): void {
+function stageResults(results: WorkspaceFile[]): void {
   if (results.length === 0) return;
   for (const r of results) {
-    if (!stagedFiles.some((s) => s.localPath === r.localPath)) stagedFiles.push(r);
+    if (!stagedFiles.some((s) => s.relPath === r.relPath)) stagedFiles.push(r);
   }
   renderAttachTray();
   updateSendEnabled();
@@ -586,7 +586,7 @@ function stageResults(results: UploadResult[]): void {
  *  staging that follows is the same code. */
 async function attachLocalPaths(paths: string[]): Promise<void> {
   try {
-    const data = await postJson<{ uploaded?: UploadResult[]; rejected?: string[] }>(
+    const data = await postJson<{ uploaded?: WorkspaceFile[]; rejected?: string[] }>(
       "/api/attach-local",
       { paths },
     );
@@ -620,7 +620,7 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
   for (const f of list) fd.append("files", f, f.name);
 
   try {
-    const data = await postForm<{ uploaded?: UploadResult[]; rejected?: string[] }>("/api/upload", fd);
+    const data = await postForm<{ uploaded?: WorkspaceFile[]; rejected?: string[] }>("/api/upload", fd);
     stageResults(data.uploaded ?? []);
     if (data.rejected && data.rejected.length > 0) {
       renderError(`Not accepted: ${data.rejected.join(", ")}`);
@@ -630,23 +630,27 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
   }
 }
 
-function renderUploadChip(r: UploadResult): void {
+function renderUploadChip(r: WorkspaceFile): void {
   const chip = make("div", "tool-chip done enter");
   const ico = make("span", "ico", "📦");
   ico.setAttribute("aria-hidden", "true");
   chip.appendChild(ico);
-  chip.appendChild(make("span", "", `Added ${r.fileName} (${formatBytes(r.sizeBytes)})`));
+  chip.appendChild(make("span", "", `Added ${r.name} (${formatBytes(r.sizeBytes)})`));
   messagesEl.appendChild(chip);
 }
 
 /** Compose the message sent to the agent from the user's text + staged files. */
-function buildAttachmentInstruction(text: string, files: UploadResult[]): string {
+function buildAttachmentInstruction(text: string, files: WorkspaceFile[]): string {
   const active = files.find((f) => f.sliceable) ?? files[0];
-  const names = files.map((f) => `"${f.fileName}"`).join(", ");
+  const names = files.map((f) => `"${f.name}"`).join(", ");
+  // WORKSPACE PATH, NOT SERVER PATH. `relPath` ("uploads/cube.stl") is what the
+  // server told us about the file, and the agent's tools resolve it against the
+  // session's own directory — so this prompt no longer carries an absolute path
+  // (and the sessions root and session id inside it) to the model.
   const context =
     files.length === 1
-      ? `The user attached a 3D model file, ${names}, now the active model (server path: ${active.localPath}). `
-      : `The user attached ${files.length} files (${names}). The active model is "${active.fileName}" (server path: ${active.localPath}). `;
+      ? `The user attached a 3D model file, ${names}, now the active model (workspace path: ${active.relPath}). `
+      : `The user attached ${files.length} files (${names}). The active model is "${active.name}" (workspace path: ${active.relPath}). `;
 
   if (text) return `${context}\n\nThe user says: ${text}`;
   return active.sliceable
@@ -666,7 +670,7 @@ function submitComposer(): void {
   clearEmptyState();
 
   const display = files.length > 0
-    ? text || (files.length === 1 ? `Attached ${files[0].fileName}` : `Attached ${files.length} files`)
+    ? text || (files.length === 1 ? `Attached ${files[0].name}` : `Attached ${files.length} files`)
     : text;
   addUserMessage(display);
   if (files.length > 0) {
@@ -757,10 +761,10 @@ async function handleLinkGo(): Promise<void> {
 
 async function importFromUrl(url: string, label: string): Promise<void> {
   try {
-    const result = await postJson<{ fileName: string; localPath: string }>("/api/import", { url });
+    const result = await postJson<{ fileName: string; relPath: string }>("/api/import", { url });
     await sendInstruction(
       `Imported ${label}`,
-      `I imported a model from a link. Its exact path on the server is: ${result.localPath}. Treat it as my active model, inspect it, and recommend slicing settings.`,
+      `I imported a model from a link. Its path inside my workspace is: ${result.relPath}. Treat it as my active model, inspect it, and recommend slicing settings.`,
     );
   } catch (err) {
     renderError(errorMessage(err, "Import failed."), () => void importFromUrl(url, label));

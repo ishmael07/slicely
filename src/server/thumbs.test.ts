@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { createThumbsRouter } from "./routes/thumbs";
+import { createThumbsRouter, THUMB_TIMEOUT_MS } from "./routes/thumbs";
+import type { guardedFetch } from "../main/sourcing/net";
 
 async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
@@ -76,4 +77,36 @@ test("a missing or unparseable url is a bad request, not a crash", async () => {
     assert.equal((await fetch(`${base}/api/thumb`)).status, 400);
     assert.equal((await thumb(base, "not a url")).status, 400);
   });
+});
+
+test("the proxy waits the 15 s a full-resolution listing photo needs", async () => {
+  // 8 s cut off real Printables/MyMiniFactory images (measured at 8.7 s and
+  // 10.1 s for 2.6 MB / 3.4 MB), so three to five cards in a twelve-result
+  // search rendered as placeholders. The constant AND its use are checked: a
+  // timeout that is written down but not passed to the fetch is no timeout.
+  assert.equal(THUMB_TIMEOUT_MS, 15_000);
+
+  const seen: Array<{ url: string; timeout: number | undefined }> = [];
+  const fakeFetch: typeof guardedFetch = async (url, _init, timeoutMs) => {
+    seen.push({ url, timeout: timeoutMs });
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "content-type": "image/jpeg" },
+    });
+  };
+
+  const app = express();
+  app.use("/api", createThumbsRouter({ fetch: fakeFetch }));
+  const server: Server = createServer(app);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const resp = await thumb(`http://127.0.0.1:${port}`, "https://media.printables.com/big.jpg");
+    assert.equal(resp.status, 200);
+    assert.equal(resp.headers.get("content-type"), "image/jpeg");
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].timeout, THUMB_TIMEOUT_MS);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });

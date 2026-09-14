@@ -6,7 +6,7 @@
 // SAME streamSse() helper used for chat — so the plate list, totals and
 // warnings update live instead of spamming a new panel per event.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { SliceMetrics, UploadResult } from "../shared/types";
+import type { SliceMetrics, WorkspaceFile } from "../shared/types";
 import type { JobPlate, PrintJob } from "../shared/jobs";
 import { getJson, postJson, streamSse } from "./api.js";
 import { addMetric, attachViewer, errorBlock, formatMinutes, panelHead, type SendMount } from "./cards.js";
@@ -267,7 +267,7 @@ async function runJobStream(jobId: string): Promise<void> {
 
 /** Plan a job from the files staged in the composer tray. Resolves true when a
  *  job was actually planned, so the caller knows whether to clear the tray. */
-export async function planStagedJob(files: UploadResult[]): Promise<boolean> {
+export async function planStagedJob(files: WorkspaceFile[]): Promise<boolean> {
   if (files.length === 0) return false;
   clearEmptyState();
   const chip = make("div", "tool-chip enter");
@@ -275,7 +275,9 @@ export async function planStagedJob(files: UploadResult[]): Promise<boolean> {
   chip.appendChild(make("span", "", "Planning job…"));
   mount(chip);
 
-  const parts = files.map((f) => ({ path: f.localPath }));
+  // The workspace-relative reference the server gave us, sent back as-is:
+  // /api/jobs resolves it against this session's own directory.
+  const parts = files.map((f) => ({ path: f.relPath }));
   const defaults = deps.planOptions();
   const opts: Record<string, unknown> = { bed: defaults.bed, autoOrient: true };
   if (defaults.goal) opts.goal = defaults.goal;

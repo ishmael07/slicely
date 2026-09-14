@@ -46,9 +46,16 @@ interface Servable {
 const REVALIDATE = "no-cache";
 const ASSET_CACHE = "public, max-age=86400";
 const PAGE_CACHE = "public, max-age=300";
+/** A year, immutable — for files whose NAME states their contents. A woff2 named
+ *  `inter-latin-400` is one weight of one release of one typeface: if it ever
+ *  needs to change it gets a different name, so there is no stale-cache story to
+ *  worry about and no reason to make a returning visitor revalidate three fonts
+ *  on every page view. (Contrast the HTML/CSS/JS above, which reuse their names.) */
+const IMMUTABLE = "public, max-age=31536000, immutable";
 
 const HTML = "text/html; charset=utf-8";
 const CSS = "text/css; charset=utf-8";
+const WOFF2 = "font/woff2";
 
 /** Every URL served off disk, in full. Add a line to publish a file; there is
  *  no other way for one to become reachable. */
@@ -74,6 +81,27 @@ function table(): Record<string, Servable> {
     "/styles.css": { file: ["site", "styles.css"], type: CSS, cache: REVALIDATE },
     // The ◆ mark, shared with the marketing site so the two agree.
     "/favicon.svg": { file: ["site", "favicon.svg"], type: "image/svg+xml", cache: ASSET_CACHE },
+    // The three Inter faces `site/styles.css` declares in its @font-face rules
+    // (`url('fonts/inter-latin-<weight>.woff2')`, resolved against `/styles.css`
+    // and therefore requested as `/fonts/…`). They were missing, so `/terms` and
+    // `/privacy` served from THIS server 404'd all three and fell back to
+    // system-ui. Listed one file per line, exactly the ones the site references —
+    // `site/fonts/` also holds LICENSE.txt, which is not a web asset.
+    "/fonts/inter-latin-400.woff2": {
+      file: ["site", "fonts", "inter-latin-400.woff2"],
+      type: WOFF2,
+      cache: IMMUTABLE,
+    },
+    "/fonts/inter-latin-600.woff2": {
+      file: ["site", "fonts", "inter-latin-600.woff2"],
+      type: WOFF2,
+      cache: IMMUTABLE,
+    },
+    "/fonts/inter-latin-700.woff2": {
+      file: ["site", "fonts", "inter-latin-700.woff2"],
+      type: WOFF2,
+      cache: IMMUTABLE,
+    },
     // Extension-less, because these are pages a user is linked to (Settings →
     // About, the onboarding card), not files. The `.html` spellings answer too,
     // since that is how the marketing site links them.

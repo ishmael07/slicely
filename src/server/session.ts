@@ -32,9 +32,9 @@
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
-import { basename, join, relative, resolve, isAbsolute } from "node:path";
+import { basename, join, relative, resolve, sep, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import type { AgentEvent } from "../shared/types";
+import type { AgentEvent, UploadResult, WorkspaceFile } from "../shared/types";
 import { getConfig } from "../main/config";
 import { isDesktop, isHosted } from "../main/mode";
 import { DEFAULT_SESSION_ID, runInSession, sessionContext } from "../main/session-context";
@@ -43,6 +43,7 @@ import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
 import { disposeSessionPrinters } from "../main/printers/registry";
 import { clientIp, TokenBuckets } from "./security";
+import { sendError, WireError } from "./errors";
 
 // Augment Express's Request with the session this middleware attaches. Scoped
 // to this codebase only — harmless if another module never imports it.
@@ -177,6 +178,51 @@ export interface SessionRecord {
 export function isInsideDir(root: string, target: string): boolean {
   const rel = relative(resolve(root), resolve(target));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The absolute path a client-supplied file reference names, or `undefined` when
+ * it names something outside this session's workspace.
+ *
+ * Accepts BOTH forms a path can arrive in:
+ *  • WORKSPACE-RELATIVE ("uploads/cube.stl") — what the client is given now (see
+ *    `WorkspaceFile`) and the only form a browser should ever hold. Resolved
+ *    against `session.dir`, never against `process.cwd()`, which is a directory
+ *    the visitor has nothing to do with.
+ *  • ABSOLUTE — what the desktop app's own `attach-local` flow and the agent's
+ *    tools still deal in, and what older clients sent.
+ *
+ * Containment is then the same check as before, so `../../etc/passwd`,
+ * `/etc/passwd` and another session's directory are all refused whichever form
+ * they arrive in.
+ */
+export function resolveSessionPath(session: SessionRecord, raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+  const candidate = isAbsolute(raw) ? raw : join(session.dir, raw);
+  return isInsideDir(session.dir, candidate) ? resolve(candidate) : undefined;
+}
+
+/** A file inside `session`'s workspace as the client may see it: its name and
+ *  its session-relative POSIX path, and never the absolute one. */
+export function toWorkspaceFile(session: SessionRecord, file: UploadResult): WorkspaceFile {
+  return {
+    name: file.fileName,
+    relPath: workspaceRelPath(session, file.localPath),
+    sizeBytes: file.sizeBytes,
+    ext: file.ext,
+    sliceable: file.sliceable,
+  };
+}
+
+/** `absolute` expressed relative to the session's own directory, with forward
+ *  slashes whatever the platform's separator is — a wire format, not a path for
+ *  this process to open. A path that is somehow NOT inside the session (which
+ *  callers here have already excluded) degrades to its basename rather than
+ *  leaking `../..` segments of the server's layout. */
+export function workspaceRelPath(session: SessionRecord, absolute: string): string {
+  const rel = relative(resolve(session.dir), resolve(absolute));
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return basename(absolute);
+  return rel.split(sep).join("/");
 }
 
 // ── Cookie plumbing (no `cookie`/`cookie-parser` dependency is installed, so
@@ -644,6 +690,49 @@ export interface SessionMiddlewareOptions {
 }
 
 /**
+ * The ONLY requests allowed to create a workspace.
+ *
+ * A browser opening the app issues its boot calls at once — `/api/config`,
+ * `/api/status`, `/api/settings`, `/api/printers`, `/api/sources`, … — and
+ * every one of them arrives before any cookie exists. When any request could
+ * mint, one page load created 7–12 workspaces: the per-IP cap (20/hour) was
+ * spent in two loads, 6–11 directories were orphaned per load (the browser
+ * keeps only the last `Set-Cookie`), and anything done during that storm was
+ * attributed to a session the browser then abandoned — so "delete my data"
+ * deleted a different workspace than the one holding the user's upload.
+ *
+ * So minting is a named, deliberate step. `GET /api/config` is that step: it is
+ * the call the client must make first anyway (it decides what the first screen
+ * says), and the client now awaits it before issuing anything else — see
+ * `ready()` in src/web/api.ts. `POST /api/session` is reserved for a future
+ * explicit "start a session" call; it is listed here so the two halves of the
+ * contract are stated in one place.
+ *
+ * Anything else arriving without a valid cookie is answered 401 `no_session`
+ * rather than given a workspace: the client's job is to boot in order, and a
+ * crawler's fan-out is not entitled to a directory on our disk.
+ *
+ * Both spellings of each route are listed because this middleware is mounted on
+ * the `/api` router (so `req.path` is `/config`), and a future remount at the
+ * app level would make it `/api/config` — a security gate must not depend on
+ * which of those it happens to see.
+ */
+const MINTING_ROUTES = new Set([
+  "GET /config",
+  "GET /api/config",
+  "POST /session",
+  "POST /api/session",
+]);
+
+/** True when `req` is one of the two calls that may create a workspace. HEAD is
+ *  treated as GET, the way every other handler in this server does. */
+function mayMintSession(req: Request): boolean {
+  const path = req.path.length > 1 ? req.path.replace(/\/+$/, "") : req.path;
+  const method = req.method === "HEAD" ? "GET" : req.method;
+  return MINTING_ROUTES.has(`${method} ${path}`);
+}
+
+/**
  * Attach this request's session — MOUNTED ON THE `/api` ROUTER ONLY.
  *
  * Nothing else needs one: static files, /healthz and the legal pages are the
@@ -662,6 +751,16 @@ export function sessionMiddleware(store: SessionStore, opts: SessionMiddlewareOp
 
   return (req: Request, res: Response, next: NextFunction) => {
     if (!store.hasValidSession(req)) {
+      // Refused BEFORE the mint budget is charged: a boot fan-out must cost
+      // nothing at all, or the cap it was exhausting would simply be exhausted
+      // by 401s instead.
+      if (!mayMintSession(req)) {
+        sendError(
+          res,
+          new WireError(401, "This page hasn't started a session yet. Reload Slicely.", "no_session"),
+        );
+        return;
+      }
       const retryAfter = mintBudget.take(`mint:${clientIp(req)}`);
       if (retryAfter !== undefined) {
         res.setHeader("Retry-After", String(retryAfter));

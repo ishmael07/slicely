@@ -225,3 +225,35 @@ test("a checkout under a DOTTED ancestor still serves every URL", async () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("the fonts the site's stylesheet declares are served, and nothing else under /fonts", async () => {
+  await withServer(async (base) => {
+    // `site/styles.css` declares three @font-face faces as
+    // `url('fonts/inter-latin-<weight>.woff2')`, which from `/styles.css`
+    // resolve to `/fonts/…`. They 404'd, so `/terms` and `/privacy` rendered in
+    // system-ui — the one thing this table exists to make deliberate.
+    for (const weight of [400, 600, 700]) {
+      const resp = await fetch(`${base}/fonts/inter-latin-${weight}.woff2`);
+      assert.equal(resp.status, 200, `inter-latin-${weight} must be served`);
+      assert.equal(resp.headers.get("content-type"), "font/woff2");
+      // Versioned by name, so a year in a cache is safe and revalidating three
+      // fonts on every page view is not worth the round trips.
+      assert.match(resp.headers.get("cache-control") ?? "", /immutable/);
+    }
+    // The allow-list is still a list, not a directory: a font nobody references
+    // (and the licence text sitting next to the real ones) is not published.
+    assert.equal((await fetch(`${base}/fonts/x.woff2`)).status, 404);
+    assert.equal((await fetch(`${base}/fonts/inter-latin-500.woff2`)).status, 404);
+    assert.equal((await fetch(`${base}/fonts/LICENSE.txt`)).status, 404);
+  });
+});
+
+test("the legal pages' home link points at the site root, not the app shell's index.html", async () => {
+  await withServer(async (base) => {
+    for (const page of ["/terms", "/privacy"]) {
+      const html = await (await fetch(`${base}${page}`)).text();
+      assert.ok(!html.includes('href="index.html"'), `${page} must not link a relative index.html`);
+      assert.match(html, /<a[^>]+href="\/"[^>]*>\s*Home\s*</, `${page} should link Home to /`);
+    }
+  });
+});

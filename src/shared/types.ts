@@ -366,10 +366,42 @@ export interface SettingsState {
   goals: PrintGoal[];
 }
 
-/** Result of accepting a user-supplied CAD/mesh file into the workspace. */
+/** Result of accepting a user-supplied CAD/mesh file into the workspace.
+ *  SERVER-SIDE ONLY: `localPath` is an absolute path on the server's disk, and
+ *  absolute paths never reach a client (spec §Error handling). What a browser
+ *  is told about the same file is a `WorkspaceFile` — see below. */
 export interface UploadResult {
   localPath: string;
   fileName: string;
+  sizeBytes: number;
+  ext: string;
+  /** Files PrusaSlicer can slice directly vs. ones it can only import/convert. */
+  sliceable: boolean;
+}
+
+/**
+ * One file in the session's workspace, as the CLIENT is told about it.
+ *
+ * `POST /api/upload` used to answer with the `UploadResult` above, absolute
+ * `localPath` and all — and the client put that path into the chat prompt so
+ * the agent's tools could find the file. So the sessions root and the session
+ * id travelled to the browser (and on to Anthropic) on every attachment, which
+ * the spec forbids outright.
+ *
+ * `relPath` replaces it: the file's location relative to the session's OWN
+ * directory, always POSIX-separated ("uploads/cube.stl"). It is exactly as
+ * useful to the agent — main/session-context.ts resolves a relative path
+ * against the ambient session's directory (never `process.cwd()`) and then
+ * applies the same workspace containment check as before — and it names nothing
+ * outside the visitor's own workspace. Every endpoint that takes a path back
+ * from a client accepts this form: /api/slice, /api/preview, /api/jobs.
+ */
+export interface WorkspaceFile {
+  /** The file's name inside the workspace, e.g. "cube.stl". */
+  name: string;
+  /** Session-relative POSIX path, e.g. "uploads/cube.stl" or
+   *  "uploads/kit/part1.stl" for a part out of a ZIP. */
+  relPath: string;
   sizeBytes: number;
   ext: string;
   /** Files PrusaSlicer can slice directly vs. ones it can only import/convert. */

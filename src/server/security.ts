@@ -9,6 +9,7 @@ import type { Request, RequestHandler } from "express";
 import type { PrinterTransport } from "../shared/printers";
 import { CLOUD_TRANSPORTS } from "../shared/printers";
 import { isHosted } from "../main/mode";
+import { sendError, WireError } from "./errors";
 
 /**
  * True when Slicely is running as a SHARED, hosted, multi-tenant server
@@ -174,7 +175,12 @@ export function corsGuard(): RequestHandler {
       sameOrigin = false;
     }
     if (!sameOrigin) {
-      res.status(403).json({ error: "Cross-origin requests are not allowed." });
+      // Through the one funnel, with the stable code: `cross_origin` is in the
+      // spec's code list and the client already has copy for it (see
+      // web/api.ts's CODE_COPY), but this body was hand-built and carried no
+      // `code` at all — so the one failure the client could have explained read
+      // as an unexplained 403.
+      sendError(res, new WireError(403, "Cross-origin requests are not allowed.", "cross_origin"));
       return;
     }
     next();

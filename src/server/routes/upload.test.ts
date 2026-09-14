@@ -37,6 +37,17 @@ function setCookieValue(resp: Response): string | undefined {
   return raw ? raw.split(";")[0] : undefined;
 }
 
+/** Boot a session the way the client does. GET /api/config is the ONE call that
+ *  may mint a workspace (session.ts's MINTING_ROUTES); /api/upload without a
+ *  cookie is 401 `no_session`, so every upload here starts with this. */
+async function boot(base: string): Promise<string> {
+  const resp = await fetch(`${base}/api/config`);
+  assert.equal(resp.status, 200);
+  const cookie = setCookieValue(resp);
+  assert.ok(cookie, "the boot call should mint a session cookie");
+  return cookie!;
+}
+
 test("upload rejects a file whose extension isn't in ACCEPTED_UPLOAD_EXTS", async () => {
   const root = tmpRoot();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
@@ -44,7 +55,11 @@ test("upload rejects a file whose extension isn't in ACCEPTED_UPLOAD_EXTS", asyn
   try {
     const fd = new FormData();
     fd.append("files", new Blob(["MZ"], { type: "application/octet-stream" }), "malware.exe");
-    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
+    const resp = await fetch(`${base}/api/upload`, {
+      method: "POST",
+      body: fd,
+      headers: { cookie: await boot(base) },
+    });
     const data = (await resp.json()) as { error: string };
     assert.equal(resp.status, 400);
     assert.match(data.error, /No accepted files/);
@@ -62,16 +77,27 @@ test("a path-traversal filename is sanitized to a plain basename inside the sess
   try {
     const fd = new FormData();
     fd.append("files", new Blob(["solid x\nendsolid x\n"], { type: "application/octet-stream" }), "../../../../etc/evil.stl");
-    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
-    const data = (await resp.json()) as { uploaded: Array<{ localPath: string; fileName: string }> };
+    const cookie = await boot(base);
+    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd, headers: { cookie } });
+    const text = await resp.text();
+    const data = JSON.parse(text) as { uploaded: Array<{ name: string; relPath: string }> };
     assert.equal(resp.status, 200);
     assert.equal(data.uploaded.length, 1);
 
-    const { localPath, fileName } = data.uploaded[0];
-    assert.ok(!fileName.includes("/") && !fileName.includes(".."), `fileName leaked a path: ${fileName}`);
-    assert.ok(!localPath.includes(".."), `localPath contains a traversal segment: ${localPath}`);
-    assert.ok(localPath.startsWith(root), `file escaped the sessions root: ${localPath}`);
-    assert.ok(existsSync(localPath), "the uploaded file should exist where reported");
+    const { name, relPath } = data.uploaded[0];
+    assert.ok(!name.includes("/") && !name.includes(".."), `name leaked a path: ${name}`);
+    assert.equal(relPath, "uploads/evil.stl", `relPath is a plain workspace path: ${relPath}`);
+    // The body names nothing outside the visitor's own workspace — no absolute
+    // path at all, which is the constraint the old `localPath` broke.
+    assert.ok(!text.includes(root), `the reply leaked the sessions root: ${text}`);
+
+    // And the file really is where the relative path says it is, resolved
+    // against this session's own directory.
+    const session = store.get(
+      decodeURIComponent(cookie.split("=")[1]).split(".")[0],
+    );
+    assert.ok(session, "the cookie should name a live session");
+    assert.ok(existsSync(join(session!.dir, relPath)), "the uploaded file should exist where reported");
   } finally {
     await close();
     store.stopSweep();
@@ -87,17 +113,25 @@ test("session isolation: session B cannot slice a file session A uploaded", asyn
     // Session A uploads a file.
     const fd = new FormData();
     fd.append("files", new Blob(["solid x\nendsolid x\n"]), "part.stl");
-    const uploadResp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
-    const cookieA = setCookieValue(uploadResp);
-    assert.ok(cookieA, "session A should have gotten a cookie");
-    const uploadData = (await uploadResp.json()) as { uploaded: Array<{ localPath: string }> };
-    const sessionAsPath = uploadData.uploaded[0].localPath;
+    const cookieA = await boot(base);
+    const uploadResp = await fetch(`${base}/api/upload`, {
+      method: "POST",
+      body: fd,
+      headers: { cookie: cookieA },
+    });
+    const uploadData = (await uploadResp.json()) as { uploaded: Array<{ relPath: string }> };
+    assert.equal(uploadData.uploaded[0].relPath, "uploads/part.stl");
+    // A's file named the way A's own session resolves it — the absolute path the
+    // wire deliberately no longer carries.
+    const sessionA = store.get(decodeURIComponent(cookieA.split("=")[1]).split(".")[0])!;
+    const sessionAsPath = join(sessionA.dir, uploadData.uploaded[0].relPath);
 
-    // Session B — a request with NO cookie, i.e. a different browser — tries
-    // to slice the exact path session A's upload just produced.
+    // Session B — a DIFFERENT browser with its own workspace — tries to slice
+    // the exact path session A's upload just produced.
+    const cookieB = await boot(base);
     const sliceResp = await fetch(`${base}/api/slice`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", cookie: cookieB },
       body: JSON.stringify({ paths: [sessionAsPath] }),
     });
     // 400 with the stable code (Task D8), not a 403: a 403 distinguishes
@@ -132,14 +166,22 @@ test("uploaded files land under the session's own directory, never in a global u
     // 1 KB each — the point is where they land, not how big they are.
     fd.append("files", new Blob(["solid a\n" + "x".repeat(1000) + "\nendsolid a\n"]), "a.stl");
     fd.append("files", new Blob(["solid b\n" + "y".repeat(1000) + "\nendsolid b\n"]), "b.stl");
-    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
-    const data = (await resp.json()) as { uploaded: Array<{ localPath: string; fileName: string }> };
+    const resp = await fetch(`${base}/api/upload`, {
+      method: "POST",
+      body: fd,
+      headers: { cookie: await boot(base) },
+    });
+    const data = (await resp.json()) as { uploaded: Array<{ name: string; relPath: string }> };
     assert.equal(resp.status, 200);
     assert.equal(data.uploaded.length, 2);
 
+    const sessionDir = [...readdirSync(root)]
+      .map((entry) => join(root, entry))
+      .find((entry) => existsSync(join(entry, "uploads")));
+    assert.ok(sessionDir, "the session's own directory should be under the sessions root");
     for (const u of data.uploaded) {
-      assert.ok(u.localPath.startsWith(root), `left the sessions root: ${u.localPath}`);
-      assert.ok(existsSync(u.localPath), `missing on disk: ${u.localPath}`);
+      assert.match(u.relPath, /^uploads\//, `not a workspace path: ${u.relPath}`);
+      assert.ok(existsSync(join(sessionDir!, u.relPath)), `missing on disk: ${u.relPath}`);
     }
 
     // THE REGRESSION: main/uploads.ts used to copy every upload into the ONE
@@ -177,7 +219,11 @@ test("a zip with more entries than the cap is refused, not expanded", async () =
     );
     const fd = new FormData();
     fd.append("files", new Blob([new Uint8Array(zip)]), "parts.zip");
-    const resp = await fetch(`${base}/api/upload`, { method: "POST", body: fd });
+    const resp = await fetch(`${base}/api/upload`, {
+      method: "POST",
+      body: fd,
+      headers: { cookie: await boot(base) },
+    });
     const data = (await resp.json()) as { error: string; code?: string };
     assert.equal(resp.status, 400);
     assert.equal(data.code, "zip_too_many_entries");
@@ -198,6 +244,7 @@ test("a batch bigger than the 600 MB cap is refused before its bytes are read", 
     // request, so the only way to prove the cap is to watch it refuse one
     // WITHOUT us having to actually transfer 700 MB.
     const url = new URL("/api/upload", base);
+    const cookie = await boot(base);
     let sent: ClientRequest | undefined;
     const answer = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       sent = httpRequest(
@@ -209,6 +256,9 @@ test("a batch bigger than the 600 MB cap is refused before its bytes are read", 
           headers: {
             "content-type": "multipart/form-data; boundary=----slicely",
             "content-length": String(700 * 1024 * 1024),
+            // A booted session, like any real client: without it the request is
+            // refused for having no session before its size is even looked at.
+            cookie,
           },
         },
         (resp) => {

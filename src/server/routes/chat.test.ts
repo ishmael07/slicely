@@ -26,17 +26,26 @@ function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "slicely-test-"));
 }
 
-/** Connect a key to a fresh session and return its cookie. */
+/** Connect a key to a fresh session and return its cookie.
+ *
+ *  Two calls, because minting a workspace is its own step now: GET /api/config
+ *  is the only endpoint that may create one (see session.ts's MINTING_ROUTES),
+ *  and everything else — PUT /api/key included — is 401 `no_session` without a
+ *  cookie. This is exactly the order the client boots in. */
 async function connectKey(base: string): Promise<string> {
+  const boot = await fetch(`${base}/api/config`);
+  assert.equal(boot.status, 200);
+  const raw = boot.headers.get("set-cookie");
+  assert.ok(raw, "the boot call should mint a session cookie");
+  const cookie = raw.split(";")[0];
+
   const resp = await fetch(`${base}/api/key`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", cookie },
     body: JSON.stringify({ apiKey: TEST_KEY }),
   });
   assert.equal(resp.status, 200);
-  const raw = resp.headers.get("set-cookie");
-  assert.ok(raw, "connecting a key should mint a session cookie");
-  return raw.split(";")[0];
+  return cookie;
 }
 
 async function listen(app: Express): Promise<{ base: string; close: () => Promise<void> }> {

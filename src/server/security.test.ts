@@ -582,3 +582,31 @@ test("the CSP the header sends is the CSP the page's own meta tag declares", asy
     .join("; ");
   assert.equal(meta![1].trim().replace(/;\s*$/, ""), withoutFrameAncestors);
 });
+
+test("a cross-origin request is refused with the stable cross_origin code", async () => {
+  // `cross_origin` is in the spec's code list and web/api.ts already has copy
+  // for it ("That request was blocked for security reasons."), but this body was
+  // hand-built and carried no code at all — so the client showed the raw
+  // sentence instead of its own.
+  const { app, store, cleanup } = testApp({ api: { capacity: 1000 } });
+  const { base, close } = await listen(app);
+  try {
+    const blocked = await fetch(`${base}/api/config`, {
+      headers: { origin: "https://evil.example" },
+    });
+    assert.equal(blocked.status, 403);
+    const body = (await blocked.json()) as { error: string; code?: string };
+    assert.equal(body.code, "cross_origin");
+    assert.match(body.error, /cross-origin/i);
+    assert.equal(store.count(), 0, "a refused cross-origin request must not mint a workspace");
+
+    // A same-origin control, so this proves the guard's verdict rather than the
+    // route being broken: the Origin names the very host the request reached.
+    const host = new URL(base).host;
+    const ok = await fetch(`${base}/api/config`, { headers: { origin: `http://${host}` } });
+    assert.equal(ok.status, 200);
+  } finally {
+    await close();
+    cleanup();
+  }
+});
