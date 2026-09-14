@@ -13,9 +13,9 @@
 // third-party logo file to load — the buttons are plain words in the app's own
 // type, like every other button here.
 // ─────────────────────────────────────────────────────────────────────────────
-import { account } from "./api.js";
+import { account, errorMessage, postJson, refreshAccount, setAccount } from "./api.js";
 import { config } from "./onboarding.js";
-import { make } from "./ui.js";
+import { byId, make, menu, toast } from "./ui.js";
 
 // ── signing in ───────────────────────────────────────────────────────────────
 
@@ -97,6 +97,127 @@ export function readAuthErrorFromHash(): string | undefined {
   if (!code) return undefined;
   history.replaceState(null, "", location.pathname + location.search);
   return /^[a-z_]{1,40}$/.test(code) ? code : "oauth_failed";
+}
+
+// ── the header pill ──────────────────────────────────────────────────────────
+//
+// One button in the corner that answers the two questions a person on free
+// credit keeps asking: am I signed in, and how much is left. It is the only
+// always-visible account surface, so it is also where signing out lives.
+
+export interface AccountDeps {
+  /** Open Settings → AI with the first key field focused. */
+  openAiSettings(): void;
+}
+
+export interface AccountApi {
+  /** Re-read `/api/me` and repaint. */
+  refresh(): Promise<void>;
+}
+
+let deps: AccountDeps;
+let pill: HTMLButtonElement | undefined;
+let initialEl: HTMLElement;
+let balanceEl: HTMLElement;
+
+/**
+ * Paint the pill from the one account store.
+ *
+ * Three states and no fourth: hidden where there are no accounts at all
+ * (desktop, or a BYO-only server), "Sign in" where there are and nobody is,
+ * and a monogram plus the balance once somebody is.
+ */
+export function renderAccountPill(): void {
+  if (!pill) return;
+  const on = config().accountsEnabled;
+  pill.hidden = !on;
+  if (!on) return;
+
+  const me = account();
+  const acct = me.signedIn ? me.account : undefined;
+  if (acct) {
+    initialEl.textContent = acct.initial || acct.email.slice(0, 1).toUpperCase();
+    initialEl.hidden = false;
+    balanceEl.textContent = acct.balanceLabel;
+    pill.title = acct.email;
+    pill.setAttribute("aria-label", `${acct.email} — ${acct.balanceLabel} of free credit left`);
+  } else {
+    // No monogram for nobody: the pill is a plain "Sign in" button until there
+    // is a person to stand for.
+    initialEl.hidden = true;
+    balanceEl.textContent = "Sign in";
+    pill.title = "Sign in to Slicely";
+    pill.setAttribute("aria-label", "Sign in to Slicely");
+  }
+}
+
+function openAccountMenu(): void {
+  if (!pill) return;
+  const me = account();
+  const acct = me.signedIn ? me.account : undefined;
+
+  if (!acct) {
+    // Signed out: the pill offers the same two doors as the first-run card, so
+    // somebody who pasted a key first can still sign in later.
+    menu(
+      pill,
+      config().signinProviders.map((p) => ({ id: p.id, label: `Continue with ${p.label}` })),
+      (id) => location.assign(signinHref(id)),
+    );
+    return;
+  }
+
+  menu(
+    pill,
+    [
+      // Who you are and what is left, as one quiet, unclickable row.
+      {
+        id: "who",
+        label: acct.email,
+        hint: `${acct.balanceLabel} left of ${acct.grantedLabel} free credit`,
+        disabled: true,
+      },
+      { id: "key", label: "Add your own key…" },
+      { id: "signout", label: "Sign out" },
+    ],
+    (id) => {
+      if (id === "key") deps.openAiSettings();
+      if (id === "signout") void signOut();
+    },
+  );
+}
+
+async function signOut(): Promise<void> {
+  try {
+    await postJson("/api/auth/signout", {});
+    // The workspace, the chats and any key of their own all stay — signing out
+    // only forgets which account was paying.
+    setAccount({ signedIn: false });
+    toast("Signed out.", "info");
+  } catch (err) {
+    toast(errorMessage(err, "Couldn't sign you out."), "error");
+  }
+}
+
+/** Wire the pill up. Called once from app.ts's boot, before the first paint. */
+export function initAccount(d: AccountDeps): AccountApi {
+  deps = d;
+  pill = byId<HTMLButtonElement>("accountPill");
+  initialEl = byId<HTMLElement>("accountInitial");
+  balanceEl = byId<HTMLElement>("accountBalance");
+  pill.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openAccountMenu();
+  });
+  renderAccountPill();
+  return {
+    refresh: async () => {
+      // Only ever ask a server that says it has accounts. On desktop there is
+      // no such route, and a 404 on every boot is noise in someone's log.
+      if (!config().accountsEnabled) return;
+      await refreshAccount();
+    },
+  };
 }
 
 // ── what the rest of the client asks about the account ───────────────────────

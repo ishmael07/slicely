@@ -50,6 +50,17 @@
               <rect x="4" y="16.4" width="16" height="4.5" rx="1.4" stroke="currentColor" stroke-width="1.6" />
             </svg>
           </button>
+          <!-- Who is signed in, and what is left of their free credit. Hidden
+               unless /api/config says this deploy has accounts at all, so the
+               desktop app and a BYO-only server never show it. A <button
+               class="pill"> so the Mac title bar's no-drag rule already covers
+               it. Filled in by account.ts. -->
+          <div class="picker-anchor account-anchor">
+            <button class="pill" id="accountPill" aria-haspopup="menu" aria-expanded="false" hidden>
+              <span class="mono" id="accountInitial" aria-hidden="true">?</span>
+              <span id="accountBalance">Sign in</span>
+            </button>
+          </div>
           <button id="settingsBtn" class="icon-btn" title="Settings, printers &amp; sources" aria-label="Settings, printers and sources" aria-expanded="false" aria-controls="settingsSheet">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.7" />

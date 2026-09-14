@@ -13,7 +13,8 @@
 // the emitted modules import nothing but each other.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
-import { ApiError, errorMessage, getJson } from "./api.js";
+import { ApiError, errorMessage, getJson, onAccountChange } from "./api.js";
+import { initAccount, renderAccountPill } from "./account.js";
 import type { SheetId } from "./ui.js";
 import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toggleSheet } from "./ui.js";
 import {
@@ -125,6 +126,7 @@ if ((window as unknown as { slicely?: unknown }).slicely) {
 
 initUi();
 
+const accounts = initAccount({ openAiSettings });
 const settings = initSettings({ onError: renderError });
 initPrinters({ multiUser: () => config().multiUser });
 initJobs({ mountSend: attachSendSlot, planOptions });
@@ -207,11 +209,29 @@ function isEmptyStateShowing(): boolean {
 // boot call.
 void (async () => {
   await loadConfig();
+  // WHO before WHAT: the first screen is a different screen for somebody with
+  // free credit than for a stranger, so the account is read before anything is
+  // drawn — and only on a deploy whose config says accounts exist at all.
+  await accounts.refresh();
+  renderAccountPill();
   showEmptyState();
   initConsent(byId<HTMLElement>("consent"));
   renderAccount();
   updateSendEnabled();
   applyMode();
+
+  // Signing in, signing out and spending credit all change the same three
+  // things: the pill, whether the composer is live, and what the first screen
+  // should say.
+  onAccountChange(() => {
+    renderAccountPill();
+    renderAccount();
+    updateSendEnabled();
+    if (isEmptyStateShowing()) {
+      clearTranscript();
+      showEmptyState();
+    }
+  });
 
   // Connecting or removing a key changes what the first screen should say and
   // what the send button promises, so both are redrawn rather than left stale.

@@ -153,15 +153,18 @@ a {
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+/* WRAPS, NEVER SCROLLS. This row used to scroll sideways when it ran out of
+   room, which hides controls rather than showing them — the narrow-phone rules
+   below already chose wrapping instead. It is generalised to every width here
+   because the account menu drops out of this row, and a scroll container clips
+   anything that leaves it (overflow-x: auto makes overflow-y: auto too). */
 .title-right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.title-right::-webkit-scrollbar {
-  display: none;
+  overflow: visible;
 }
 .pill {
   display: flex;
@@ -180,6 +183,46 @@ a {
 .pill:hover {
   background: var(--panel-2);
   border-color: var(--border-bright);
+}
+
+/* ── The account pill ───────────────────────────────────────────────────────
+   A monogram and a balance, in the corner, always. The letter sits in a filled
+   circle so the pill reads as a person rather than as another status chip; the
+   balance beside it is the one number this product has to keep honest. */
+#accountPill {
+  color: var(--text);
+  font-weight: 600;
+  padding: 4px 10px 4px 4px;
+}
+#accountPill .mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #1a1006;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+#accountPill .mono[hidden] {
+  display: none;
+}
+/* With no monogram (signed out) the pill is an ordinary text pill again. */
+#accountPill:has(.mono[hidden]) {
+  padding: 5px 10px;
+}
+/* The composer's menus open upwards because they sit at the bottom of the
+   screen; this one hangs off the header, so it opens down and to the right. */
+.account-anchor .picker-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+  min-width: 232px;
 }
 .dot {
   display: inline-block;
@@ -2603,13 +2646,21 @@ button.menu-item:disabled {
   .title-right {
     flex: 0 1 auto;
     min-width: 0;
-    overflow-x: visible;
-    justify-content: flex-end;
   }
   /* The banner says when PrusaSlicer is missing, and a phone has no room for a
      pill that otherwise only repeats "ready". */
   #slicerStatus {
     display: none;
+  }
+  /* Same trade for the account: once there IS a monogram it says who you are in
+     22 pixels, and the balance is one tap away in the menu (and spelt out in
+     Settings). Signed out there is no monogram, so "Sign in" stays — an empty
+     button would be worse than a wide one. */
+  #accountPill:has(.mono:not([hidden])) #accountBalance {
+    display: none;
+  }
+  #accountPill:has(.mono:not([hidden])) {
+    padding: 4px;
   }
   .pill {
     flex: 0 1 auto;
