@@ -20,6 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { ProviderId, ProviderInfo } from "../shared/types";
 import { ApiError, del, getJson, putJson, ready } from "./api.js";
+import { buildSigninBlock, hasFreeCredit } from "./account.js";
 import { externalLink, make, toast } from "./ui.js";
 
 /** One way in, as this deploy offers it. Rendered as a button; pressing it is a
@@ -383,14 +384,32 @@ function buildKeyForm(id: ProviderId, opts: KeyFormOptions = {}): HTMLFormElemen
 }
 
 /**
- * The first-run card: one heading, one sentence, one choice, one field.
+ * The first-run card.
  *
- * Both providers are offered as equal buttons rather than two stacked cards —
- * the answer to "which do I need?" is "whichever account you already have", and
- * that is a choice, not two things to read.
+ * Two shapes, one card. On a deploy with a free tier the card is the sign-in
+ * block: a title, one sentence, a button per provider and a plain link for
+ * people who already have an API key — pressing that link swaps the key form
+ * in, in place, so nobody has to go looking for it. With accounts off the card
+ * is byte-for-byte the one it has always been: a heading, one sentence, a choice
+ * of provider, a paste box.
  */
 export function buildConnectCard(): HTMLElement {
   const card = make("section", "connect");
+  const signin = buildSigninBlock(() => {
+    card.replaceChildren(buildKeyCard());
+    // The link was pressed to type a key, so put the keyboard where the key
+    // goes rather than leaving it on a button that no longer exists.
+    card.querySelector<HTMLInputElement>(".key-input")?.focus();
+  });
+  card.appendChild(signin ?? buildKeyCard());
+  return card;
+}
+
+/** The key card's own contents: heading, sentence, provider choice, paste box.
+ *  A fragment rather than a card of its own, so it can be swapped into the
+ *  first-run card in place without the card moving or changing size abruptly. */
+function buildKeyCard(): DocumentFragment {
+  const card = document.createDocumentFragment();
   const titleId = `connectTitle${++keyFieldSeq}`;
   const title = make("h2", "connect-title", CONNECT_HEADING);
   title.id = titleId;
@@ -489,7 +508,10 @@ const EXAMPLE_PROMPTS = [
  * it described work the user cannot start yet.
  */
 export function buildEmptyState(onExample: (prompt: string) => void): HTMLElement {
-  if (!current.hasKey) {
+  // Somebody signed in with credit to spend needs no card at all: they can type
+  // straight away, and being shown a way to start when they have already started
+  // is the same noise as the old three-step tour.
+  if (!current.hasKey && !hasFreeCredit()) {
     const first = make("div", "empty onboarding");
     first.appendChild(buildConnectCard());
     return first;

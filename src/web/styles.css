@@ -2296,6 +2296,44 @@ button.menu-item:disabled {
   margin-top: var(--sp-1);
 }
 
+/* ── Signing in ─────────────────────────────────────────────────────────────
+   The same card, on a deploy that has free credit to hand out: a title, one
+   sentence, one full-width button per provider, and a plain link for the people
+   who already have an API key. Full width because these are not a choice
+   between two products — they are one door with two handles, and a row of two
+   would ask the reader to compare them before starting. */
+.signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.signin-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+.signin-buttons .btn {
+  display: block;
+  padding: 11px 12px;
+  font-size: var(--fs);
+  text-align: center;
+  text-decoration: none;
+}
+/* The way out for someone who never wanted an account: quiet, but a real
+   sentence at a real size — the point of this screen is that both doors are
+   open. */
+.signin .signin-own {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.signin .signin-own:hover {
+  color: var(--text);
+}
+
 /* Two equal buttons, not two stacked cards: which provider you use is a choice,
    not two things to read. */
 .provider-choice {
