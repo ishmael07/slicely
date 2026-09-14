@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron dist/main/main.js",
     "dev": "npm run build && electron dist/main/main.js",
-    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac": "npm run build && electron-builder --mac --config scripts/electron-builder.config.cjs",
+    "release:mac": "npm run build && electron-builder --mac --config scripts/electron-builder.config.cjs --publish always",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
     "test:only": "node --test \"dist/**/*.test.js\"",
     "serve": "npm run build && node dist/server/index.js"
@@ -41,6 +42,12 @@
   "build": {
     "appId": "dev.ishmael.slicely",
     "productName": "Slicely",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
     "files": [
       "dist/**/*",
       "dist-web/**/*",
@@ -49,14 +56,54 @@
       "site/terms.html",
       "site/privacy.html",
       "site/favicon.svg",
-      "node_modules/**/*",
-      "package.json"
+      "site/styles.css",
+      "package.json",
+      "!dist/web/**",
+      "!dist-web/shared/**",
+      "!**/*.map",
+      "!**/*.test.js"
     ],
     "mac": {
       "category": "public.app-category.graphics-design",
+      "icon": "build/icon.icns",
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "extraResources": [
+        {
+          "from": "build/How to open.txt",
+          "to": "How to open.txt"
+        }
       ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "ishmael07",
+      "repo": "slicely"
     }
   }
 }
