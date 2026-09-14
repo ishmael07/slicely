@@ -5,9 +5,12 @@
 // import "electron".
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
+import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { isHosted } from "../mode";
+import { isLocalOrLinkLocalAddress, isPrivateAddress } from "../sourcing/net";
 import { WireError } from "../../server/errors";
 
 /** Default network timeout applied to a driver call, in ms. Every driver
@@ -15,17 +18,134 @@ import { WireError } from "../../server/errors";
  *  to roughly this so an unreachable printer fails fast instead of hanging. */
 export const DEFAULT_TIMEOUT_MS = 8000;
 
+// ── Where a driver may point (Task D4) ───────────────────────────────────────
+//
+// A printer's `host` is typed by whoever is using Slicely, and every driver
+// turns it straight into a URL that the SERVER requests, from inside the
+// server's own network. "Test my printer" pointed at 127.0.0.1 reads whatever
+// else listens on this machine; pointed at 169.254.169.254 on a cloud host it
+// reads the instance's credentials. So the host is checked, not trusted.
+//
+// The check is in TWO places on purpose, and they are not the same check:
+//
+//   • `assertPrinterHostAllowed` runs when a printer is SAVED (addPrinter /
+//     updatePrinter). It is the full rule: it resolves hostnames, and in hosted
+//     mode it refuses every private range as well. That is the only way a host
+//     gets into the registry, so it is the right place for the expensive,
+//     mode-dependent policy — and it covers the transports that never use
+//     `fetch` at all (Bambu LAN dials MQTT and FTPS).
+//   • `fetchTimeout` re-checks on every driver call, synchronously and with no
+//     DNS: only the addresses that are never a printer in ANY mode (loopback,
+//     0.0.0.0, link-local, multicast, the "localhost" names). It is on the
+//     status-polling hot path — a DNS round-trip per printer per poll is real
+//     cost — and its job is to stop a URL a driver built from reaching this
+//     machine, not to re-litigate the LAN policy the saved record already
+//     passed. A LAN printer must keep working here in both modes.
+
+/** Hostnames that always mean "this machine". */
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"]);
+
+/** The refusal every host check owes a client: the same message and code
+ *  whichever rule matched, so no probe can tell "blocked because loopback"
+ *  from "blocked because private" and map the network that way. */
+function hostBlocked(): never {
+  throw new WireError(400, "That address isn't a printer we can reach from here.", "host_blocked");
+}
+
+/** Strip the brackets of an IPv6 literal and normalise case. */
+function bareHost(host: string): string {
+  return (host ?? "").trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+}
+
+/** True for a host that is never a printer, in any mode: it names this very
+ *  machine, the local link, or a group. Hostname forms included. */
+function isNeverAPrinter(host: string): boolean {
+  const h = bareHost(host);
+  if (h.length === 0) return true;
+  if (LOOPBACK_HOSTNAMES.has(h) || h.endsWith(".localhost")) return true;
+  if (isIP(h) !== 0) return isLocalOrLinkLocalAddress(h);
+  return false;
+}
+
+/** Every address a printer hostname resolves to. */
+async function resolveAll(host: string): Promise<string[]> {
+  const records = await dnsLookup(host, { all: true });
+  return records.map((r) => r.address);
+}
+
 /**
- * fetch() with a hard timeout via AbortSignal.timeout. A printer that's
- * powered off but still holds a DHCP lease (connection just hangs, no RST) is
- * the common case this guards against — without it, a single stale printer
- * could freeze the whole status-polling loop.
+ * Throws `WireError(400, …, "host_blocked")` unless `host` could plausibly be a
+ * printer reachable from here.
+ *
+ * Always refused: loopback (127/8, ::1, the "localhost" names), 0.0.0.0,
+ * link-local (169.254/16 — the cloud metadata address — and fe80::/10), and
+ * multicast. In HOSTED mode every private range goes too: a shared server has
+ * no LAN, so a request to a private address is a request to somebody else's
+ * network or to the deploy's own internals. In DESKTOP mode private ranges are
+ * ALLOWED, because that is where printers actually live — as are `.local` mDNS
+ * names, which is how a printer announces itself.
+ *
+ * A hostname is resolved and EVERY record checked. If it will not resolve,
+ * hosted mode refuses (a name we cannot check is a name we will not dial) while
+ * desktop mode allows it: a LAN printer's name is often not in DNS at all, and
+ * turning that into "blocked address" would hide the real "couldn't connect".
  */
-export function fetchTimeout(
+export async function assertPrinterHostAllowed(
+  host: string,
+  opts: { lookup?: (h: string) => Promise<string[]> } = {},
+): Promise<void> {
+  const h = bareHost(host);
+  if (isNeverAPrinter(h)) hostBlocked();
+
+  if (isIP(h) !== 0) {
+    if (isHosted() && isPrivateAddress(h)) hostBlocked();
+    return;
+  }
+
+  // A hostname. mDNS names resolve on a local link the hosted server hasn't got.
+  if (isHosted() && h.endsWith(".local")) hostBlocked();
+
+  let addresses: string[];
+  try {
+    addresses = await (opts.lookup ?? resolveAll)(h);
+  } catch {
+    if (isHosted()) hostBlocked();
+    return;
+  }
+  if (addresses.length === 0) {
+    if (isHosted()) hostBlocked();
+    return;
+  }
+  for (const address of addresses) {
+    if (isLocalOrLinkLocalAddress(address)) hostBlocked();
+    if (isHosted() && isPrivateAddress(address)) hostBlocked();
+  }
+}
+
+/**
+ * fetch() with a hard timeout via AbortSignal.timeout, and a synchronous check
+ * that the URL is not pointed at this machine (see the block comment above). A
+ * printer that's powered off but still holds a DHCP lease (connection just
+ * hangs, no RST) is the common case the timeout guards against — without it, a
+ * single stale printer could freeze the whole status-polling loop.
+ *
+ * Every driver's HTTP call goes through here, so there is one place that decides
+ * what a driver may dial. A bare `fetch(` anywhere in drivers/ is a bug.
+ */
+export async function fetchTimeout(
   url: string,
   init: RequestInit = {},
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<Response> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    hostBlocked();
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") hostBlocked();
+  if (isNeverAPrinter(parsed.hostname)) hostBlocked();
+
   return fetch(url, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(timeoutMs),

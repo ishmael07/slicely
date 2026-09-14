@@ -37,7 +37,7 @@ import type {
 import { basename } from "node:path";
 import * as registry from "./registry";
 import { discoverPrinters as runDiscovery } from "./discovery";
-import { assertAllowedOutputDir, describeError, nowIso, safeJobName } from "./util";
+import { assertAllowedOutputDir, assertPrinterHostAllowed, describeError, nowIso, safeJobName } from "./util";
 import { isHosted } from "../mode";
 import { WireError } from "../../server/errors";
 import { octoprintDriver } from "./drivers/octoprint";
@@ -95,6 +95,11 @@ export async function getPrinter(id: string): Promise<PrinterConnection | undefi
 export async function addPrinter(
   input: Omit<PrinterConnection, "id"> & PrinterSecrets,
 ): Promise<{ printer: PrinterConnection; test: PrinterTestResult }> {
+  // Before the record is stored and before the probe runs: `testPrinter` below
+  // is a request this server makes to an address the caller chose, so a
+  // loopback or internal host has to be refused here, not discovered by the
+  // driver after it has already read whatever was listening.
+  await checkHost(input.transport, input);
   const printer = registry.addConnection(checkOutputDir(input.transport, input));
   const test = await testPrinter(printer.id);
 
@@ -113,8 +118,42 @@ export async function updatePrinter(
   id: string,
   patch: Partial<PrinterConnection & PrinterSecrets>,
 ): Promise<PrinterConnection> {
-  const transport = patch.transport ?? registry.getConnection(id)?.transport;
+  const existing = registry.getConnection(id);
+  const transport = patch.transport ?? existing?.transport;
+  // Either half of "which host" and "who dials it" can move, and changing just
+  // the transport is enough to turn a host that was only a label (a cloud
+  // record's) into one a driver will dial — so re-check whenever either is in
+  // the patch, against the host the record will actually end up with.
+  if (patch.host !== undefined || patch.transport !== undefined) {
+    await checkHost(transport, { host: patch.host ?? existing?.host });
+  }
   return registry.updateConnection(id, checkOutputDir(transport, patch));
+}
+
+/**
+ * Transports that actually DIAL `host`. For the two cloud transports the API
+ * endpoint is a constant compiled into the driver (`connect.prusa3d.com`,
+ * `us.mqtt.bambulab.com`) and `host` is only a label, so guarding it there
+ * would refuse records that never cause a request — and would make every add
+ * wait on a DNS lookup for a name the driver ignores.
+ */
+const DIALS_HOST: ReadonlySet<PrinterTransport> = new Set<PrinterTransport>([
+  "octoprint",
+  "moonraker",
+  "prusalink",
+  "bambu-lan",
+]);
+
+/** Check a printer's host before it is saved. See `assertPrinterHostAllowed`
+ *  for the rule; a missing host is left to the driver to complain about, since
+ *  "you didn't give me an address" is a clearer error than "blocked". */
+async function checkHost(
+  transport: PrinterTransport | undefined,
+  input: { host?: string },
+): Promise<void> {
+  if (!transport || !DIALS_HOST.has(transport)) return;
+  if (typeof input.host !== "string" || input.host.trim().length === 0) return;
+  await assertPrinterHostAllowed(input.host);
 }
 
 /**

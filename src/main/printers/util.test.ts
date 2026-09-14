@@ -8,6 +8,8 @@ import {
   describeError,
   safeJobName,
   assertAllowedOutputDir,
+  assertPrinterHostAllowed,
+  fetchTimeout,
   setVolumesRootForTests,
 } from "./util";
 import { WireError } from "../../server/errors";
@@ -23,6 +25,44 @@ function inMode<T>(mode: "hosted" | "desktop", fn: () => T): T {
     if (prev === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prev;
   }
+}
+
+/** The async half of `inMode`: the env var must still be set while the awaited
+ *  work runs, so the restore has to wait for the promise, not just for the call
+ *  that produced it. */
+async function inModeAsync<T>(mode: "hosted" | "desktop", fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = mode;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+}
+
+/** A stand-in resolver, so no test here ever touches real DNS. */
+function fakeLookup(map: Record<string, string[]>): (host: string) => Promise<string[]> {
+  return async (host: string) => {
+    const found = map[host];
+    if (!found) throw new Error(`ENOTFOUND ${host}`);
+    return found;
+  };
+}
+
+/** Assert that `fn` refuses with the wire error the printer host guard owes a
+ *  client: 400 + `host_blocked`, and a message with no address in it. */
+async function rejectsHostBlocked(fn: () => Promise<unknown>, why: string): Promise<void> {
+  await assert.rejects(
+    fn,
+    (err: unknown) => {
+      assert.ok(err instanceof WireError, `${why}: expected a WireError`);
+      assert.equal(err.status, 400, why);
+      assert.equal(err.code, "host_blocked", why);
+      return true;
+    },
+    why,
+  );
 }
 
 test("normalizeColourHex converts Bambu's 8-hex RRGGBBAA to #RRGGBB", () => {
@@ -258,4 +298,134 @@ test("assertAllowedOutputDir rejects /Volumes/Macintosh HD — a symlink to the 
       "/Volumes/Macintosh HD resolves to / and must be refused",
     );
   });
+});
+
+// ── assertPrinterHostAllowed: a printer, not the server itself (Task D4) ─────
+//
+// "Test my printer" is a request to fetch a URL the user typed, made by the
+// server, from inside the server's own network. Pointed at 127.0.0.1 it reads
+// whatever else listens there; pointed at 169.254.169.254 on a cloud host it
+// reads the instance's credentials. The one thing the guard must NOT do is
+// refuse a LAN address on the desktop app, because that is where every real
+// printer lives.
+
+test("hosted mode refuses a printer on a private network — there is no LAN to reach from a shared server", async () => {
+  await inModeAsync("hosted", async () => {
+    for (const host of ["192.168.1.50", "10.0.0.5", "172.16.0.1", "100.64.0.1", "fc00::1"]) {
+      await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `hosted must refuse ${host}`);
+    }
+  });
+});
+
+test("desktop mode allows a printer on a private network — that is where printers are", async () => {
+  await inModeAsync("desktop", async () => {
+    for (const host of ["192.168.1.50", "10.0.0.5", "172.16.0.1"]) {
+      await assertPrinterHostAllowed(host);
+    }
+    // An mDNS name is how a printer advertises itself on a LAN.
+    await assertPrinterHostAllowed("prusa-mk4.local", {
+      lookup: fakeLookup({ "prusa-mk4.local": ["192.168.1.50"] }),
+    });
+  });
+});
+
+test("both modes refuse the machine Slicely runs on, and the cloud metadata service", async () => {
+  for (const mode of ["hosted", "desktop"] as const) {
+    await inModeAsync(mode, async () => {
+      for (const host of [
+        "127.0.0.1",
+        "127.1.2.3",
+        "0.0.0.0",
+        "localhost",
+        "octoprint.localhost",
+        "[::1]",
+        "::1",
+        "169.254.169.254", // the AWS/GCP instance metadata address
+        "fe80::1",
+        "224.0.0.1",
+        "", // no host at all is not a printer either
+      ]) {
+        await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `${mode} must refuse ${JSON.stringify(host)}`);
+      }
+    });
+  }
+});
+
+test("a printer hostname is resolved, and ANY blocked record refuses it", async () => {
+  await inModeAsync("desktop", async () => {
+    // One LAN record (fine on the desktop) and one loopback record: the second
+    // is what an attacker is aiming for, so the name as a whole is refused.
+    await rejectsHostBlocked(
+      () =>
+        assertPrinterHostAllowed("rebind.test", {
+          lookup: fakeLookup({ "rebind.test": ["192.168.1.50", "127.0.0.1"] }),
+        }),
+      "a mixed record set must be refused",
+    );
+  });
+  await inModeAsync("hosted", async () => {
+    await rejectsHostBlocked(
+      () =>
+        assertPrinterHostAllowed("rebind.test", {
+          lookup: fakeLookup({ "rebind.test": ["93.184.216.34", "10.0.0.5"] }),
+        }),
+      "hosted must refuse a name with a private record",
+    );
+    await assertPrinterHostAllowed("printer.example.test", {
+      lookup: fakeLookup({ "printer.example.test": ["93.184.216.34"] }),
+    });
+  });
+});
+
+test("a name that won't resolve: hosted refuses it, desktop lets the connection attempt report it", async () => {
+  const lookup = fakeLookup({});
+  await inModeAsync("hosted", async () => {
+    await rejectsHostBlocked(
+      () => assertPrinterHostAllowed("nowhere.test", { lookup }),
+      "hosted cannot check it, so it will not dial it",
+    );
+  });
+  await inModeAsync("desktop", async () => {
+    // A LAN printer's name may not be in DNS at all (it's mDNS, or the machine
+    // is offline). Refusing here would replace a clear "couldn't connect" with
+    // a misleading "blocked address", so the driver gets to try.
+    await assertPrinterHostAllowed("nowhere.test", { lookup });
+  });
+});
+
+test("hosted mode refuses an mDNS .local name — a shared server has no local link", async () => {
+  await inModeAsync("hosted", async () => {
+    await rejectsHostBlocked(() => assertPrinterHostAllowed("prusa-mk4.local"), "hosted must refuse .local");
+  });
+});
+
+// ── fetchTimeout: the same guard, on the driver's hot path ───────────────────
+
+test("fetchTimeout refuses a loopback URL before it makes any request", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("fetchTimeout must not reach the network for a blocked host");
+  });
+  for (const url of [
+    "http://127.0.0.1:5000/api/version",
+    "http://localhost:8080/printer/info",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[::1]/api/version",
+  ]) {
+    await rejectsHostBlocked(() => fetchTimeout(url), `fetchTimeout must refuse ${url}`);
+  }
+});
+
+test("fetchTimeout still calls a LAN printer in either mode — the mode rule is applied when the printer is SAVED", async (t) => {
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string) => {
+    seen.push(url);
+    return new Response("{}", { status: 200 });
+  });
+  for (const mode of ["hosted", "desktop"] as const) {
+    await inModeAsync(mode, async () => {
+      const res = await fetchTimeout("http://10.0.0.5:80/api/version");
+      assert.equal(res.status, 200, `${mode}: a saved LAN printer must still be reachable by its driver`);
+    });
+  }
+  assert.equal(seen.length, 2);
 });

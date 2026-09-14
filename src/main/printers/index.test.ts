@@ -31,6 +31,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+// These tests run in hosted mode (see the master-key note above), where a
+// printer on a private network is refused outright (Task D4) — so the stand-in
+// printers live on 203.0.113.0/24, the range reserved for documentation and
+// examples, which is exactly what a host in a test is. Their driver never
+// reaches the network: every fetch below is stubbed.
+const HOST_A = "203.0.113.100";
+const HOST_B = "203.0.113.101";
+const HOST_C = "203.0.113.102";
+const HOST_D = "203.0.113.103";
+
 /** Stub fetch for a real octoprint driver: version probe always succeeds,
  *  and file upload always succeeds, echoing whether OctoPrint was asked to
  *  print immediately (mirrors what a real server would do). */
@@ -54,7 +64,7 @@ test("sendToPrinter: asked to start but auto-start unarmed => uploads, but start
   const { printer, test: testResult } = await printers.addPrinter({
     label: "Gate Test Printer",
     transport: "octoprint",
-    host: "10.0.0.100",
+    host: HOST_A,
     port: 80,
     apiKey: "key",
   });
@@ -81,7 +91,7 @@ test("sendToPrinter: asked to start AND armed => actually starts", async (t) => 
   const { printer } = await printers.addPrinter({
     label: "Armed Printer",
     transport: "octoprint",
-    host: "10.0.0.101",
+    host: HOST_B,
     port: 80,
     apiKey: "key",
   });
@@ -106,7 +116,7 @@ test("sendToPrinter: startImmediately defaults to false when the caller doesn't 
   const { printer } = await printers.addPrinter({
     label: "Default Printer",
     transport: "octoprint",
-    host: "10.0.0.102",
+    host: HOST_C,
     apiKey: "key",
   });
   await printers.setAutoStart(printer.id, true); // even armed...
@@ -144,7 +154,7 @@ test("getPrinter/listPrinters never expose secrets", async (t) => {
   const { printer } = await printers.addPrinter({
     label: "Secret Check",
     transport: "octoprint",
-    host: "10.0.0.103",
+    host: HOST_D,
     apiKey: "super-secret",
   });
 
@@ -210,5 +220,71 @@ test("a file-transport send stays inside the chosen folder, whatever the job is 
     unlinkSync(gcodePath);
     if (prevMode === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prevMode;
+  }
+});
+
+// ── Task D4: a printer is a printer, not the server itself ───────────────────
+
+test("addPrinter refuses a loopback host BEFORE it probes anything", async () => {
+  // The probe is what makes "add a printer" a request the server performs on
+  // the user's behalf, so the guard has to come first — a refusal that arrives
+  // after the connection test has already read /api/version on localhost is no
+  // refusal at all.
+  printers.setConnectionTestOverride(() => {
+    throw new Error("the connection probe must never run for a blocked host");
+  });
+  try {
+    const before = (await printers.listPrinters()).length;
+    for (const host of ["127.0.0.1", "localhost", "169.254.169.254"]) {
+      await assert.rejects(
+        () => printers.addPrinter({ label: "Not a printer", transport: "octoprint", host, apiKey: "key" }),
+        (err: unknown) => {
+          assert.ok(err instanceof WireError, `${host}: expected a WireError`);
+          assert.equal(err.status, 400, host);
+          assert.equal(err.code, "host_blocked", host);
+          return true;
+        },
+        `addPrinter must refuse ${host}`,
+      );
+    }
+    assert.equal((await printers.listPrinters()).length, before, "and nothing was saved");
+  } finally {
+    printers.setConnectionTestOverride(undefined);
+  }
+});
+
+test("addPrinter refuses a LAN printer on a hosted server, and updatePrinter can't move one there", async (t) => {
+  t.mock.method(globalThis, "fetch", stubOctoprintFetch());
+  await assert.rejects(
+    () => printers.addPrinter({ label: "Someone's LAN", transport: "octoprint", host: "192.168.1.50", apiKey: "k" }),
+    (err: unknown) => {
+      assert.ok(err instanceof WireError);
+      assert.equal(err.code, "host_blocked");
+      return true;
+    },
+  );
+
+  const { printer } = await printers.addPrinter({
+    label: "Public OctoPrint",
+    transport: "octoprint",
+    host: "203.0.113.120",
+    apiKey: "k",
+  });
+  try {
+    // The same rule on the way in through a patch — otherwise a saved record
+    // becomes the way around the check it passed when it was created.
+    await assert.rejects(
+      () => printers.updatePrinter(printer.id, { host: "127.0.0.1" }),
+      (err: unknown) => {
+        assert.ok(err instanceof WireError);
+        assert.equal(err.code, "host_blocked");
+        return true;
+      },
+    );
+    // A patch that doesn't touch the host is left alone.
+    const renamed = await printers.updatePrinter(printer.id, { label: "Renamed" });
+    assert.equal(renamed.label, "Renamed");
+  } finally {
+    await printers.removePrinter(printer.id);
   }
 });
