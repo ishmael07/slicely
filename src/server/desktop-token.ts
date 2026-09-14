@@ -24,6 +24,10 @@ import { timingSafeEqual } from "node:crypto";
 import type { RequestHandler } from "express";
 import { isDesktop } from "../main/mode";
 import { readCookie } from "./session";
+// Both refusals below go through the ONE error funnel, like every other failure
+// this server sends: they were hand-built `res.status(403).json(...)` calls that
+// happened to agree with `{ error, code }` today and would drift tomorrow.
+import { sendError, WireError } from "./errors";
 
 /** The cookie main.ts sets on the loopback origin before loading the window. */
 export const DESKTOP_COOKIE = "slicely_desktop";
@@ -66,6 +70,13 @@ export function isLoopbackBindHost(host: string | undefined): boolean {
  */
 export function isAllowedDesktopHost(header: string | undefined, localPort: number | undefined): boolean {
   if (!header) return false; // HTTP/1.1 requires Host; a request without one is not ours.
+  // A Host header is a host and optionally a port — nothing else. Refuse the
+  // punctuation that introduces anything else BEFORE parsing, because the parser
+  // is lenient where this must not be: `127.0.0.1:4321#` parses to our own
+  // hostname, our own port, and an EMPTY hash, so checking `parsed.hash` alone
+  // let it through. (Delimiters, not a character allowlist, so an IPv6 literal's
+  // brackets and colons still work.)
+  if (/[/\\@#?\s]/.test(header.trim())) return false;
   let parsed: URL;
   try {
     // The Host header is an authority, not a URL — borrow a scheme to parse it
@@ -75,8 +86,15 @@ export function isAllowedDesktopHost(header: string | undefined, localPort: numb
   } catch {
     return false;
   }
-  // A `Host` carrying userinfo, a path or a query is not a host at all.
-  if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search) return false;
+  // A `Host` carrying userinfo, a path, a query or a FRAGMENT is not a host at
+  // all. The fragment was missing from this list: `127.0.0.1:53421#evil.example`
+  // parses with our hostname and our port and a hash nobody looked at, so it
+  // passed — harmless in itself (a fragment is never sent to a server by a
+  // browser), but this function's whole job is to answer "is this Host header
+  // exactly ours", and "ours plus something" is not.
+  if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    return false;
+  }
   if (!isLoopbackBindHost(parsed.hostname)) return false;
   // An empty `port` means the scheme's default, which for the borrowed http is 80.
   const port = parsed.port === "" ? 80 : Number(parsed.port);
@@ -117,7 +135,7 @@ export function desktopTokenGuard(token: string): RequestHandler {
     // Defence in depth, before the token is even looked at: a request that
     // reached us under somebody else's host name is refused whatever it carries.
     if (!isAllowedDesktopHost(req.headers.host, req.socket.localPort)) {
-      res.status(403).json({ error: "Forbidden.", code: "forbidden" });
+      sendError(res, new WireError(403, "Forbidden.", "forbidden"));
       return;
     }
 
@@ -131,6 +149,6 @@ export function desktopTokenGuard(token: string): RequestHandler {
       return;
     }
 
-    res.status(403).json({ error: "Forbidden.", code: "forbidden" });
+    sendError(res, new WireError(403, "Forbidden.", "forbidden"));
   };
 }

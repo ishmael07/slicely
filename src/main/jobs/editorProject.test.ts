@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeEditorProject } from "./editorProject";
@@ -302,6 +302,51 @@ test("the merged config can be written out, so a slice can be told to USE it", a
     const ini = readFileSync(emitted, "utf8");
     assert.match(ini, /nozzle_diameter = 0\.4,0\.4/, "the slice must see both extruders");
     assert.match(ini, /filament_colour = #000000;#0086D6/i);
+  } finally {
+    fixture.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("opening a multi-colour model leaves no slicely-mm-*.ini in the temp directory", async () => {
+  // The multi-extruder config is synthesized into `$TMPDIR/slicely-mm-*.ini`,
+  // read for its text, and — until this was fixed — never deleted. Four per
+  // test run, one per multi-colour import in production.
+  const before = new Set(readdirSync(tmpdir()).filter((n) => /^slicely-mm-.*\.ini$/.test(n)));
+  const fixture = writeThreeMfFixture({
+    "3D/3dmodel.model":
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+      `<resources>` +
+      `<object id="1" type="model">${TETRA}</object>` +
+      `<object id="2" type="model">${TETRA}</object>` +
+      `</resources>` +
+      `<build><item objectid="1"/><item objectid="2"/></build></model>`,
+    "Metadata/Slic3r_PE_model.config":
+      `<?xml version="1.0" encoding="UTF-8"?><config>` +
+      `<object id="1"><metadata type="object" key="extruder" value="1"/></object>` +
+      `<object id="2"><metadata type="object" key="extruder" value="2"/></object>` +
+      `</config>`,
+    "Metadata/Slic3r_PE.config": `; generated\n; filament_colour = #008080;#000000\n`,
+  });
+  const dir = mkdtempSync(join(tmpdir(), "slicely-editor-mmtemp-"));
+  try {
+    const out = join(dir, "open.3mf");
+    const project = await writeEditorProject({
+      paths: [fixture.path],
+      bed: { x: 220, y: 220, z: 250 },
+      destPath: out,
+    });
+    assert.ok(project, "the two-extruder project must still be written");
+    // The settings did make it into the project — the file was read before it
+    // was removed, which is the half of this that could break silently.
+    const print = execFileSync("unzip", ["-p", out, "Metadata/Slic3r_PE.config"], { encoding: "utf8" });
+    assert.match(print, /single_extruder_multi_material = 1/);
+
+    const leaked = readdirSync(tmpdir()).filter(
+      (n) => /^slicely-mm-.*\.ini$/.test(n) && !before.has(n),
+    );
+    assert.deepEqual(leaked, [], `left temp configs behind: ${leaked.join(", ")}`);
   } finally {
     fixture.cleanup();
     rmSync(dir, { recursive: true, force: true });

@@ -499,3 +499,55 @@ test("resolveSessionPath accepts the client's relative reference and refuses esc
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("delete-my-data removes the chats, the jobs and any interrupted atomic write of them", async () => {
+  // DESKTOP: the session directory is `app.getPath("userData")` — Electron's own
+  // cookie jar and cache live in there — so it cannot be deleted wholesale and
+  // "Delete my data" has to remove data by name. Which means the list of names
+  // has to be right: `chats.json` (not `chats`, which never existed) and the
+  // temp siblings that an interrupted atomic write leaves behind, each of which
+  // is a COMPLETE copy of the file it was replacing.
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = "desktop";
+  const root = tmpRoot();
+  const desktopDir = join(root, "desktop");
+  const store = new SessionStore({
+    sessionsRoot: root,
+    secretDir: root,
+    desktopDir,
+    sweepIntervalMs: 0,
+  });
+  try {
+    const session = store.desktopSession();
+    const write = (name: string) => writeFileSync(join(session.dir, name), "x");
+
+    write("secrets.json");
+    write("chats.json");
+    write("jobs.json");
+    // The three shapes this codebase's atomic writers actually produce.
+    write("jobs.json.tmp-3f2a91bc");           // main/jobs/store.ts
+    write("chats.json.tmp");                    // server/chats.ts
+    write(".secrets.json.8123.1789372358943.tmp"); // main/userkey.ts
+    // Configuration the app needs to keep working, which must SURVIVE.
+    write("settings.json");
+    write("printers.json");
+    write("master.key");
+    writeFileSync(join(session.uploadsDir, "cube.stl"), "solid x\nendsolid x\n");
+
+    await store.destroy(session.id);
+
+    const left = readdirSync(session.dir).sort();
+    assert.deepEqual(
+      left.filter((n) => n !== "uploads" && n !== "downloads" && n !== "slices" && n !== "scratch"),
+      ["master.key", "printers.json", "settings.json"],
+      `unexpected leftovers: ${left.join(", ")}`,
+    );
+    assert.deepEqual(readdirSync(session.uploadsDir), [], "the user's files go too");
+    assert.ok(existsSync(session.dir), "the desktop workspace itself must survive");
+  } finally {
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+});

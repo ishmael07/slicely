@@ -50,6 +50,14 @@ function createWindow(url: string): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Named rather than left to the default: `<webview>` is a second,
+      // differently-privileged embedder inside the page, and an injected one
+      // would carry its own session and its own navigation rules — none of which
+      // this app's guards (the navigation predicate, the window-open handler)
+      // are applied to. Slicely has exactly one page and no use for it. The
+      // default is already false in modern Electron; saying so keeps it false if
+      // that ever changes, and says out loud that it is not an oversight.
+      webviewTag: false,
     },
   });
 
@@ -156,6 +164,15 @@ async function boot(): Promise<void> {
   // prompt this app has no business raising. So the answer is "no", once, for
   // every permission there is.
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  // The same answer for the OTHER half of Electron's permission surface. The
+  // request handler above covers the asynchronous asks (`getUserMedia`,
+  // notifications); a synchronous CHECK — `navigator.permissions.query`, and
+  // internally the media-device enumeration that a `getUserMedia` call makes
+  // before it ever raises a request — goes through this one instead, and with no
+  // handler installed Chromium falls back to its own default rather than to
+  // ours. Two handlers, one policy: Slicely asks for no device permissions at
+  // all, so nothing is granted by either route.
+  session.defaultSession.setPermissionCheckHandler(() => false);
 
   // The same Content-Security-Policy the server sends, applied at the Electron
   // layer as well: a response that somehow reaches the window without passing

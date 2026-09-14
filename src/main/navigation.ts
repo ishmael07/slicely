@@ -36,6 +36,17 @@ export function isSameOrigin(target: string, serverUrl: string): boolean {
     // `origin` is "null" for opaque origins (data:, blob: of one, file: in some
     // runtimes). Two of those must never compare equal to each other.
     if (a.origin === "null" || b.origin === "null") return false;
+    // BOTH MUST BE http(s), before the origins are compared at all.
+    //
+    // `blob:` INHERITS the origin of the page that created it, so
+    // `new URL("blob:http://127.0.0.1:53421/<uuid>").origin` is
+    // "http://127.0.0.1:53421" — our own server's origin, exactly equal, and the
+    // window would have been allowed to navigate to a blob the page built for
+    // itself. The same is true of `filesystem:`. A blob URL is content the page
+    // authored rather than content the server served, which is the whole
+    // distinction this guard exists to make, so scheme is part of the answer:
+    // the only thing the window may navigate to is our own http(s) server.
+    if (!/^https?:$/.test(a.protocol) || !/^https?:$/.test(b.protocol)) return false;
     return a.origin === b.origin;
   } catch {
     return false;

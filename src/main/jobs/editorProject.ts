@@ -14,7 +14,7 @@
 // land stacked on the origin the way loose STLs do.
 // ─────────────────────────────────────────────────────────────────────────────
 import { basename, extname } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { parseMesh, parse3mfObjects } from "./mesh";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
 import { readThreeMfColours, type ImportedPaint } from "./threemfColour";
@@ -290,15 +290,26 @@ export async function writeEditorProject(
     1,
   );
   if (extruders > 1) {
-    const multi = readFileSync(
-      synthesizeMultiMaterialConfig({
-        bed: input.bed,
-        nozzleMm: 0.4,
-        material: "PLA",
-        colours: padPalette(palette, extruders),
-      }),
-      "utf8",
-    );
+    // The synthesized config is a TEMP FILE (multimaterial.ts writes
+    // `$TMPDIR/slicely-mm-*.ini` when given no destPath) and all this needs is
+    // its text, so it is read and then removed — it used to be left behind on
+    // every multi-colour import, forever.
+    const multiPath = synthesizeMultiMaterialConfig({
+      bed: input.bed,
+      nozzleMm: 0.4,
+      material: "PLA",
+      colours: padPalette(palette, extruders),
+    });
+    let multi: string;
+    try {
+      multi = readFileSync(multiPath, "utf8");
+    } finally {
+      try {
+        rmSync(multiPath, { force: true });
+      } catch {
+        /* already gone — nothing to do */
+      }
+    }
     // The user's own settings stay; only the multi-extruder keys are imposed.
     configText = configText ? mergeIni(configText, multi) : multi;
   }

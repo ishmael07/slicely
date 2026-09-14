@@ -20,7 +20,7 @@ import type { SliceMetrics, SliceParams, PrintMaterial } from "../../shared/type
 import { slice } from "../prusaslicer";
 import { sessionSlicesDir } from "../session-context";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { parseMesh, type Triangle } from "./mesh";
 import { eulerToMatrix, matVec } from "./vec3";
 import { writeThreeMf, type ThreeMfPart } from "./threemf";
@@ -502,6 +502,14 @@ async function sliceMultiMaterialPlate(
   // somewhere to purge to). Handing that to a single-colour plate opens the
   // project as a two-spool printer carrying a phantom white filament. Use the
   // plain single-extruder config when one colour is all this plate needs.
+  // A multi-extruder config is SYNTHESIZED INTO A TEMP FILE for this one slice
+  // (multimaterial.ts writes `$TMPDIR/slicely-mm-<n>x-<material>-<ts>.ini` when
+  // no destPath is given). Nothing ever deleted it: 228 of them had piled up on
+  // the verification machine, four more per test run, and one per plate on a
+  // production multi-material job. It is removed in the `finally` below, once
+  // the slicer is done with it. The single-extruder branch is NOT a temp file —
+  // profiles.ts keeps those in `<workdir>/configs` on purpose, keyed by printer
+  // and material, and re-uses them.
   const configIni =
     extruders.length > 1
       ? synthesizeMultiMaterialConfig({
@@ -542,7 +550,22 @@ async function sliceMultiMaterialPlate(
     supportMaterial: job.params.supportMaterial,
     brimWidthMm: job.params.brimWidthMm,
   };
-  return doSlice(projectPath, params, configIni, outName);
+  const tempConfig = extruders.length > 1 ? configIni : undefined;
+  try {
+    return await doSlice(projectPath, params, configIni, outName);
+  } finally {
+    // Best-effort, and AFTER the slice: PrusaSlicer has the file open for the
+    // length of the run, and a plate that failed leaves the same litter as one
+    // that succeeded. The 3MF keeps a copy of the settings inside it
+    // (`readConfigText` above), so nothing about the plate is lost with it.
+    if (tempConfig) {
+      try {
+        rmSync(tempConfig, { force: true });
+      } catch {
+        /* another process holds it, or it is already gone */
+      }
+    }
+  }
 }
 
 /** The text of a synthesized config, or undefined if it can't be read. A

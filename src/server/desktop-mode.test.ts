@@ -347,6 +347,12 @@ test("isLoopbackBindHost / isAllowedDesktopHost, as the two callers rely on them
   assert.equal(isAllowedDesktopHost("evil.example:4321", 4321), false);
   assert.equal(isAllowedDesktopHost("127.0.0.1:4321@evil.example:4321", 4321), false, "userinfo");
   assert.equal(isAllowedDesktopHost("127.0.0.1:4321/../x", 4321), false);
+  // A FRAGMENT is not part of a host either. This one parses with our hostname
+  // and our port and a hash nobody was looking at, so it used to pass — this
+  // function answers "is this Host exactly ours", and ours-plus-something isn't.
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321#evil.example", 4321), false, "fragment");
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321#", 4321), false, "even an empty one");
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321?x=1", 4321), false, "query");
   assert.equal(isAllowedDesktopHost(undefined, 4321), false);
   assert.equal(isAllowedDesktopHost("not a host", 4321), false);
   assert.equal(isAllowedDesktopHost("127.0.0.1:4321", undefined), false, "no socket, no answer");

@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseDurationToMinutes, requestCancel, runJob, type SliceFn } from "./runner";
 import type { JobEvent, JobPart, JobPlate, PrintJob } from "../../shared/jobs";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCubeTriangles, trianglesToBinaryStl } from "./testFixtures";
+import { resetConfigForTests } from "../config";
 
 function jobPart(path: string, copies = 1): JobPart {
   return { path, name: path, copies, sizeX: 10, sizeY: 10, sizeZ: 10 };
@@ -336,3 +337,59 @@ test("parseDurationToMinutes handles day/hour/minute/second components", () => {
   assert.equal(parseDurationToMinutes(undefined), undefined);
   assert.equal(parseDurationToMinutes("garbage"), undefined);
 });
+
+test("a multi-material plate deletes its synthesized config — no slicely-mm-*.ini is left behind", async () => {
+  // multimaterial.ts writes the synthesized multi-extruder config to
+  // `$TMPDIR/slicely-mm-<n>x-<material>-<ts>.ini` and nothing ever removed it:
+  // 228 of them had accumulated on the verification machine, and a production
+  // job leaves one per multi-colour plate. The file must exist WHILE the slicer
+  // runs (it is passed on the command line) and be gone afterwards.
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  const workdir = mkdtempSync(join(tmpdir(), "slicely-mmrun-"));
+  process.env.SLICELY_WORKDIR = workdir;
+  resetConfigForTests();
+
+  const before = new Set(mmTempFiles());
+  const dir = mkdtempSync(join(tmpdir(), "slicely-mmrun-src-"));
+  try {
+    const a = join(dir, "a.stl");
+    const b = join(dir, "b.stl");
+    writeFileSync(a, trianglesToBinaryStl(buildCubeTriangles(10)));
+    writeFileSync(b, trianglesToBinaryStl(buildCubeTriangles(10)));
+
+    const parts: JobPart[] = [
+      { ...jobPart(a), extruder: 1, colourHex: "#C81E1E" },
+      { ...jobPart(b), extruder: 2, colourHex: "#1E6FC8" },
+    ];
+    const j = job([plate(1, parts)]);
+    j.bed = { x: 250, y: 210, z: 210 };
+
+    const configsSeen: string[] = [];
+    const sliceFn: SliceFn = async (input, _params, configIni) => {
+      assert.ok(configIni, "a multi-material plate must be sliced against a config");
+      assert.ok(existsSync(configIni!), "the config must still exist while the slicer runs");
+      configsSeen.push(configIni!);
+      return { gcodePath: `${input}.gcode`, filamentUsedG: 5, estimatedPrintTime: "10m" };
+    };
+
+    const result = await runJob(j, () => undefined, { sliceFn });
+    assert.equal(result.plates[0].status, "ready");
+    assert.equal(configsSeen.length, 1);
+    assert.match(configsSeen[0], /slicely-mm-2x-PLA-\d+\.ini$/, "the temp config is the one under test");
+    assert.ok(!existsSync(configsSeen[0]), "the synthesized config must be deleted after the run");
+
+    const leaked = mmTempFiles().filter((f) => !before.has(f));
+    assert.deepEqual(leaked, [], `the run left temp configs behind: ${leaked.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(workdir, { recursive: true, force: true });
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+  }
+});
+
+/** Every `slicely-mm-*.ini` currently sitting in the system temp directory. */
+function mmTempFiles(): string[] {
+  return readdirSync(tmpdir()).filter((name) => /^slicely-mm-.*\.ini$/.test(name));
+}

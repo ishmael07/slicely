@@ -58,3 +58,17 @@ test("before the server is listening there is no origin to match, so nothing pas
   assert.equal(isSameOrigin(`${SERVER}/`, ""), false);
   assert.equal(isSameOrigin("", ""), false);
 });
+
+test("a blob: URL shares our origin and is still refused", () => {
+  // `blob:` INHERITS the origin of the page that made it, so `.origin` here is
+  // literally our server's — an origin comparison alone says "same origin" and
+  // the window would navigate to content the PAGE authored rather than content
+  // the server served. That is the distinction this guard exists to make, so the
+  // scheme has to be checked before the origins are compared.
+  assert.equal(new URL(`blob:${SERVER}/0f4b-uuid`).origin, SERVER, "premise: blob: inherits the origin");
+  assert.equal(isSameOrigin(`blob:${SERVER}/0f4b-uuid`, SERVER), false);
+  assert.equal(isSameOrigin("blob:http://127.0.0.1:1/x", "http://127.0.0.1:1"), false);
+  assert.equal(isSameOrigin(`filesystem:${SERVER}/temporary/x`, SERVER), false);
+  // And a server URL that is not http(s) can never be matched either.
+  assert.equal(isSameOrigin(`${SERVER}/`, `blob:${SERVER}/x`), false);
+});

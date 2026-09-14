@@ -637,9 +637,51 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
   // everything "delete my data" just deleted. `settings.json`, `printers.json`,
   // `master.key` and `.session-secret` are configuration the app needs to keep
   // working and deliberately stay.
-  for (const name of ["secrets.json", "chats", "jobs.json"]) {
+  // `chats.json` is where server/chats.ts actually keeps the conversations;
+  // `chats` (a directory) never existed under that name, so the transcripts were
+  // surviving "Delete my data" on the desktop, where the session directory
+  // itself cannot be removed. Both are named, since only one of them costs
+  // anything and a wrong guess here is the difference between the privacy copy
+  // being true and being a claim.
+  for (const name of PERSONAL_FILES) {
     await rm(join(session.dir, name), { recursive: true, force: true }).catch(() => undefined);
   }
+
+  // AND THE TEMP SIBLINGS. Every one of those files is written atomically —
+  // a temp file next to it, then a rename — so a crash, a kill, or a full disk
+  // between the two leaves a COMPLETE copy beside the file we just deleted:
+  // `jobs.json.tmp-3f2a91` (jobs/store.ts), `.secrets.json.<pid>.<ts>.tmp`
+  // (userkey.ts), `chats.json.tmp` (chats.ts). Deleting the original and leaving
+  // that is not a deletion, it is a rename. Matched against the same names, so
+  // nothing else in the directory can be swept up by accident.
+  let entries: string[];
+  try {
+    entries = await readdir(session.dir);
+  } catch {
+    return; // the directory is gone, which is the stronger outcome anyway
+  }
+  for (const entry of entries) {
+    if (isTempSiblingOfPersonalFile(entry)) {
+      await rm(join(session.dir, entry), { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+/** What "delete my data" removes from the session directory by name. Everything
+ *  else there — `settings.json`, `printers.json`, `master.key`,
+ *  `.session-secret` — is configuration the app needs to keep working. */
+const PERSONAL_FILES = ["secrets.json", "chats.json", "chats", "jobs.json"];
+
+/** True when `entry` is an interrupted atomic write of one of those files, in
+ *  any of the three shapes this codebase produces. */
+function isTempSiblingOfPersonalFile(entry: string): boolean {
+  return PERSONAL_FILES.some(
+    (name) =>
+      // `jobs.json.tmp-<hex>` and `chats.json.tmp`
+      entry.startsWith(`${name}.tmp`) ||
+      // `.secrets.json.<pid>.<timestamp>.tmp`
+      (entry.startsWith(`.${name}.`) && entry.endsWith(".tmp")),
+  );
 }
 
 /**
