@@ -71,13 +71,32 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
 - **Upload → slice → gcode** — upload a model, slice it, download the resulting G-code. This
   exercises the extracted PrusaSlicer binary end to end, which nothing short of a real
   request can confirm (see "Not verified locally" below).
-- **`GET /terms`** — as of this branch, the Express app (`src/server/index.ts`) mounts only
-  `/api/*`, `/healthz`, and the compiled app bundle (`src/web` at `/`, `dist-web/web` at
-  `/web`); there is no route serving `site/terms.html` or `site/privacy.html` at `/terms` /
-  `/privacy`, even though `/api/config` advertises those exact paths (`termsUrl`,
-  `privacyUrl` in `src/server/routes/config.ts`). Expect a 404 here today. That's a gap in
-  the app, not a deploy mistake — flag it to whoever owns `src/server`, don't spend time
-  debugging the container over it.
+- **`GET /terms` and `GET /privacy`** — both should be 200 `text/html`, styled (the page
+  pulls `/styles.css`). These are the exact paths `/api/config` advertises as `termsUrl`
+  and `privacyUrl` (`src/server/routes/config.ts`), so a 404 here means the About link and
+  the onboarding card are broken.
+
+### What is served off disk
+
+Nothing is served by directory. `src/server/static.ts` holds a literal allow-list — one URL
+per line, each mapped to one file under the repo root with one declared content type — plus
+a single pattern for the browser modules. In full, that is:
+
+| URL | File |
+| --- | --- |
+| `/`, `/index.html` | `src/web/index.html` |
+| `/app.css` | `src/web/styles.css` (the app shell's stylesheet) |
+| `/styles.css` | `site/styles.css` (the site stylesheet the legal pages link relatively) |
+| `/favicon.svg` | `site/favicon.svg` |
+| `/terms`, `/terms.html` | `site/terms.html` |
+| `/privacy`, `/privacy.html` | `site/privacy.html` |
+| `/web/<name>.js` | `dist-web/web/<name>.js` — one path segment, `[A-Za-z0-9._-]`, no leading dot, must end `.js` |
+
+Anything else falls through to the app's ordinary JSON 404: `.ts` sources, `.js.map`
+sourcemaps, dotfiles, directory listings, nested paths under `/web/`, and traversal
+attempts. So if you add a file to `src/web` or `site` and expect a URL for it, add the line
+— there is no other way for one to become reachable, and no way for a stray scratch file to
+become reachable by accident.
 
 ## Single machine only
 

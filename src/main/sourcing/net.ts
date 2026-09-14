@@ -280,10 +280,25 @@ function stripRootDots(host: string): string {
   return host.replace(/\.+$/, "");
 }
 
+/**
+ * A hostname reduced to the form the string rules below compare against: lower
+ * case, root label(s) gone, IPv6 brackets gone.
+ *
+ * The ORDER matters, and it is the reverse of the obvious one. Strip the dots
+ * FIRST: in `[::1].` the closing bracket is not the last character, so a
+ * bracket-stripper run first leaves `::1].`, and the later dot-strip leaves
+ * `::1]` — which `isIP` does not recognise, so the loopback literal sails
+ * through as "a real hostname" and goes to DNS. Dots first, then brackets, and
+ * every spelling of the same host arrives here as the same string.
+ */
+function canonicalHost(hostname: string): string {
+  return stripRootDots(hostname.toLowerCase()).replace(/^\[|\]$/g, "");
+}
+
 /** Pure, synchronous check against a hostname or IP literal. Exported so
  *  tests (and the resolver) can check it directly without a DNS round-trip. */
 export function isPrivateHost(hostname: string): boolean {
-  const h = stripRootDots(hostname.toLowerCase().replace(/^\[|\]$/g, ""));
+  const h = canonicalHost(hostname);
   if (PRIVATE_HOSTNAMES.has(h)) return true;
   if (h.endsWith(".localhost") || h.endsWith(".local")) return true;
   const version = isIP(h);
@@ -342,8 +357,9 @@ export async function assertPublicHttpUrl(raw: string, opts: UrlGuardOptions = {
   // resolver on earth, and neither is `"localhost"` as a string — so the
   // hostname rules below (and PRIVATE_HOSTNAMES in particular) used to miss
   // them, and the guard fell through to a DNS lookup for a name it should have
-  // refused outright. See `stripRootDots`.
-  const host = stripRootDots(url.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
+  // refused outright. See `canonicalHost`, which also explains why the dots
+  // come off before the IPv6 brackets and not after.
+  const host = canonicalHost(url.hostname);
   // A host made only of digits and dots is an IP address written so that
   // `isIP` does not recognise it — "http://2130706433/" and "http://0177.1/"
   // are both 127.0.0.1 — while the socket layer dials it happily. In practice

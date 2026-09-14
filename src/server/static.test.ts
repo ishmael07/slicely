@@ -6,7 +6,7 @@
 // Hermetic: an ephemeral port, a temp-dir session store, no network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request as httpRequest } from "node:http";
@@ -14,6 +14,8 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApp } from "./index";
 import { SessionStore } from "./session";
+import express from "express";
+import { webStatic } from "./static";
 
 async function withServer(
   fn: (base: string) => Promise<void>,
@@ -59,7 +61,7 @@ test("the app shell, its stylesheet and its modules are served", async () => {
     assert.match(index.headers.get("content-type") ?? "", /text\/html/);
     assert.match(await index.text(), /<title>Slicely<\/title>/);
 
-    const css = await fetch(`${base}/styles.css`);
+    const css = await fetch(`${base}/app.css`);
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type") ?? "", /text\/css/);
 
@@ -70,6 +72,30 @@ test("the app shell, its stylesheet and its modules are served", async () => {
     const icon = await fetch(`${base}/favicon.svg`);
     assert.equal(icon.status, 200);
     assert.match(icon.headers.get("content-type") ?? "", /image\/svg\+xml/);
+  });
+});
+
+test("the stylesheet the legal pages ask for is the one that styles them", async () => {
+  await withServer(async (base) => {
+    // `site/terms.html` links a RELATIVE `styles.css`, so a browser on `/terms`
+    // asks this server for `/styles.css`. That used to be the APP shell's
+    // stylesheet, which has no `.legal` rules at all — the legal text rendered
+    // as unstyled black-on-white prose. The two stylesheets now have separate
+    // URLs, and the relative one has to be the site's.
+    const site = await fetch(`${base}/styles.css`);
+    assert.equal(site.status, 200);
+    assert.match(site.headers.get("content-type") ?? "", /text\/css/);
+    const siteCss = await site.text();
+    assert.match(siteCss, /\.legal\b/, "/styles.css must be the site CSS, which has the .legal rules");
+
+    // And the app shell's own stylesheet is still served, at the URL the shell
+    // actually links.
+    assert.match(await (await fetch(`${base}/app.css`)).text(), /./);
+    assert.match(
+      await (await fetch(`${base}/`)).text(),
+      /href="\/app\.css"/,
+      "the shell must link /app.css, not /styles.css",
+    );
   });
 });
 
@@ -134,7 +160,7 @@ test("a static path answers GET and HEAD only", async () => {
 
 test("the shell and its assets are revalidated, so a redeploy is not cached away", async () => {
   await withServer(async (base) => {
-    for (const path of ["/", "/styles.css", "/web/app.js"]) {
+    for (const path of ["/", "/app.css", "/web/app.js"]) {
       const resp = await fetch(`${base}${path}`);
       assert.match(
         resp.headers.get("cache-control") ?? "",
@@ -143,4 +169,59 @@ test("the shell and its assets are revalidated, so a redeploy is not cached away
       );
     }
   });
+});
+
+test("a checkout under a DOTTED ancestor still serves every URL", async () => {
+  // `res.sendFile(abs, { dotfiles: "deny" })` with no `root` makes `send` apply
+  // the dotfile test to the WHOLE absolute path — every segment of it, including
+  // the ones above the repo. So a checkout at `~/.local/share/slicely` (which is
+  // exactly where an unpacked release lands) 404'd every single URL: the deny
+  // fired on `.local`, a directory this server never named. The fix is to name
+  // the file RELATIVE to `root`, so the rule only ever sees the part of the path
+  // the allow-list chose.
+  //
+  // Built as a fake repo root rather than by moving the real one: what is under
+  // test is the path computation, and it only needs files to exist.
+  const tmp = mkdtempSync(join(tmpdir(), "slicely-dotted-"));
+  const root = join(tmp, ".local", "share", "slicely");
+  mkdirSync(join(root, "src", "web"), { recursive: true });
+  mkdirSync(join(root, "site"), { recursive: true });
+  mkdirSync(join(root, "dist-web", "web"), { recursive: true });
+  writeFileSync(join(root, "src", "web", "index.html"), "<html><title>Slicely</title></html>");
+  writeFileSync(join(root, "src", "web", "styles.css"), "body{color:red}");
+  writeFileSync(join(root, "site", "styles.css"), ".legal{}");
+  writeFileSync(join(root, "site", "favicon.svg"), "<svg/>");
+  writeFileSync(join(root, "site", "terms.html"), "<html>terms</html>");
+  writeFileSync(join(root, "site", "privacy.html"), "<html>privacy</html>");
+  writeFileSync(join(root, "dist-web", "web", "app.js"), "export {};");
+
+  const app = express();
+  app.use(webStatic(root));
+  const server: Server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    for (const path of [
+      "/",
+      "/index.html",
+      "/app.css",
+      "/styles.css",
+      "/favicon.svg",
+      "/terms",
+      "/privacy",
+      "/web/app.js",
+    ]) {
+      const resp = await fetch(`${base}${path}`);
+      assert.equal(resp.status, 200, `${path} must be served from a dotted checkout`);
+    }
+    // The dotfile refusal is still ON for anything the table could name badly,
+    // and the allow-list still refuses everything it does not name.
+    assert.equal((await fetch(`${base}/web/.hidden.js`)).status, 404);
+    assert.equal((await fetch(`${base}/web/app.js.map`)).status, 404);
+    assert.equal((await fetch(`${base}/package.json`)).status, 404);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

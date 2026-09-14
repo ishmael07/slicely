@@ -367,6 +367,18 @@ test("a trailing DNS root dot does not walk past the hostname rules", async () =
   }
   assert.equal(isPrivateHost("printer.local."), true);
 
+  // A BRACKETED IPv6 literal with the root dot after the bracket. This is the
+  // case the old code missed by construction: it stripped the brackets first,
+  // and in `[::1].` the `]` is not the last character, so `\]$` never matched.
+  // What came out was `::1]`, which `isIP` does not recognise — so the loopback
+  // literal was classified "a real hostname" and sent to the resolver.
+  for (const host of ["[::1].", "[::1]..", "[::ffff:127.0.0.1].", "[fc00::1]."]) {
+    assert.equal(isPrivateHost(host), true, `${host} should read as private`);
+  }
+  // Undotted and unbracketed spellings of the same hosts still work.
+  assert.equal(isPrivateHost("[::1]"), true);
+  assert.equal(isPrivateHost("::1."), true);
+
   // The refusal happens on the NAME: the lookup below throws if it is reached,
   // so this also proves no DNS query was made.
   const neverCalled = async (h: string): Promise<string[]> => {

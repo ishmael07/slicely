@@ -743,15 +743,21 @@ export async function executeTool(
           // Slicely wrote these itself, into this session's slices directory —
           // re-checking costs nothing and keeps that an invariant rather than
           // an assumption, since the path is also handed to the client below.
-          assertWorkspacePath(projects[0]);
-          await openModelInEditorSliced(projects[0], sessionState.lastConfigIni);
+          //
+          // Use what comes BACK: `assertWorkspacePath` returns the path with
+          // symlinks resolved, and it is that resolved form it vouched for. The
+          // raw string can be an alias that happens to land inside the
+          // workspace today, so passing the raw one on to the slicer and to the
+          // client would be trusting a check we then threw away.
+          const projectPath = assertWorkspacePath(projects[0]);
+          await openModelInEditorSliced(projectPath, sessionState.lastConfigIni);
           // Slicely opened it on the machine running the server. For a browser
           // anywhere else that did nothing visible, so hand over the file too.
           emit({
             type: "action",
             label: "Open in PrusaSlicer",
             kind: "open-project",
-            filePath: projects[0],
+            filePath: projectPath,
             hint: "Downloads the plate as a .3mf project — arranged, oriented and coloured as planned.",
           });
           return (

@@ -3,7 +3,7 @@
 // other's active model, preferences, or job.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getConfig } from "./config";
@@ -13,6 +13,7 @@ import {
   currentSessionId,
   DEFAULT_SESSION_ID,
   sessionSlicesDir,
+  realPath,
 } from "./session-context";
 import { sessionState } from "./agent/state";
 import { getSettings, updateSettings } from "./settings";
@@ -131,4 +132,22 @@ test("outside a session, slices still land where Electron has always put them", 
   // The desktop app has one user and an existing workdir; session scoping must
   // not relocate its output.
   assert.equal(sessionSlicesDir(), join(getConfig().workdir, "slices"));
+});
+
+test("realPath keeps the whole tail of a path that does not exist yet", () => {
+  // A slice about to be written does not exist, so `realPath` resolves as far up
+  // as it can and re-attaches the rest. The re-attaching used to be
+  // `head.slice(parent.length + 1)`, which is right for every parent EXCEPT the
+  // root: `dirname("/x")` is `"/"`, whose length is 1, so the slice started at
+  // index 2 of a two-character string and produced `""`. `join` drops an empty
+  // segment, so `realPath("/x")` came back as `"/"` — a path one level below the
+  // root was judged as the root itself.
+  assert.equal(realPath("/nonexistent-zzz"), "/nonexistent-zzz");
+  assert.equal(realPath("/x"), "/x");
+  // Deeper missing tails, where more than one segment has to survive the walk.
+  assert.equal(realPath("/nonexistent-zzz/a/b.gcode"), "/nonexistent-zzz/a/b.gcode");
+  // And an existing directory with a missing child still resolves the existing
+  // part (realpathSync on tmpdir may unwrap a symlink, e.g. /var → /private/var).
+  const parent = realpathSync(tmpdir());
+  assert.equal(realPath(join(tmpdir(), "nonexistent-zzz.gcode")), join(parent, "nonexistent-zzz.gcode"));
 });

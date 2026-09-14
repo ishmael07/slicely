@@ -48,6 +48,7 @@ const ASSET_CACHE = "public, max-age=86400";
 const PAGE_CACHE = "public, max-age=300";
 
 const HTML = "text/html; charset=utf-8";
+const CSS = "text/css; charset=utf-8";
 
 /** Every URL served off disk, in full. Add a line to publish a file; there is
  *  no other way for one to become reachable. */
@@ -57,7 +58,15 @@ function table(): Record<string, Servable> {
     // not 404 on the one page a user might type by hand.
     "/": { file: ["src", "web", "index.html"], type: HTML, cache: REVALIDATE },
     "/index.html": { file: ["src", "web", "index.html"], type: HTML, cache: REVALIDATE },
-    "/styles.css": { file: ["src", "web", "styles.css"], type: "text/css; charset=utf-8", cache: REVALIDATE },
+    // The app's own stylesheet, under its own URL. It used to answer at
+    // `/styles.css` — but `site/terms.html` and `site/privacy.html` link a
+    // RELATIVE `styles.css`, so served from this server at `/terms` they asked
+    // for `/styles.css` and got the app shell's CSS, which has none of the
+    // `.legal` rules. The legal text rendered unstyled. So `/styles.css` is the
+    // site stylesheet (the one the legal pages mean) and the app shell links
+    // `/app.css` instead — see `src/web/index.html`.
+    "/app.css": { file: ["src", "web", "styles.css"], type: CSS, cache: REVALIDATE },
+    "/styles.css": { file: ["site", "styles.css"], type: CSS, cache: PAGE_CACHE },
     // The ◆ mark, shared with the marketing site so the two agree.
     "/favicon.svg": { file: ["site", "favicon.svg"], type: "image/svg+xml", cache: ASSET_CACHE },
     // Extension-less, because these are pages a user is linked to (Settings →
@@ -96,7 +105,7 @@ export function webStatic(repoRoot: string): RequestHandler {
 
     const entry = files[req.path];
     if (entry) {
-      send(res, next, join(repoRoot, ...entry.file), entry.type, entry.cache);
+      send(res, next, repoRoot, join(...entry.file), entry.type, entry.cache);
       return;
     }
 
@@ -105,7 +114,8 @@ export function webStatic(repoRoot: string): RequestHandler {
       send(
         res,
         next,
-        join(repoRoot, "dist-web", "web", mod[1]),
+        repoRoot,
+        join("dist-web", "web", mod[1]),
         "text/javascript; charset=utf-8",
         REVALIDATE,
       );
@@ -116,16 +126,34 @@ export function webStatic(repoRoot: string): RequestHandler {
   };
 }
 
-/** Send one already-vetted absolute path. A missing file is `next()`, not a
- *  500: an install without `dist-web/web` yet (or without `site/`) should read
- *  as "no such URL", which is also what it is from the client's side. */
-function send(res: Response, next: NextFunction, abs: string, type: string, cache: string): void {
+/**
+ * Send one already-vetted file, named RELATIVE to the repo root. A missing file
+ * is `next()`, not a 500: an install without `dist-web/web` yet (or without
+ * `site/`) should read as "no such URL", which is also what it is from the
+ * client's side.
+ *
+ * `relPath` + `root` rather than one absolute path, because `dotfiles: "deny"`
+ * is applied to whatever path `send` is given: handed an absolute path with no
+ * `root`, it tests every segment of it, including the ones above the repo. A
+ * checkout under a dotted ancestor — `~/.local/share/slicely`, which is exactly
+ * where an unpacked release would sit — then 404s every single URL, with the
+ * dotfile rule firing on `.local` rather than on anything this server named.
+ * With `root` set, the rule sees only the part of the path the table chose.
+ */
+function send(
+  res: Response,
+  next: NextFunction,
+  root: string,
+  relPath: string,
+  type: string,
+  cache: string,
+): void {
   res.type(type);
   res.setHeader("Cache-Control", cache);
   // `dotfiles: "deny"` is belt-and-braces: no entry in the table names one and
   // the module pattern refuses a leading dot, so this can only ever fire if
   // someone adds a bad line above.
-  res.sendFile(abs, { dotfiles: "deny" }, (err?: Error) => {
+  res.sendFile(relPath, { root, dotfiles: "deny" }, (err?: Error) => {
     if (!err) return;
     if (res.headersSent) {
       res.end();

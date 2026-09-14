@@ -135,7 +135,14 @@ function logInternal(err: unknown): void {
   // The user's API key is never part of an Anthropic SDK error (it lives in a
   // request header the SDK does not echo) and never part of a WireError, so
   // this cannot log a secret. Keep it that way if you add fields here.
-  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  //
+  // The STACK, not just the message: an unmapped 500 is by definition one
+  // nobody has a story for, and "TypeError: Cannot read properties of
+  // undefined" with no frames names neither the file nor the call that did it.
+  // The client still gets only `GENERIC` — the stack is for the server log,
+  // which only the operator reads.
+  const detail =
+    err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
   let session = "-";
   try {
     session = currentSessionId();

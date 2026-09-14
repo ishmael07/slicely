@@ -14,7 +14,7 @@
 // the server wraps each request and gets isolation for free.
 // ─────────────────────────────────────────────────────────────────────────────
 import { AsyncLocalStorage } from "node:async_hooks";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { getConfig } from "./config";
@@ -163,8 +163,13 @@ function isInsideDir(root: string, target: string): boolean {
  * about to be written) resolves as far up as it can and keeps the rest
  * literally, so a not-yet-created file is judged by the directory it will land
  * in rather than being rejected for not existing.
+ *
+ * Exported for its own test: the walk up to an existing ancestor and back down
+ * is the part of the workspace guard with the most ways to be subtly wrong, and
+ * a test that goes through `isInsideSessionWorkspace` can only see the verdict,
+ * not the path the verdict was reached about.
  */
-function realPath(p: string): string {
+export function realPath(p: string): string {
   let head = resolve(p);
   const tail: string[] = [];
   for (;;) {
@@ -173,7 +178,12 @@ function realPath(p: string): string {
     } catch {
       const parent = dirname(head);
       if (parent === head) return resolve(p); // nothing on this path exists
-      tail.unshift(head.slice(parent.length + 1));
+      // `basename`, not `head.slice(parent.length + 1)`: when the parent is the
+      // ROOT, `parent.length + 1` is 2, so `/x` sliced from index 2 is `""` —
+      // an empty segment that `join` drops, and `realPath("/x")` came back as
+      // `"/"`. A not-yet-created path one level down from the root then judged
+      // as the root itself, which is inside nothing and outside nothing.
+      tail.unshift(basename(head));
       head = parent;
     }
   }
