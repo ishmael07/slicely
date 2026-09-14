@@ -5,7 +5,10 @@
 //
 // Nothing here knows about chat, jobs, printers or settings. Everything here is
 // keyboard-reachable and screen-reader-labelled: menus are real `role="menu"`
-// lists of `role="menuitem"` buttons; sheets and the confirmation dialog are
+// lists of `role="menuitemradio"` buttons (each menu here is a single-choice
+// picker, so `aria-checked` marks the current one — that attribute is only
+// valid on a `menuitemradio`/`menuitemcheckbox`, never on a plain `menuitem`);
+// sheets and the confirmation dialog are
 // modal, with the focus trap ported from site/main.js and focus restored to
 // whatever opened them; and the toast region is a polite live region.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,7 +219,10 @@ export function menu(
   for (const item of items) {
     const btn = make("button", `menu-item${item.active ? " active" : ""}${item.disabled ? " disabled" : ""}`);
     btn.type = "button";
-    btn.setAttribute("role", "menuitem");
+    // `menuitemradio`, not `menuitem`: every menu built here is a single-choice
+    // picker (the model, the effort level), and `aria-checked` — which marks
+    // the current choice below — is invalid ARIA on a plain `menuitem`.
+    btn.setAttribute("role", "menuitemradio");
     if (item.disabled) {
       btn.disabled = true;
       btn.setAttribute("aria-disabled", "true");
@@ -228,7 +234,7 @@ export function menu(
     const check = make("span", "check", "✓");
     check.setAttribute("aria-hidden", "true");
     btn.appendChild(check);
-    if (item.active) btn.setAttribute("aria-checked", "true");
+    btn.setAttribute("aria-checked", item.active ? "true" : "false");
     btn.addEventListener("click", () => {
       if (item.disabled) return;
       close(true);

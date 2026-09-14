@@ -38,6 +38,54 @@ function fail(url: string, resp: Response, body: WireError): never {
   throw new ApiError(body.error ?? `${url} failed (${resp.status})`, resp.status, body.code);
 }
 
+// ── code-driven copy ─────────────────────────────────────────────────────────
+//
+// The server already scrubs its own `error` text (see ../server/errors.ts —
+// no path, no stack ever lands in `message`), but its wording is free to
+// change and is written for whichever route raised it. A `code` is the part
+// that is contractually stable, so for the codes a user can actually hit we
+// author the sentence here once and let every caller show the same short,
+// calm line no matter which endpoint failed or how the server phrased it.
+// Anything without a mapped code falls back to the server's own message.
+const CODE_COPY: Record<string, string> = {
+  no_key: "Connect your Anthropic API key to chat.",
+  key_rejected: "Your Anthropic key was rejected — update it in Settings.",
+  key_invalid_format: "That doesn't look like a valid Anthropic API key.",
+  rate_limited: "Slow down a little — try again in a few seconds",
+  slicer_busy: "PrusaSlicer is busy with another job — try again shortly.",
+  slice_failed: "PrusaSlicer couldn't slice this. Try adjusting the settings, or check the model.",
+  slice_timeout: "Slicing took too long and was stopped.",
+  zip_entry_too_large: "That archive has a file too large to unpack.",
+  zip_too_many_entries: "That archive has too many files to unpack.",
+  not_in_workspace: "That file is outside your workspace.",
+  forbidden_in_hosted_mode: "Not available on a shared server.",
+  cross_origin: "That request was blocked for security reasons.",
+  billing: "Your Anthropic account has no available credit.",
+  busy: "Still working on your last message — wait for it to finish.",
+  not_found: "That wasn't found. It may have already been removed.",
+  too_large: "That's too large.",
+  host_blocked: "That printer's address isn't allowed.",
+};
+
+/** The product's copy for a stable error `code`, if one is mapped. */
+export function codeMessage(code?: string): string | undefined {
+  return code ? CODE_COPY[code] : undefined;
+}
+
+/**
+ * One short, safe line for any failure this module can throw: a stable
+ * `code`'s copy always wins (so the same code reads the same way everywhere,
+ * and a server-side wording change can't surprise the UI); otherwise the
+ * server's own (already scrubbed) message; otherwise `fallback`. Never a raw
+ * server path or stack — neither can reach `ApiError.message` in the first
+ * place.
+ */
+export function errorMessage(err: unknown, fallback = "Something went wrong."): string {
+  if (err instanceof ApiError) return codeMessage(err.code) ?? err.message ?? fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
   const resp = await fetch(url, {
     method,

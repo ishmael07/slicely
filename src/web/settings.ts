@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability } from "../shared/sourcing";
-import { del, getJson, patchJson } from "./api.js";
+import { del, errorMessage, getJson, patchJson } from "./api.js";
 import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
 import { configLoaded, renderAboutSection, renderAiSection } from "./onboarding.js";
 
@@ -135,7 +135,7 @@ async function changeSettings(patch: Partial<{ model: string; effort: EffortLeve
     settings = await patchJson<SettingsState>("/api/settings", patch);
     renderModelEffort();
   } catch (err) {
-    deps.onError((err as Error).message || "Couldn't change that setting.");
+    deps.onError(errorMessage(err, "Couldn't change that setting."));
   }
 }
 
@@ -220,7 +220,7 @@ async function savePref(patch: Partial<PrintPreferences>): Promise<void> {
     settings = await patchJson<SettingsState>("/api/preferences", patch);
     renderPreferences();
   } catch (err) {
-    deps.onError((err as Error).message || "Couldn't save that preference.");
+    deps.onError(errorMessage(err, "Couldn't save that preference."));
   }
 }
 
@@ -233,7 +233,7 @@ export async function loadSources(): Promise<void> {
     renderSources(sources);
   } catch (err) {
     sourcesListEl.replaceChildren(
-      errorCard((err as Error).message || "Couldn't load the model sources.", () => void loadSources()),
+      errorCard(errorMessage(err, "Couldn't load the model sources."), () => void loadSources()),
     );
   }
 }
@@ -304,7 +304,7 @@ function renderDataSection(): void {
         await del("/api/session");
         location.reload();
       } catch (err) {
-        toast((err as Error).message || "Couldn't delete your data.", "error");
+        toast(errorMessage(err, "Couldn't delete your data."), "error");
       }
     })();
   });
