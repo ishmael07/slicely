@@ -12,7 +12,14 @@
 // kilobyte — these tests must stay runnable on a full disk.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
@@ -101,6 +108,16 @@ function withTempDir(name: string, run: (dir: string) => Promise<void>): Promise
   return run(dir).finally(() => rmSync(dir, { recursive: true, force: true }));
 }
 
+/** extractMeshesFromZip now takes a path, not a Buffer — it reads the archive
+ *  off disk (unzipper.Open.file) so the whole upload is never held in RAM.
+ *  Crafted fixture bytes are written to a file under the test's own temp dir,
+ *  which withTempDir's `finally` removes along with everything else in it. */
+function writeZipFile(dir: string, zip: Buffer): string {
+  const zipPath = join(dir, "fixture.zip");
+  writeFileSync(zipPath, zip);
+  return zipPath;
+}
+
 test("an entry declaring 1.9 GB is refused as zip_entry_too_large, and nothing is written", async () => {
   await withTempDir("meshzip-declared", async (dir) => {
     const zip = buildZip([
@@ -108,9 +125,10 @@ test("an entry declaring 1.9 GB is refused as zip_entry_too_large, and nothing i
     ]);
     // The whole fixture is bytes, not gigabytes — that is the point.
     assert.ok(zip.byteLength < 1024, `fixture should stay tiny, got ${zip.byteLength}`);
+    const zipPath = writeZipFile(dir, zip);
 
     await assert.rejects(
-      () => extractMeshesFromZip(zip, join(dir, "out")),
+      () => extractMeshesFromZip(zipPath, join(dir, "out")),
       (err: unknown) => {
         const e = err as { status?: number; code?: string; message?: string };
         assert.equal(e.status, 413);
@@ -133,10 +151,11 @@ test("an entry that under-reports its size is cut off mid-stream, partial file r
     // check alone would wave this through, which is why the stream is metered.
     const payload = Buffer.alloc(400, 0x41);
     const zip = buildZip([{ name: "liar.stl", data: payload, declaredSize: 8 }]);
+    const zipPath = writeZipFile(dir, zip);
     const out = join(dir, "out");
 
     await assert.rejects(
-      () => extractMeshesFromZip(zip, out, 64),
+      () => extractMeshesFromZip(zipPath, out, 64),
       (err: unknown) => {
         const e = err as { status?: number; code?: string };
         assert.equal(e.status, 413);
@@ -162,9 +181,10 @@ test("an ordinary multi-part archive still extracts, flattened", async () => {
       { name: "kit/readme.txt", data: Buffer.from("not a mesh") },
       { name: "__MACOSX/._part-a.stl", data: Buffer.from("junk") },
     ]);
+    const zipPath = writeZipFile(dir, zip);
     const out = join(dir, "out");
 
-    const parts = await extractMeshesFromZip(zip, out);
+    const parts = await extractMeshesFromZip(zipPath, out);
 
     assert.deepEqual(
       parts.map((p) => p.fileName).sort(),

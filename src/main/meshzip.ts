@@ -19,13 +19,21 @@ import { WireError } from "../server/errors";
 export const ARCHIVE_MESH_EXTS = [".stl", ".3mf", ".obj", ".amf", ".step", ".stp"];
 
 /**
- * Extract every mesh file from a ZIP buffer into `destDir`, flattened (no
- * nested folders). Returns one DownloadPart per extracted mesh. Hardened
- * against zip-slip: only the basename of each entry is ever used, so a
- * malicious "../../etc/x" path can't escape destDir — and against zip bombs:
- * the archive is refused outright if its central directory declares more than
- * MAX_ZIP_ENTRIES entries, more than MAX_ZIP_TOTAL_BYTES of content, or any
- * SINGLE entry over MAX_ZIP_ENTRY_BYTES, all checked BEFORE a byte is written.
+ * Extract every mesh file from a ZIP already on disk at `zipPath` into
+ * `destDir`, flattened (no nested folders). Returns one DownloadPart per
+ * extracted mesh. Hardened against zip-slip: only the basename of each entry
+ * is ever used, so a malicious "../../etc/x" path can't escape destDir — and
+ * against zip bombs: the archive is refused outright if its central directory
+ * declares more than MAX_ZIP_ENTRIES entries, more than MAX_ZIP_TOTAL_BYTES of
+ * content, or any SINGLE entry over MAX_ZIP_ENTRY_BYTES, all checked BEFORE a
+ * byte is written.
+ *
+ * The WHOLE ARCHIVE is never read into memory: `unzipper.Open.file()` reads
+ * only the central directory eagerly (a few KB even for a huge zip), the same
+ * disk-backed pattern `sourcing/download.ts`'s `expandZipFile` uses — a caller
+ * that read the entire upload into a Buffer first and handed it here would
+ * defeat the point, so `acceptZip` in uploads.ts passes the path straight
+ * through instead of `readFile`-ing it.
  *
  * Entries are STREAMED to disk, never buffered. `entry.buffer()` made the
  * per-entry cap unenforceable in the only case that mattered: one 1.9 GB entry
@@ -39,12 +47,12 @@ export const ARCHIVE_MESH_EXTS = [".stl", ".3mf", ".obj", ".amf", ".step", ".stp
  * fixture instead of half a gigabyte, the same way `expandZipFile` takes it.
  */
 export async function extractMeshesFromZip(
-  buf: Buffer,
+  zipPath: string,
   destDir: string,
   maxEntryBytes: number = MAX_ZIP_ENTRY_BYTES,
 ): Promise<DownloadPart[]> {
   await mkdir(destDir, { recursive: true });
-  const directory = await unzipper.Open.buffer(buf);
+  const directory = await unzipper.Open.file(zipPath);
 
   assertZipWithinCaps(directory.files);
 

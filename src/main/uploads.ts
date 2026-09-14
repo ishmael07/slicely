@@ -6,7 +6,7 @@
 // STEP/STP (it auto-meshes them on import in the GUI), but headless CLI slicing
 // of STEP is unreliable across versions — so we mark STEP "import-only" and
 // steer those into the GUI rather than a headless slice.
-import { copyFile, stat, mkdir, readFile } from "node:fs/promises";
+import { copyFile, stat, mkdir } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { ACCEPTED_UPLOAD_EXTS } from "../shared/types";
 import type { UploadResult } from "../shared/types";
@@ -99,11 +99,13 @@ export async function acceptUploads(
   return out;
 }
 
-/** Expand a ZIP of parts into one UploadResult per contained mesh. */
+/** Expand a ZIP of parts into one UploadResult per contained mesh. The path is
+ *  handed straight to the extractor — never read into a Buffer here — so a
+ *  200 MB upload doesn't sit in RAM twice (once in multer's own scratch copy
+ *  on disk, once more if this read the whole thing back in). */
 async function acceptZip(zipPath: string, destDir?: string): Promise<UploadResult[]> {
-  const buf = await readFile(zipPath);
   const stem = sanitizeFileName(basename(zipPath, ".zip"));
-  const parts = await extractMeshesFromZip(buf, join(destDir ?? defaultUploadsDir(), stem));
+  const parts = await extractMeshesFromZip(zipPath, join(destDir ?? defaultUploadsDir(), stem));
   if (parts.length === 0) {
     throw new Error(`No printable meshes found in ${basename(zipPath)}.`);
   }

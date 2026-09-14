@@ -218,6 +218,15 @@ test("a slice whose G-code landed just as the clock ran out is a success, not a 
   // and still be SIGKILLed before `close` fires. Checking `timedOut` first threw
   // slice_timeout away on a slice whose output was sitting on disk, finished —
   // the user re-ran a ten-minute slice for a file they already had.
+  //
+  // This used to run the fake slicer's writes against a 400 ms timeout — fine
+  // on an idle machine, but under a full `npm test` run (many workers competing
+  // for the CPU) the shell script isn't always scheduled in time to finish its
+  // three printfs before the abort fires, and the assertion below fails on the
+  // resulting slice_timeout instead of parsed metrics. The fix isn't a bigger
+  // number for its own sake: it's a 10x wider real-time margin between "the
+  // script got scheduled and wrote its output" and "the kill fired", so the
+  // same contention that caused the flake has ten times the room to hide in.
   const dir = mkdtempSync(join(tmpdir(), "slicely-raced-"));
   const fakeSlicer = join(dir, "fake-prusaslicer");
   // Writes a plausible G-code summary to --output, THEN hangs past the timeout.
@@ -233,7 +242,7 @@ test("a slice whose G-code landed just as the clock ran out is a success, not a 
       'printf "; estimated printing time (normal mode) = 1h 2m 3s\n" > "$out"',
       'printf "; filament used [mm] = 1000\n" >> "$out"',
       'printf ";LAYER_CHANGE\n" >> "$out"',
-      "sleep 5",
+      "sleep 10",
       "",
     ].join("\n"),
   );
@@ -246,7 +255,7 @@ test("a slice whose G-code landed just as the clock ran out is a success, not a 
   process.env.PRUSASLICER_PATH = fakeSlicer;
   process.env.SLICELY_WORKDIR = dir;
   resetConfigForTests();
-  setSliceTimeoutForTests(400);
+  setSliceTimeoutForTests(4000);
 
   try {
     const metrics = await slice(stlPath);

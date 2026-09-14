@@ -1,6 +1,6 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,13 @@ process.env.SLICELY_WORKDIR = WORKDIR;
 
 import { getJobById, loadJobs, saveJobs, upsertJob } from "./store";
 import type { PrintJob } from "../../shared/jobs";
+
+// Every test in this file shares WORKDIR (config.ts's caching leaves no way to
+// give each test its own), so cleanup can't live in a per-test finally — an
+// `after` hook removes it once, when the whole file is done.
+after(async () => {
+  await rm(WORKDIR, { recursive: true, force: true });
+});
 
 function fakeJob(id: string): PrintJob {
   const now = new Date().toISOString();

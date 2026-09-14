@@ -6,7 +6,8 @@
 //   • Search: GET /search/{term}/?page=&per_page=&sort=popular
 //   • Files:  GET /things/{id}/files  → each file has a `download_url`
 //   • download_url 302-redirects to a signed CDN url serving the .stl/.3mf
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type {
   ModelResult,
@@ -133,12 +134,19 @@ export class ThingiverseProvider implements DownloadProvider {
     }
     for (const a of archives) {
       if (!a.download_url) continue;
+      // extractMeshesFromZip reads from disk (never buffers the whole
+      // archive), so the fetched bytes are staged to a scratch file first and
+      // removed once extraction finishes, success or not.
+      const scratchZip = join(folder, `.tv-${randomBytes(6).toString("hex")}.zip`);
       try {
         const buf = await this.fetchBuffer(a.download_url);
-        const extracted = await extractMeshesFromZip(buf, folder);
+        await writeFile(scratchZip, buf);
+        const extracted = await extractMeshesFromZip(scratchZip, folder);
         parts.push(...extracted);
       } catch (err) {
         console.warn(`[thingiverse] zip ${a.name}:`, (err as Error).message);
+      } finally {
+        await rm(scratchZip, { force: true }).catch(() => undefined);
       }
     }
 

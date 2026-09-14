@@ -185,6 +185,8 @@ test("an action's server-side file becomes a download token, never a raw path", 
     assert.ok(!JSON.stringify(action).includes(root), "no server path anywhere in the frame");
   } finally {
     await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
