@@ -745,6 +745,23 @@ function submitComposer(): void {
   const text = inputEl.value.trim();
   const files = stagedFiles.slice();
   if (!text && files.length === 0) return;
+
+  // THE CHEAPEST TURN IS THE ONE THAT NEVER HAPPENS. "find me a phone stand" is
+  // a search, not a conversation, and the sourcing layer answers it for free —
+  // so it goes to /api/find and never wakes the model up. Deliberately BEFORE
+  // the canChat() gate: a free search needs no key and no credit, which is the
+  // whole point of the route. Nothing is routed this way once files are staged
+  // (an attachment is a request to do something with it, not a search).
+  const query = files.length === 0 ? deterministicFind(text, { opening: !messagesEl.querySelector(".msg") }) : undefined;
+  if (query !== undefined) {
+    addUserMessage(text);
+    inputEl.value = "";
+    inputEl.style.height = "auto";
+    updateSendEnabled();
+    void runDirectSearch(query);
+    return;
+  }
+
   if (!deps.canChat()) return;
   clearEmptyState();
 
@@ -778,6 +795,115 @@ function looksLikeUrl(s: string): boolean {
   if (/^https?:\/\//i.test(t)) return true;
   if (/^www\./i.test(t)) return true;
   return /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/|$)/i.test(t);
+}
+
+// ── is this a search, or is it a conversation? ────────────────────────────────
+// `deterministicFind` is the composer's half of /api/find: it decides whether a
+// typed line is a BARE SEARCH, which the sourcing layer answers for free, or
+// anything else, which goes to the model.
+//
+// It is deliberately conservative. Guessing wrong in the "it's a search"
+// direction silently does LESS than the user asked for — "find a phone stand and
+// slice it" would search and then stop, with no explanation — and that is worse
+// than spending a few cents. So anything with a second clause, a second job, a
+// pronoun, a question mark or more than a handful of words is a conversation.
+
+export interface DeterministicFindOptions {
+  /** True when the transcript is still empty. A bare noun phrase ("phone
+   *  stand") is a search when it is the FIRST thing said and an answer to
+   *  whatever was asked when it is not, so the verb-less form is accepted only
+   *  at the start of a conversation. */
+  opening?: boolean;
+}
+
+/** The verbs that mean "search", longest phrasing first so "looking for" is not
+ *  shadowed by a shorter prefix. */
+const FIND_VERB = /^(?:looking for|look for|searching for|search for|search|find|show me|get me|hunt for|browse for)\b/;
+
+/** Words with no search value between the verb and the thing wanted. */
+const FILLER = /^(?:me|us|for|out|a|an|the|some|any)\s+/;
+
+/** A second clause: there is more to this than finding. */
+const CLAUSE_BREAK = /[,;]|(?:^|\s)(?:and|then|also|plus|but|so|once|after|before|while|which|that)(?:\s|$)/;
+
+/** A second JOB, even without a clause break — these are all things the model
+ *  does, not things the sourcing layer returns. */
+const SECOND_JOB =
+  /(?:^|\s)(?:slice|sliced|slicing|print|prints|printed|printing|convert|scale|resize|repair|fix|send|export|download|import|compare|estimate|recommend|explain|check|orient|arrange|plate|order|help)(?:\s|$)/;
+
+/** Anything not made of plain words is a sentence, a URL or a paste. */
+const PLAIN_QUERY = /^[a-z0-9][a-z0-9 \-'+/.]*$/;
+
+/** A pronoun refers to something already on screen, which only the model knows
+ *  about. */
+const PRONOUN = /(?:^|\s)(?:i|it|its|this|that|these|those|me|my|mine|we|us|our|ours|you|your|yours|them|they|one)(?:\s|$)/;
+
+/** Words that make a verb-less line conversation rather than a query. */
+const NOT_A_QUERY = new Set([
+  "hi", "hey", "hello", "yo", "thanks", "thank", "thx", "ta", "cheers",
+  "yes", "yep", "yeah", "sure", "no", "nope", "nah", "ok", "okay", "stop", "cancel", "wait",
+  "what", "whats", "why", "how", "hows", "when", "where", "who", "which", "whose",
+  "i", "im", "me", "my", "you", "your", "we", "us", "it", "this", "that", "those", "these",
+  "and", "or", "but", "if", "then", "so", "for", "with", "to", "of", "a", "an", "the",
+  "do", "does", "did", "can", "could", "should", "would", "will", "please", "again", "more",
+  "help", "hmm", "test", "testing", "anything", "something", "nothing", "everything",
+]);
+
+/** The longest query worth sending: /api/find refuses more, and past this it is
+ *  a sentence anyway. */
+const MAX_QUERY_CHARS = 200;
+
+/**
+ * The search this line asks for, or `undefined` when it belongs in the chat.
+ *
+ *   "find me a phone stand"                    → "phone stand"
+ *   "search for a vase"                        → "vase"
+ *   "phone stand"            (opening)         → "phone stand"
+ *   "find a phone stand and slice it for PETG" → undefined
+ *   "what should I print?"                     → undefined
+ */
+export function deterministicFind(text: string, opts: DeterministicFindOptions = {}): string | undefined {
+  // Lower-cased on purpose: search is case-insensitive at every source, and one
+  // normalised form means one thing to test.
+  const line = text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!\s]+$/, "");
+  if (!line || line.length > MAX_QUERY_CHARS) return undefined;
+  // A question wants an answer, not twelve cards.
+  if (line.includes("?")) return undefined;
+
+  // Politeness carries no meaning in front of a verb, so it is stripped before
+  // the verb is looked for: "can you please find me a vase" is "find me a vase".
+  // It is stripped ONLY for that purpose — the verb-less branch below judges the
+  // line as typed, because "hi there" minus the greeting is not a search for
+  // "there".
+  const lead = line
+    .replace(/^(?:hey|hi|hello|yo|ok|okay)\b[,\s]*/, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+/, "")
+    .replace(/^please\s+/, "")
+    .trim();
+
+  let rest = line;
+  const verb = FIND_VERB.exec(lead);
+  if (verb) {
+    rest = lead.slice(verb[0].length).trim();
+    while (FILLER.test(rest)) rest = rest.replace(FILLER, "");
+    // "find" on its own names nothing to look for.
+    if (!rest) return undefined;
+  } else if (!opts.opening) {
+    return undefined;
+  } else {
+    // No verb, first line of the conversation: a short noun phrase is a query,
+    // anything with a conversational word in it is not.
+    const words = rest.split(" ");
+    if (words.length > 4) return undefined;
+    if (words.some((w) => NOT_A_QUERY.has(w))) return undefined;
+  }
+
+  if (!PLAIN_QUERY.test(rest)) return undefined;
+  if (CLAUSE_BREAK.test(rest)) return undefined;
+  if (SECOND_JOB.test(rest)) return undefined;
+  if (PRONOUN.test(rest)) return undefined;
+  if (rest.split(" ").length > 6) return undefined;
+  return rest;
 }
 
 /** A spinner line while a non-chat request runs. */

@@ -28,6 +28,7 @@ import {
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgentFactory } from "./session";
 import { desktopTokenGuard, isLoopbackBindHost } from "./desktop-token";
+import { runAccountsBootChecks } from "./boot-checks";
 import { isDesktop, isHosted } from "../main/mode";
 import { webStatic } from "./static";
 import { sendError, WireError } from "./errors";
@@ -152,6 +153,12 @@ export function createApp(opts: CreateAppOptions = {}): Express {
         "Pass `desktopToken` to createApp/startServer (main.ts mints one per launch).",
     );
   }
+  // The accounts environment, checked once and out loud: a set-but-unusable
+  // SLICELY_PUBLIC_URL refuses to boot (nothing downstream can recover from a
+  // redirect URI no provider is registered for), and an OAuth client with no
+  // origin or no owner key to fund it gets one warning saying accounts are off
+  // and why. See boot-checks.ts.
+  if (isHosted()) runAccountsBootChecks();
   // Before the static allow-list, and therefore before ANYTHING is served: in
   // desktop mode the app shell is as private as the API (desktop-token.ts).
   if (opts.desktopToken) app.use(desktopTokenGuard(opts.desktopToken));

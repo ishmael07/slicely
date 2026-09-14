@@ -147,9 +147,17 @@ test("a find runs the real fan-out and wakes no model at all", async () => {
   try {
     const resp = await find(h, { query: "phone stand" });
     assert.equal(resp.status, 200);
-    const json = (await resp.json()) as { query: string; models: SourcedModel[] };
+    const json = (await resp.json()) as {
+      query: string;
+      models: SourcedModel[];
+      sources: SearchOutcome["sources"];
+    };
     assert.equal(json.query, "phone stand");
     assert.deepEqual(json.models, [MODEL]);
+    // Which sites answered comes back too, so a direct search carries the same
+    // footnote the chat's find_models does — the client renders it from this
+    // field and silently drops the note when it is absent.
+    assert.deepEqual(json.sources, [{ id: "printables", ok: true, count: 1, ms: 3 }]);
 
     // The SAME façade the find_models tool calls, once, with the user's words.
     assert.equal(h.sourcing.calls.length, 1);

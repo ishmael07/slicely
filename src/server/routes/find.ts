@@ -55,7 +55,16 @@ export function createFindRouter(
       const outcome = await api.searchModels(query, { limit: LIMIT });
       // The query goes back with the results so the client can label the cards
       // without trusting its own in-flight state.
-      res.json({ query, models: outcome.results });
+      //
+      // `sources` goes back too — which sites answered, which had nothing, which
+      // failed — because a direct search deserves the same footnote the chat's
+      // `find_models` gets (the SSE `info` frame already carries the whole
+      // outcome, sources and all). It is the façade's own per-source summary —
+      // id, count, duration, one-line reason — and exactly the object the chat
+      // path already hands this same client, so no new shape and no new
+      // exposure. The 502 below is the case where an upstream body could leak,
+      // and that one still says nothing.
+      res.json({ query, models: outcome.results, sources: outcome.sources });
     } catch {
       // Nothing from upstream is forwarded: sourcing failures quote other
       // people's response bodies (see routes/models.ts for the long version).
