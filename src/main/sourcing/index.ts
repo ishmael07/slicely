@@ -17,7 +17,7 @@ import type {
   UrlResolution,
 } from "../../shared/sourcing";
 import type { DownloadPart, DownloadResult } from "../../shared/types";
-import { getConfig } from "../config";
+import { sessionDownloadsDir } from "../session-context";
 import { allProviders, getProvider } from "./providers/registry";
 import { rankAndDedupe, essentialTokens } from "./ranking";
 import { resolveUrl as resolveUrlImpl } from "./resolve";
@@ -315,7 +315,13 @@ export async function downloadModel(
     throw new Error(avail.blockedReason ?? `"${provider.label}" isn't configured for downloads.`);
   }
 
-  const baseDir = opts.destDir ?? getConfig().downloadsDir;
+  // Default to the AMBIENT SESSION's downloads folder, not the one global
+  // `<workdir>/downloads`. The agent's import tools pass no destDir, so with the
+  // global default a hosted visitor's model landed outside their own workspace —
+  // shared with every other visitor, and refused by the workspace guard the
+  // moment they tried to slice it. Electron's default session still resolves to
+  // `<workdir>/downloads`, so nothing moves there.
+  const baseDir = opts.destDir ?? sessionDownloadsDir();
   const destDir = join(baseDir, sanitizeFileName(`${source}-${modelId}`, `${source}-model`));
 
   if (opts.fileId) {
@@ -343,7 +349,7 @@ export async function downloadFromUrl(url: string, opts: { destDir?: string } = 
     throw new Error(resolution.message);
   }
 
-  const baseDir = opts.destDir ?? getConfig().downloadsDir;
+  const baseDir = opts.destDir ?? sessionDownloadsDir();
 
   // A scraped page's links are unrelated candidates, not confirmed parts of
   // one model — download only the best-ranked one. Every other kind's files

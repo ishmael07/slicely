@@ -10,7 +10,7 @@ import { copyFile, stat, mkdir } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { ACCEPTED_UPLOAD_EXTS } from "../shared/types";
 import type { UploadResult } from "../shared/types";
-import { getConfig } from "./config";
+import { sessionUploadsDir } from "./session-context";
 import { extractMeshesFromZip } from "./meshzip";
 import { WireError } from "../server/errors";
 
@@ -21,12 +21,14 @@ function isAccepted(ext: string): boolean {
   return (ACCEPTED_UPLOAD_EXTS as readonly string[]).includes(ext);
 }
 
-/** Where accepted files land when the caller doesn't say. The single global
- *  workdir folder is right for Electron (one user, one machine) and wrong for a
- *  hosted server, where every visitor's files would pile into one shared
- *  directory — so routes/upload.ts passes its own session's uploads dir. */
+/** Where accepted files land when the caller doesn't say: the AMBIENT SESSION's
+ *  uploads folder. For Electron (and anything outside a request) that is the
+ *  default session, i.e. `<workdir>/uploads` — unchanged. For a hosted visitor
+ *  it is their own session directory, so files never pile into one shared folder
+ *  and a path outside the caller's workspace is never produced (Task D5).
+ *  routes/upload.ts still passes its session's uploads dir explicitly. */
 function defaultUploadsDir(): string {
-  return join(getConfig().workdir, "uploads");
+  return sessionUploadsDir();
 }
 
 /**

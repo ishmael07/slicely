@@ -40,6 +40,9 @@ import {
 import { getPreferences, printerGeometry } from "../settings";
 import { sessionState } from "./state";
 import { colourRequest } from "./colourRequest";
+import { resolve } from "node:path";
+import { isInsideSessionWorkspace } from "../session-context";
+import { WireError } from "../../server/errors";
 
 type Emit = (event: AgentEvent) => void;
 
@@ -397,6 +400,29 @@ function activeGeometry(): {
   );
 }
 
+/**
+ * The one place a model-supplied path becomes a path this process will open
+ * (Task D5). Lives here rather than in tools.ts because tools.ts already
+ * imports this module — one guard, one message, no import cycle.
+ *
+ * Refuses anything outside the ambient session's workspace (see
+ * `isInsideSessionWorkspace`): on a shared server that means another visitor's
+ * session directory and the server's own disk; on the desktop it still means
+ * the system, while leaving the user's own files alone. The message names no
+ * path, so a refusal can't be used to map what is on disk.
+ */
+export function assertWorkspacePath(p: string): string {
+  const target = resolve(p);
+  if (!isInsideSessionWorkspace(target)) {
+    throw new WireError(
+      400,
+      "That file isn't in your workspace. Import or upload it first.",
+      "not_in_workspace",
+    );
+  }
+  return target;
+}
+
 function fmtMinutes(min: number | undefined): string {
   if (min === undefined) return "unknown";
   const h = Math.floor(min / 60);
@@ -542,12 +568,15 @@ export async function executeV2Tool(
         return "No printers connected, so there is nothing to send to. Offer discover_printers, or point the user at settings → Connected printers.";
       }
       const printerId = input.printerId ? String(input.printerId) : printers[0].id;
-      const gcodePath = input.gcodePath
+      const rawGcodePath = input.gcodePath
         ? String(input.gcodePath)
         : sessionState.lastGcodePath;
-      if (!gcodePath) {
+      if (!rawGcodePath) {
         return "No G-code available yet — slice something first (slice_model or run_job).";
       }
+      // A printer upload is a file READ: whatever this names is about to be
+      // shipped off the machine, so it has to be the session's own G-code.
+      const gcodePath = assertWorkspacePath(rawGcodePath);
       const result = await sendToPrinter(printerId, gcodePath, {
         startImmediately: input.start === true,
       });
@@ -591,7 +620,7 @@ export async function executeV2Tool(
       const rawParts = Array.isArray(input.parts) ? input.parts : null;
       const parts = rawParts
         ? (rawParts as Array<Record<string, unknown>>).map((p) => ({
-            path: String(p.path),
+            path: assertWorkspacePath(String(p.path)),
             copies: typeof p.copies === "number" ? p.copies : 1,
             colourHex: p.colourHex ? String(p.colourHex) : undefined,
           }))
@@ -747,8 +776,11 @@ export async function executeV2Tool(
     }
 
     case "split_model": {
-      const path = input.path ? String(input.path) : sessionState.lastModelPath;
-      if (!path) return "No model available — import or upload one first.";
+      const raw = input.path ? String(input.path) : sessionState.lastModelPath;
+      if (!raw) return "No model available — import or upload one first.";
+      // Splitting WRITES the pieces next to the source, so an unchecked path
+      // here is a write outside the workspace as well as a read.
+      const path = assertWorkspacePath(raw);
       const result = await splitModel(path, input.write !== false);
       if (result.pieces <= 1) {
         return (
@@ -775,8 +807,9 @@ export async function executeV2Tool(
     }
 
     case "choose_orientation": {
-      const path = input.path ? String(input.path) : sessionState.lastModelPath;
-      if (!path) return "No model available — import or upload one first.";
+      const raw = input.path ? String(input.path) : sessionState.lastModelPath;
+      if (!raw) return "No model available — import or upload one first.";
+      const path = assertWorkspacePath(raw);
       const prefs = getPreferences();
       const result = await chooseOrientation(path, {
         goal: (input.goal as PrintGoal) ?? prefs.goal ?? "quality",

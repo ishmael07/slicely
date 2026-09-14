@@ -44,6 +44,7 @@ import { join } from "node:path";
 import {
   V2_TOOLS,
   V2_TOOL_NAMES,
+  assertWorkspacePath,
   executeV2Tool,
   v2ToolLabel,
 } from "./tools-v2";
@@ -739,6 +740,10 @@ export async function executeTool(
           .map((pl) => pl.projectPath)
           .filter((x): x is string => Boolean(x));
         if (projects.length > 0) {
+          // Slicely wrote these itself, into this session's slices directory —
+          // re-checking costs nothing and keeps that an invariant rather than
+          // an assumption, since the path is also handed to the client below.
+          assertWorkspacePath(projects[0]);
           await openModelInEditorSliced(projects[0], sessionState.lastConfigIni);
           // Slicely opened it on the machine running the server. For a browser
           // anywhere else that did nothing visible, so hand over the file too.
@@ -760,7 +765,7 @@ export async function executeTool(
       }
       const paths =
         usingActive && sessionState.lastModelParts.length > 1
-          ? sessionState.lastModelParts
+          ? activeParts()
           : resolvePath(input.path);
       const primary = Array.isArray(paths) ? paths[0] : paths;
 
@@ -1081,7 +1086,7 @@ async function runSlice(
   const usingActive = !input.path;
   let allParts =
     usingActive && sessionState.lastModelParts.length > 1
-      ? sessionState.lastModelParts
+      ? activeParts()
       : [path];
 
   // Guard: a STEP/STP file can't be sliced headlessly (it's GUI-import-only).
@@ -1293,6 +1298,15 @@ export function toolLabel(name: string, input: Record<string, unknown>): string 
   }
 }
 
+/**
+ * The path a v1 tool will actually open: the one the model passed, or the
+ * session's active model when it passed nothing.
+ *
+ * Checked, never trusted (Task D5) — see `assertWorkspacePath`. That applies to
+ * the remembered `lastModelPath` too: it is only a string, set by whichever
+ * tool ran last, and a tool that could be talked into recording a path outside
+ * the workspace must not have it honoured here afterwards.
+ */
 function resolvePath(p: unknown): string {
   const path = p ? String(p) : sessionState.lastModelPath;
   if (!path) {
@@ -1300,7 +1314,17 @@ function resolvePath(p: unknown): string {
       "No model file available. Import a model first (or pass an explicit path).",
     );
   }
-  return path;
+  return assertWorkspacePath(path);
+}
+
+/** Test-only alias. `resolvePath` is the whole of the workspace boundary for
+ *  the v1 tools, so it is worth testing directly rather than through a slice. */
+export const resolvePathForTests = resolvePath;
+
+/** The remembered multi-part model, re-checked on the way out of memory for
+ *  the same reason `resolvePath` re-checks `lastModelPath`. */
+function activeParts(): string[] {
+  return sessionState.lastModelParts.map((p) => assertWorkspacePath(p));
 }
 
 /** Per-call setting/transform overrides the user or agent passed explicitly.
