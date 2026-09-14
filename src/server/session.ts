@@ -51,6 +51,7 @@ import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
 import { disposeSessionPrinters } from "../main/printers/registry";
 import { deleteAccount } from "../main/accounts/store";
+import type { TurnFunding } from "../main/agent/funding";
 import { clientIp, TokenBuckets } from "./security";
 import { sendError, stripPaths, WireError } from "./errors";
 
@@ -156,6 +157,19 @@ export interface ChatAgent {
   exportHistory?(): unknown;
   importHistory?(history: unknown): void;
 }
+
+/**
+ * How routes/chat.ts builds the agent for a session — handed the resolver that
+ * answers "who is paying for the next turn?" for THAT session.
+ *
+ * The funding is passed IN rather than read inside the agent because the answer
+ * lives half in `src/main` (keys, credit, the free tier) and half in
+ * `src/server` (which account this cookie is signed in as, whether OAuth is
+ * configured at all), and the route is the only place that holds both. A test
+ * factory can ignore the argument; one that wants the real loop over a fake
+ * provider passes it straight to `new SlicelyAgent({ resolveFunding })`.
+ */
+export type ChatAgentFactory = (resolveFunding: () => TurnFunding) => ChatAgent;
 
 export interface SessionRecord {
   id: string;

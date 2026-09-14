@@ -4,13 +4,21 @@
 //
 // It talks to a PROVIDER, not to Anthropic (see ./provider.ts). The history it
 // keeps is neutral, the tools it declares are neutral, and which provider
-// answers is decided per turn from the user's chosen model — so a user with two
-// keys can switch model mid-session and the next turn simply goes elsewhere.
+// answers is decided per turn from the model the turn is FUNDED for — so a user
+// with two keys can switch model mid-session and the next turn simply goes
+// elsewhere.
+//
+// AND EVERY TURN ASKS WHO IS PAYING FOR IT, ONCE, BEFORE IT STARTS (./funding.ts).
+// That answer carries the key, the model, the effort and the output ceiling, so a
+// stale session setting can no longer point a visitor on Slicely's own credit at
+// a model Slicely is not paying for. A metered turn then asks `guard()` before
+// every one of its up-to-twelve calls, hands each call's usage to `onUsage()`,
+// and reports what is left as a `credit` event on the way out.
 import { createHash } from "node:crypto";
-import { getUserApiKey, NoApiKeyError } from "../userkey";
 import { costMicros, type TurnUsage } from "../pricing";
 import { currentSessionId } from "../session-context";
-import { getSettings, getPreferences } from "../settings";
+import { getPreferences, modelOption } from "../settings";
+import { resolveTurnFunding, type FundingSource, type TurnFunding } from "./funding";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
 import { SYSTEM_PROMPT } from "./prompt";
@@ -74,6 +82,19 @@ export interface AgentOptions {
    * production this is the catalog lookup in provider.ts.
    */
   resolveProvider?: (model: string) => Provider;
+  /**
+   * Who pays for the next turn — the key, the model, the effort, the ceiling and
+   * the meter, all of it (see agent/funding.ts).
+   *
+   * A THUNK, not a value, and asked once per turn: a visitor can sign out, sign
+   * in, paste a key or spend the last of their credit between two messages of
+   * the same conversation, and the agent instance outlives all four (it is
+   * cached on the session). The chat route injects a closure over its own
+   * session record; tests pass a stub. The default is today's bring-your-own-key
+   * rule with no account attached, which is also exactly what the Electron app
+   * wants.
+   */
+  resolveFunding?: () => TurnFunding;
 }
 
 export class SlicelyAgent {
@@ -102,22 +123,24 @@ export class SlicelyAgent {
    */
   private streamed = "";
   private readonly resolveProvider: (model: string) => Provider;
+  private readonly resolveFunding: () => TurnFunding;
 
   constructor(opts: AgentOptions = {}) {
     this.resolveProvider = opts.resolveProvider ?? providerForModel;
-    // The key belongs to the USER, not the deployment: it comes from this
-    // session's encrypted secrets (userkey.ts), never from the server's
-    // environment. No key is a normal, expected state for a fresh visitor —
-    // hence a typed error the HTTP layer turns into 409 `no_key` and the UI
-    // turns into the "connect your key" card, rather than a crash or a message
-    // about server-side files the user has no access to.
+    this.resolveFunding =
+      opts.resolveFunding ?? (() => resolveTurnFunding({ oauthConfigured: false }));
+    // ASK WHO PAYS BEFORE THE AGENT EXISTS AT ALL. Every refusal funding.ts can
+    // return is a typed error the HTTP layer turns into its own status and stable
+    // code — no key (409 `no_key`), not signed in (401 `signin_required`), no
+    // credit (402), the shared pool spent (503), too many chats today (429) — and
+    // each is something the UI has a different affordance for. Asked here as well
+    // as per turn so /api/chat can answer it before it writes a single SSE
+    // header, which is the one place a status code is still available.
     //
-    // Checked HERE as well as per turn so the 409 is answered before /api/chat
-    // has written a single SSE header.
-    const provider = this.resolveProvider(getSettings().model);
-    if (!this.keyFor(provider)) {
-      throw new NoApiKeyError(`Connect your ${provider.label} API key in Settings to chat.`);
-    }
+    // Nothing is kept: a visitor's funding can change between two messages (they
+    // sign out, they paste a key, their credit runs out), so the answer is only
+    // ever good for the turn that asked.
+    this.resolveFunding();
     // Seed the session from the user's saved printer/material so a returning
     // user is never asked to re-state their setup.
     const prefs = getPreferences();
@@ -125,10 +148,6 @@ export class SlicelyAgent {
       printer: prefs.printer,
       material: prefs.material,
     });
-  }
-
-  private keyFor(provider: Provider): string | undefined {
-    return getUserApiKey(provider.id);
   }
 
   /**
@@ -234,12 +253,20 @@ export class SlicelyAgent {
   async send(userMessage: string, emit: Emit): Promise<void> {
     this.cancelled = false;
     this.inFlight = new AbortController();
+    // Declared out here so the `finally` can report what is left of the balance
+    // even on the paths that threw — and can tell "nobody was funding this" apart
+    // from "the funding said there is nothing of ours to report".
+    let funding: TurnFunding | undefined;
 
     try {
-      // Read the user's live model + effort choice ONCE per turn: the provider
-      // is decided by the model, so re-reading it mid-tool-loop could send half
-      // a conversation to a different API.
-      const { model, effort } = getSettings();
+      // WHO PAYS, ASKED ONCE PER TURN — and it decides the model, the effort and
+      // the output ceiling as well as the key. Never `getSettings()`: a stale
+      // session setting would otherwise point a free visitor at a model the
+      // owner is not paying for (or one with no price row, which meters at
+      // nothing). The provider follows the funded model, so re-reading it
+      // mid-tool-loop could send half a conversation to a different API.
+      funding = this.resolveFunding();
+      const { apiKey, model, effort, maxOutputTokens } = funding;
       const provider = this.resolveProvider(model);
       // SWITCHING PROVIDER RESETS THE CHAT. The history holds reasoning blocks
       // and tool ids only its own provider can read (see provider.ts), so
@@ -255,9 +282,19 @@ export class SlicelyAgent {
         });
       }
 
-      const apiKey = this.keyFor(provider);
-      if (!apiKey) {
-        throw new NoApiKeyError(`Connect your ${provider.label} API key in Settings to chat.`);
+      // THE MODEL THAT ANSWERED IS NOT ALWAYS THE ONE THEY PICKED. A key of
+      // their own pays for the turn whichever provider it is for, so a visitor
+      // holding an OpenAI key with an Anthropic model selected gets an answer
+      // from OpenAI's default model (funding.ts). Say so, in one sentence,
+      // before the answer arrives — otherwise the reply appears to come from a
+      // model they did not choose with nothing at all to explain it.
+      if (funding.modelSwitchedFrom) {
+        emit({
+          type: "text",
+          text:
+            `Your API key is for ${provider.label}, so this answer came from ` +
+            `${labelFor(model)} rather than ${labelFor(funding.modelSwitchedFrom)}.\n\n`,
+        });
       }
 
       this.history.push({ role: "user", content: [{ type: "text", text: userMessage }] });
@@ -272,6 +309,12 @@ export class SlicelyAgent {
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
         if (this.cancelled) break;
+        // BEFORE EVERY CALL, NOT JUST THE FIRST. A balance can empty half way
+        // through a turn — twelve iterations of a tool loop are twelve bills —
+        // and the visitor has already seen part of an answer by then, so this
+        // throws a different sentence from the pre-flight refusal. A no-op for
+        // anyone spending their own key.
+        funding.guard();
 
         // Kept whole rather than destructured, because the result now also
         // carries what the call COST (`usage`) — and that is charged per call,
@@ -292,7 +335,7 @@ export class SlicelyAgent {
             // tool_result bodies stubbed; no block is ever removed, so no call is
             // ever orphaned (see history.ts).
             messages: capHistory(this.history),
-            maxOutputTokens: provider.maxOutputTokens,
+            maxOutputTokens,
             signal: this.inFlight.signal,
             cacheKey,
           },
@@ -304,7 +347,14 @@ export class SlicelyAgent {
           },
         );
         const { assistant, toolCalls } = turn;
-        reportCost(model, turn.usage, i);
+        reportCost(model, turn.usage, i, funding.source);
+        // CHARGED HERE, PER CALL, AND ONLY FOR WHAT THE PROVIDER ACTUALLY
+        // REPORTED. A call that came back with no usage is charged nothing and
+        // logged as an anomaly above — inventing a number is the one failure mode
+        // worth refusing outright — and a call that threw or was aborted never
+        // gets here at all, so what the turn ends up paying is the sum of the
+        // calls that really happened, partial turns included.
+        if (turn.usage) await funding.onUsage(turn.usage);
 
         // Record the assistant turn (text + reasoning + any tool calls).
         // NEVER EMPTY: `content: []` is a 400 on both providers, so a turn that
@@ -395,9 +445,22 @@ export class SlicelyAgent {
       emit(event);
     } finally {
       this.closeTurn();
+      // WHAT IS LEFT, ONCE, AT THE END OF EVERY METERED TURN — including the ones
+      // that failed, because a turn that spent the last of the credit and then
+      // threw is exactly when the number matters most. `balance()` is undefined
+      // for a visitor spending their own key: there is nothing of ours to report,
+      // and a $0.00 pill on someone who is not on credit would be a lie.
+      const left = funding?.balance();
+      if (left) emit({ type: "credit", ...left });
       emit({ type: "done" });
     }
   }
+}
+
+/** A model's catalogue label, or its bare id when the catalogue has outlived it
+ *  — a sentence explaining which model answered must not go blank. */
+function labelFor(model: string): string {
+  return modelOption(model)?.label ?? model;
 }
 
 /**
@@ -412,17 +475,22 @@ export class SlicelyAgent {
  * with no row in the price table, and a missing price must not be able to fail
  * a turn the user has already been given.
  *
- * `source` is hard-coded to "user" here and stays that way until the accounts lane
- * lands the funding resolver, which is what knows whether the owner's free credit
- * paid for this call.
+ * `source` comes from the turn's funding: "user" for a key of their own, "free"
+ * for the owner's credit. It is the field that makes the log answer "what is the
+ * free tier costing me?" separately from "how much work is this app doing?".
  */
-function reportCost(model: string, usage: TurnUsage | undefined, iteration: number): void {
+function reportCost(
+  model: string,
+  usage: TurnUsage | undefined,
+  iteration: number,
+  source: FundingSource,
+): void {
   if (!usage) {
     process.stderr.write(`[cost] model=${model} it=${iteration} usage=none (not charged)\n`);
     return;
   }
   try {
-    logTurnCost({ model, usage, micros: costMicros(model, usage), source: "user", iteration });
+    logTurnCost({ model, usage, micros: costMicros(model, usage), source, iteration });
   } catch {
     // An unpriced model. Say so once, loudly enough to grep, and carry on.
     process.stderr.write(`[cost] model=${model} it=${iteration} usage=unpriced (not charged)\n`);

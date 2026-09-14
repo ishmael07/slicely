@@ -236,6 +236,17 @@ export type AgentEvent =
       /** One short line under the button, when the button alone isn't obvious. */
       hint?: string;
     }
+  /**
+   * What is left of this visitor's free credit, after everything this turn just
+   * charged. Emitted once per turn, immediately before `done` — and ONLY on a
+   * turn Slicely paid for: a visitor spending their own key is never metered,
+   * so there is no balance to report and no frame (see agent/funding.ts).
+   *
+   * `balanceMicros` is µ¢ floored at zero (a turn may overshoot by one call);
+   * `balanceLabel` is the same number pre-formatted, so the header pill and the
+   * transcript cannot disagree about how to write money.
+   */
+  | { type: "credit"; balanceMicros: number; balanceLabel: string; exhausted: boolean }
   /** Something failed. `code` is the stable wire code the UI branches on
    *  (`no_key`, `key_rejected`, `rate_limited`, …) so it can show the right
    *  affordance — the "connect your key" card rather than a red line of prose.

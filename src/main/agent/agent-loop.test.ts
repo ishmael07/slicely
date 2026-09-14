@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { runInSession, sessionContext } from "../session-context";
-import { setUserApiKey } from "../userkey";
+import { clearUserApiKey, setUserApiKey } from "../userkey";
 import { resetKeyVaultForTests } from "../keyvault";
+import { MODEL_CATALOG, updateSettings } from "../settings";
 import { SlicelyAgent } from "./agent";
 import type { AgentEvent, ProviderId } from "../../shared/types";
 import type { NeutralMessage, Provider, StreamRequest, TurnResult } from "./provider";
@@ -231,25 +232,59 @@ test("switching provider mid-chat starts a fresh conversation, and says so", asy
   });
 });
 
-test("a model whose provider has no key fails as no_key, with the provider named", async () => {
-  await withTempDir("agent-nokey-", async (dir) => {
+// A model whose provider has no key used to fail as `no_key`. It no longer does,
+// and the change is deliberate (spec §10.4, main/agent/funding.ts): a key of
+// their own pays for the turn WHICHEVER provider it is for, so the thing that
+// gives way is the model, not the payer. Refusing here would have been the wrong
+// way round — it would leave someone holding a usable key with no way to chat,
+// and on a hosted deploy it would push them onto the owner's free credit.
+test("a model whose provider has no key runs on the key they DO have, and says so", async () => {
+  await withTempDir("agent-switch-model-", async (dir) => {
     const openai = fakeProvider([], "openai");
+    const anthropic = fakeProvider([{ assistant: [{ type: "text", text: "hi" }], toolCalls: [] }]);
     await runInSession(sessionContext("nokey2", dir), async () => {
       setUserApiKey("anthropic", KEY);
-      // The agent is constructed while an Anthropic model is chosen...
-      let model = "claude-opus-4-8";
-      const anthropic = fakeProvider([{ assistant: [{ type: "text", text: "hi" }], toolCalls: [] }]);
+      // The chosen model is one this session has no key for...
+      updateSettings({ model: "gpt-5.6-terra" });
       const agent = new SlicelyAgent({
-        resolveProvider: () => (model.startsWith("claude") ? anthropic : openai),
+        resolveProvider: (m) => (m.startsWith("claude") ? anthropic : openai),
       });
-      // ...and the model changes to one this session has no key for.
-      model = "gpt-5.6-terra";
+      const events: AgentEvent[] = [];
+      await agent.send("go", (e) => events.push(e));
+
+      assert.equal(events.some((e) => e.type === "error"), false, "a usable key is not an error");
+      assert.equal(openai.seen.length, 0, "nothing was sent to the provider we have no key for");
+      // ...so the turn ran on the Anthropic key, against Anthropic's default
+      // model, and the user was told which model answered and why.
+      assert.equal(anthropic.seen.length, 1);
+      assert.equal(anthropic.seen[0].apiKey, KEY);
+      assert.equal(anthropic.seen[0].model, MODEL_CATALOG.find((m) => m.provider === "anthropic")?.id);
+      const said = events
+        .filter((e): e is AgentEvent & { type: "text" } => e.type === "text")
+        .map((e) => e.text)
+        .join("");
+      assert.match(said, /Anthropic/);
+      assert.match(said, /GPT-5\.6 Terra|gpt-5\.6-terra/);
+    });
+  });
+});
+
+test("no key at all still fails as no_key, with the provider named", async () => {
+  await withTempDir("agent-nokey-", async (dir) => {
+    const anthropic = fakeProvider([{ assistant: [{ type: "text", text: "hi" }], toolCalls: [] }]);
+    await runInSession(sessionContext("nokey3", dir), async () => {
+      // Constructed with a key, because that is the only way to get an agent...
+      setUserApiKey("anthropic", KEY);
+      updateSettings({ model: "claude-opus-4-8" });
+      const agent = new SlicelyAgent({ resolveProvider: () => anthropic });
+      // ...and the key is then disconnected mid-conversation.
+      clearUserApiKey("anthropic");
       const events: AgentEvent[] = [];
       await agent.send("go", (e) => events.push(e));
       const failure = events.find((e) => e.type === "error");
       assert.equal(failure?.type === "error" && failure.code, "no_key");
-      assert.match(failure?.type === "error" ? failure.message : "", /OpenAI/);
-      assert.equal(openai.seen.length, 0, "nothing was sent without a key");
+      assert.match(failure?.type === "error" ? failure.message : "", /Anthropic/);
+      assert.equal(anthropic.seen.length, 0, "nothing was sent without a key");
     });
   });
 });

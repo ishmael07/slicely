@@ -25,7 +25,7 @@ import {
   securityHeaders,
   type RateLimitOptions,
 } from "./security";
-import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
+import { SessionStore, sessionMiddleware, type ChatAgentFactory } from "./session";
 import { desktopTokenGuard, isLoopbackBindHost } from "./desktop-token";
 import { isDesktop } from "../main/mode";
 import { webStatic } from "./static";
@@ -54,8 +54,9 @@ export interface CreateAppOptions {
   sessionStore?: SessionStore;
   /** Inject a chat agent factory. Tests MUST override this with a stub —
    *  without it, /api/chat constructs a real SlicelyAgent (Anthropic client +
-   *  live network calls) on first use, which is never appropriate in a test. */
-  chatAgentFactory?: () => ChatAgent;
+   *  live network calls) on first use, which is never appropriate in a test.
+   *  The argument is the per-session funding resolver; a stub may ignore it. */
+  chatAgentFactory?: ChatAgentFactory;
   /** Inject the "is this Anthropic key real?" check that PUT /api/key makes.
    *  Tests MUST override it — the default makes a live `models.list` call with
    *  the pasted key. */
@@ -111,7 +112,16 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   const store = opts.sessionStore ?? new SessionStore();
   const tier = (base: RateLimitOptions, override?: Partial<BucketOverride>) =>
     rateLimiter({ ...base, ...override });
-  const chatLimit = tier(LIMITS.chat, opts.limits?.chat);
+  // ONE BUCKET PER ACCOUNT, not per tab. A signed-in visitor spending Slicely's
+  // own credit can open five tabs and get five fresh session cookies; the budget
+  // that matters is the one attached to the person paying, so the key follows the
+  // account wherever it is signed in. Everyone else (desktop, signed-out, BYO)
+  // falls through to the default session/IP key.
+  const chatLimit = rateLimiter({
+    ...LIMITS.chat,
+    ...opts.limits?.chat,
+    keyFn: (req) => (req.session?.accountId ? `acct:${req.session.accountId}` : undefined),
+  });
   // ONE shared `heavy` bucket across every expensive endpoint: slicing,
   // importing, uploading and key validation all cost the server real work, so
   // ten of them in a burst is the budget however they're mixed.

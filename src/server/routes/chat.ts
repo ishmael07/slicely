@@ -13,20 +13,39 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
-import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
-import { providerForModel } from "../../main/agent/provider";
-import { getSettings } from "../../main/settings";
-import { sendError, stripPaths, toWire } from "../errors";
+import { resolveTurnFunding, type TurnFunding } from "../../main/agent/funding";
+import { countChatTurn } from "../../main/accounts/meter";
+import { signinProvidersFromEnv } from "./config";
+import { sendError, stripPaths, toWire, WireError } from "../errors";
 import { isDesktop } from "../../main/mode";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
-import { adoptGcodeFile, toClientPaths, type ChatAgent, type SessionRecord } from "../session";
+import {
+  adoptGcodeFile, toClientPaths, type ChatAgent, type ChatAgentFactory, type SessionRecord,
+} from "../session";
 import { loadChats, saveChats, newChat, appendTurn } from "../chats";
 import { noLimit, type RouteLimitOptions } from "../security";
 
 /** How often to poke a silent stream. Comfortably under the ~30s idle timeout
  *  common in browsers and reverse proxies. */
 const KEEP_ALIVE_MS = 10_000;
+
+/**
+ * How long until the daily chat allowance resets, in whole seconds.
+ *
+ * The counter rolls over on the UTC day (accounts/paths.ts's `utcDay`), so this
+ * is the honest answer rather than a guessed constant — and `Retry-After` is the
+ * only thing that tells a client whether "too many requests" means twenty
+ * seconds (the rate limiter) or the small hours of tomorrow morning.
+ */
+function secondsUntilUtcMidnight(now: number = Date.now()): number {
+  const midnight = Date.UTC(
+    new Date(now).getUTCFullYear(),
+    new Date(now).getUTCMonth(),
+    new Date(now).getUTCDate() + 1,
+  );
+  return Math.max(1, Math.ceil((midnight - now) / 1000));
+}
 
 /**
  * Write one frame, with every absolute server path taken out of it first.
@@ -122,7 +141,7 @@ function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentE
  * on an API key or makes a live network call.
  */
 export function createChatRouter(
-  makeAgent: () => ChatAgent = () => new SlicelyAgent(),
+  makeAgent: ChatAgentFactory = (resolveFunding) => new SlicelyAgent({ resolveFunding }),
   opts: RouteLimitOptions = {},
 ): Router {
   const router = Router();
@@ -143,16 +162,58 @@ export function createChatRouter(
       res.status(409).json({ error: "This tab is still waiting on a previous reply.", code: "busy" });
       return;
     }
-    // No key, no turn — and answered as plain JSON BEFORE the SSE headers go
-    // out. An error delivered inside an already-open stream is far harder for
-    // the client to act on (EventSource has read a 200 by then), and the one
-    // thing the UI must do here is show the "connect your key" card.
-    const provider = providerForModel(getSettings().model);
-    if (!getUserApiKey(provider.id)) {
-      // Name the provider: with two keys possible, "connect your key" leaves the
-      // user guessing which of the two the chosen model needs.
-      sendError(res, new NoApiKeyError(`Connect your ${provider.label} API key in Settings to chat.`));
+    // WHO PAYS FOR THIS TURN — asked as plain JSON BEFORE the SSE headers go
+    // out. An error delivered inside an already-open stream is far harder for the
+    // client to act on (EventSource has read a 200 by then), and every answer
+    // here has a different affordance behind it: 409 `no_key` is the "connect
+    // your key" card, 401 `signin_required` the sign-in block, 402
+    // `credit_exhausted` the "add your own key" card, 503 `free_tier_paused` the
+    // "try tomorrow" card and 429 `rate_limited` a wait. A code inside a 200
+    // stream can reach none of them with a status the browser would act on.
+    //
+    // Asked again by the agent, per turn (main/agent/funding.ts): this is the
+    // pre-flight, and it is a read.
+    const resolveFunding = (): TurnFunding =>
+      resolveTurnFunding({
+        accountId: session.accountId,
+        oauthConfigured: signinProvidersFromEnv().length > 0,
+      });
+    let funding: TurnFunding;
+    try {
+      funding = resolveFunding();
+    } catch (err) {
+      // A 429 from HERE is the daily chat allowance, not the burst limiter, and
+      // it resets at midnight UTC rather than in twenty seconds. Both kinds of
+      // 429 on this route therefore carry `Retry-After`: without it the client
+      // cannot tell a wait it should offer to retry from one it should not.
+      if (err instanceof WireError && err.status === 429) {
+        res.setHeader("Retry-After", String(secondsUntilUtcMidnight()));
+      }
+      sendError(res, err);
       return;
+    }
+    // AND THE ONE THAT ACTUALLY COUNTS. The check inside `resolveTurnFunding` is
+    // read-only, so two tabs asking at the same moment would both be told they
+    // have chats left; this increments under the account's lock, and a refusal
+    // here is a 429 rather than a 500 precisely because it is the normal outcome
+    // of that race, not a bug. Free turns only: a visitor spending their own key
+    // has no daily allowance to spend.
+    if (funding.source === "free" && session.accountId) {
+      let allowance;
+      try {
+        allowance = await countChatTurn(session.accountId);
+      } catch (err) {
+        sendError(res, err);
+        return;
+      }
+      if (!allowance.allowed) {
+        res.setHeader("Retry-After", String(secondsUntilUtcMidnight()));
+        res.status(429).json({
+          error: `You've used your ${allowance.limit} free chats for today. Add your own key to keep going.`,
+          code: "rate_limited",
+        });
+        return;
+      }
     }
 
     res.writeHead(200, {
@@ -195,7 +256,7 @@ export function createChatRouter(
 
     try {
       if (!session.agent) {
-        session.agent = makeAgent();
+        session.agent = makeAgent(resolveFunding);
       }
       const agent = session.agent;
       // The request already runs inside this session's context (see
