@@ -8,6 +8,23 @@
 //     thing — show the "connect your key" card, offer a retry — instead of
 //     painting an arbitrary sentence red and leaving the user to guess.
 //
+//     THE ACCOUNTS AND FREE-TIER CODES, and there are exactly seven:
+//       `signin_required`   — hosted, no account: sign in to spend free credit
+//       `credit_exhausted`  — the grant is spent; add your own key
+//       `free_tier_paused`  — the whole day's global spend cap is reached
+//       `signup_limited`    — too many new accounts from one address today
+//       `email_unverified`  — the provider has not verified the address
+//       `email_blocked`     — a disposable domain, or an account blocked by hand
+//       `oauth_failed`      — anything else about a sign-in, and a visitor can
+//                             only retry, so everything else folds into it
+//     Each gets a sentence in `CODE_COPY` (src/web/api.ts) so the client's copy
+//     and the server's cannot drift. `email_invalid` is a 400 on the waitlist
+//     route only and is deliberately NOT a chat code: the one address a visitor
+//     types themselves is the one they can be asked to retype.
+//     The four sign-in codes do not travel in a body at all — the OAuth
+//     callback is always a 302, and the code rides in the `#auth_error=`
+//     fragment (see routes/auth.ts).
+//
 //  2. THE CLIENT LEARNS NOTHING ELSE. Routes used to relay `err.message`
 //     straight out, which meant absolute server paths
 //     (`/data/sessions/<id>/uploads/…`), upstream provider bodies, and internal

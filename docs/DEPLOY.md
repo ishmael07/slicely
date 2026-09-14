@@ -121,6 +121,14 @@ since Fly's edge always proxies). So the real ceiling per IP is those tiers **ti
 across the *whole machine*, regardless of session or IP — the knob to turn if the 2GB /
 shared-cpu-2x VM is spending too much CPU on slicing versus everything else.
 
+`SLICELY_TRUST_PROXY=1` trusts **exactly one** proxy hop, not the whole `X-Forwarded-For`
+chain: the address used is `Fly-Client-IP` when Fly set it, otherwise the *last* entry in
+`X-Forwarded-For` — the one Fly appended. Anything a caller writes into that header ahead of
+it is ignored, which is the point: if the leftmost entry counted, every per-IP control here
+(mint cap, signup cap, all three tiers) would be a header anyone could rotate per request. A
+deployment behind **two** proxies (a CDN in front of Fly, say) has to raise the hop count in
+`trustProxySetting()` (`src/server/security.ts`) deliberately.
+
 ## If the slicer needs a display
 
 The image bakes in a one-line wrapper, `/opt/prusaslicer/slicer.sh`:

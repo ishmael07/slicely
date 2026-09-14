@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CSP_STRING, rateLimiter, TokenBuckets } from "./security";
+import { clientIp, CSP_STRING, rateLimiter, TokenBuckets, trustProxySetting } from "./security";
 import { createApp, type CreateAppOptions } from "./index";
 import { SessionStore } from "./session";
 import { createPrintersRouter } from "./routes/printers";
@@ -380,6 +380,69 @@ test("X-Forwarded-For is ignored unless SLICELY_TRUST_PROXY=1", async () => {
   } finally {
     await close();
     cleanup();
+    if (prev === undefined) delete process.env.SLICELY_TRUST_PROXY;
+    else process.env.SLICELY_TRUST_PROXY = prev;
+  }
+});
+
+/** An app configured with the SAME trust-proxy policy the shipped one uses
+ *  (`trustProxySetting()`, which index.ts also calls), plus one route that says
+ *  who `clientIp` thinks is calling. */
+async function whoamiApp(): Promise<{ who: (headers: Record<string, string>) => Promise<string>; close: () => Promise<void> }> {
+  const app = express();
+  app.set("trust proxy", trustProxySetting());
+  app.get("/whoami", (req: express.Request, res: express.Response) => {
+    res.json({ ip: clientIp(req) });
+  });
+  const { base, close } = await listen(app);
+  return {
+    who: async (headers) => ((await (await fetch(`${base}/whoami`, { headers })).json()) as { ip: string }).ip,
+    close,
+  };
+}
+
+test("behind a proxy, the client IP is the address the proxy appended — never one the caller wrote", async () => {
+  const prev = process.env.SLICELY_TRUST_PROXY;
+  process.env.SLICELY_TRUST_PROXY = "1";
+  const { who, close } = await whoamiApp();
+  try {
+    // ONE hop is trusted, because Fly's edge is one hop. Two entries means the
+    // caller wrote the first one; the second is the only one Fly vouches for.
+    assert.equal(
+      await who({ "x-forwarded-for": "1.1.1.1, 2.2.2.2" }),
+      "2.2.2.2",
+      "the leftmost X-Forwarded-For entry is client-controlled and must not become req.ip",
+    );
+    // The ordinary case: one proxy, one entry, and that entry is the visitor.
+    assert.equal(await who({ "x-forwarded-for": "1.1.1.1" }), "1.1.1.1");
+    // Fly-Client-IP wins when it is there: Fly overwrites it at the edge, so it
+    // is a single address nobody downstream chose.
+    assert.equal(await who({ "x-forwarded-for": "1.1.1.1, 2.2.2.2", "fly-client-ip": "3.3.3.3" }), "3.3.3.3");
+    // …but only when it really is one address. A header sent twice arrives
+    // joined by ", ", and half of that pair could be the caller's.
+    assert.equal(
+      await who({ "x-forwarded-for": "1.1.1.1, 2.2.2.2", "fly-client-ip": "9.9.9.9, 3.3.3.3" }),
+      "2.2.2.2",
+    );
+    assert.equal(await who({ "x-forwarded-for": "1.1.1.1, 2.2.2.2", "fly-client-ip": "not-an-address" }), "2.2.2.2");
+  } finally {
+    await close();
+    if (prev === undefined) delete process.env.SLICELY_TRUST_PROXY;
+    else process.env.SLICELY_TRUST_PROXY = prev;
+  }
+});
+
+test("with no proxy in front, no forwarding header is read at all", async () => {
+  const prev = process.env.SLICELY_TRUST_PROXY;
+  delete process.env.SLICELY_TRUST_PROXY;
+  assert.equal(trustProxySetting(), false);
+  const { who, close } = await whoamiApp();
+  try {
+    // The socket's own peer address, spelled however the stack spells loopback
+    // (`::ffff:127.0.0.1` on a dual-stack listener) — and nothing from a header.
+    assert.match(await who({ "x-forwarded-for": "1.1.1.1, 2.2.2.2", "fly-client-ip": "3.3.3.3" }), /^(::ffff:)?127\.0\.0\.1$/);
+  } finally {
+    await close();
     if (prev === undefined) delete process.env.SLICELY_TRUST_PROXY;
     else process.env.SLICELY_TRUST_PROXY = prev;
   }

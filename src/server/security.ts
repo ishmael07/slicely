@@ -286,21 +286,53 @@ export const LIMITS = {
 } as const;
 
 /**
+ * What `app.set("trust proxy", …)` is handed — ONE function, so index.ts and
+ * `clientIp` below cannot drift apart.
+ *
+ * `1`, NOT `true`. `true` trusts the entire `X-Forwarded-For` chain, which makes
+ * `req.ip` the LEFTMOST entry — and the leftmost entry is written by the caller,
+ * so every per-IP control in the app (the session mint cap, the signup cap, all
+ * three rate-limit tiers) becomes a header anybody can rotate per request. Fly's
+ * edge is exactly one hop, so exactly one hop is trusted: `req.ip` is then the
+ * last entry, the one Fly itself appended. An operator with two proxies has to
+ * raise this number deliberately, which is the right way round.
+ */
+export function trustProxySetting(): 1 | false {
+  return process.env.SLICELY_TRUST_PROXY === "1" ? 1 : false;
+}
+
+/**
  * The caller's address, as an identity worth rate-limiting on.
  *
  * `req.ip` is only the real client when Express has been told to trust the
  * proxy in front of it — otherwise it is whatever the caller wrote in
  * `X-Forwarded-For`, which would let anyone mint an unlimited number of
  * distinct rate-limit keys. So the forwarded chain is consulted ONLY when the
- * operator has explicitly opted in with `SLICELY_TRUST_PROXY=1` (which
- * index.ts passes to `app.set("trust proxy", …)` as well, from this same
- * variable). Otherwise: the socket's peer address, which nobody can forge.
+ * operator has explicitly opted in with `SLICELY_TRUST_PROXY=1` (the same
+ * variable `trustProxySetting` reads for `app.set("trust proxy", …)`).
+ * Otherwise: the socket's peer address, which nobody can forge.
  */
 export function clientIp(req: Request): string {
   if (process.env.SLICELY_TRUST_PROXY === "1") {
-    return req.ip ?? req.socket.remoteAddress ?? "unknown";
+    // `Fly-Client-IP` first when Fly set it: Fly OVERWRITES that header at its
+    // edge, so unlike the forwarded chain (where only the last entry is Fly's)
+    // there is no client-supplied half of it to walk past. One name, one
+    // address.
+    return flyClientIp(req) ?? req.ip ?? req.socket.remoteAddress ?? "unknown";
   }
   return req.socket.remoteAddress ?? "unknown";
+}
+
+/** `Fly-Client-IP`, but only when it really is one address: a header sent twice
+ *  arrives joined by `", "`, and anything with a comma, a space or a character
+ *  no address contains is not the value we think we are reading. Then we would
+ *  rather key on the forwarded chain than on a string of unknown provenance. */
+function flyClientIp(req: Request): string | undefined {
+  const raw = req.headers["fly-client-ip"];
+  if (typeof raw !== "string") return undefined;
+  // 45 is the longest an IPv6 address gets (an IPv4-mapped one).
+  if (raw.length === 0 || raw.length > 45) return undefined;
+  return /^[0-9a-f.:]+$/i.test(raw) ? raw : undefined;
 }
 
 /** A tiny in-memory token-bucket limiter (no new dependency). Returns 429

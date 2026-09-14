@@ -27,6 +27,7 @@ import { accountsEnabled, freeTierInfo } from "../../main/agent/funding";
 import { formatMoney } from "../../main/pricing";
 import { balanceMicros, type Account } from "../../main/accounts/store";
 import { chatAllowance } from "../../main/accounts/meter";
+import { signInProviders } from "../oauth/index";
 import type {
   AccountView, FreeTierView, ProviderInfo, SigninProvider,
 } from "../../shared/types";
@@ -84,21 +85,22 @@ export interface ConfigResponse {
  * back to and the flow would fail after they had already typed their password.
  * Half a client is no client.
  *
- * ON MERGING WITH THE OAUTH LANE: `src/server/routes/auth.ts` exports
- * `signInProviders()`, which answers this same question from the provider
- * objects themselves (`OauthProvider.configured()`). That is the better source —
- * it cannot drift from the flow that actually runs — so at merge time pass it in
- * as `createConfigRouter({ signinProviders: signInProviders })` and this
- * function becomes the fallback for a server built without the auth router.
+ * MERGED WITH THE OAUTH LANE: the answer now comes from the provider objects in
+ * `src/server/oauth/` — `signInProviders()`, which maps whichever of them says
+ * `configured()` — rather than from a second reading of the environment here.
+ * Two readings is how `/api/config` comes to offer a button that `/auth/:p/start`
+ * answers 404. The rules are unchanged (both halves of a client AND
+ * `SLICELY_PUBLIC_URL`, fixed order), they are just stated once, next to the flow
+ * that runs them. The hosted-mode gate stays here, because a provider object
+ * knows about secrets and not about which product this is.
+ *
+ * The name is kept: `/api/chat` and `/api/settings` both ask this question of
+ * this function, and an injected test `OauthConfig` reaches `/api/config`
+ * through `ConfigRouterOptions.signinProviders` (wired in `createApp`).
  */
 export function signinProvidersFromEnv(): SigninProvider[] {
-  if (!isHosted() || !getConfig().publicUrl) return [];
-  const out: SigninProvider[] = [];
-  const configured = (prefix: string): boolean =>
-    Boolean(process.env[`${prefix}_CLIENT_ID`]?.trim() && process.env[`${prefix}_CLIENT_SECRET`]?.trim());
-  if (configured("GOOGLE")) out.push({ id: "google", label: "Google" });
-  if (configured("GITHUB")) out.push({ id: "github", label: "GitHub" });
-  return out;
+  if (!isHosted()) return [];
+  return signInProviders();
 }
 
 /**
