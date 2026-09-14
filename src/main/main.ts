@@ -1,327 +1,148 @@
-// Electron main process. Creates the frameless "chat rectangle" window, wires
-// IPC between the renderer and the Slicely agent, and bridges browser/slicer
-// side effects.
-import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
+// ─────────────────────────────────────────────────────────────────────────────
+// Electron main process — ONE UI.
+//
+// The Mac app is the web app. It boots the same Express server the hosted
+// deployment runs (in-process, on a random loopback port, in desktop mode) and
+// loads the same client into a BrowserWindow. There is no second UI, no second
+// copy of the chat transcript, no IPC-shaped clone of the REST API: the window
+// talks to the server over HTTP exactly as a browser does, so every feature
+// exists once and every fix lands once.
+//
+// What is left here is the part a browser genuinely cannot do:
+//   • start and own the server process,
+//   • keep other local processes off that loopback port (the launch token),
+//   • decide what the window is allowed to navigate to,
+//   • and the handful of native actions the preload bridge exposes (Task E2).
+// ─────────────────────────────────────────────────────────────────────────────
+import "./desktop-env"; // FIRST: sets SLICELY_MODE / SLICELY_WORKDIR (see the file)
+import { app, BrowserWindow, dialog, session, shell } from "electron";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { IPC } from "../shared/types";
-import type {
-  AgentEvent,
-  UserSettings,
-  SettingsState,
-  PrintPreferences,
-  PrintMaterial,
-  PrintGoal,
-} from "../shared/types";
-import { getConfig } from "./config";
-import { sessionState, seedSessionFromPreferences } from "./agent/state";
-import { SlicelyAgent } from "./agent/agent";
-import {
-  getStatus,
-  openModelInEditorSliced,
-  openGcodeInGui,
-  writeEffectiveConfig,
-} from "./prusaslicer";
-import {
-  getSettings,
-  updateSettings,
-  updatePreferences,
-  MODEL_CATALOG,
-  EFFORT_LEVELS,
-} from "./settings";
-import { KNOWN_PRINTERS } from "./profiles";
-import { acceptUploads, pickerExtensions } from "./uploads";
-import {
-  registerV2Ipc,
-  startPrinterPolling,
-  stopPrinterPolling,
-} from "./ipc-v2";
-
-const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
-const GOALS: PrintGoal[] = ["draft", "quality", "functional"];
+import { startServer } from "../server/index";
+import { CSP_STRING } from "../server/security";
+import type { SessionStore } from "../server/session";
+import { sessionState } from "./agent/state";
 
 let win: BrowserWindow | null = null;
-let agent: SlicelyAgent | null = null;
+/** Set once the server is listening; every window loads exactly this origin. */
+let serverUrl = "";
+let store: SessionStore | null = null;
 
-// Window dimensions — a tall, narrow chat bar, not a full app window.
-const WIN_WIDTH = 440;
-const WIN_HEIGHT = 620;
-const WIN_MIN_HEIGHT = 240;
-const WIN_MAX_HEIGHT = 900;
-
-function createWindow(): void {
+function createWindow(url: string): void {
   win = new BrowserWindow({
-    width: WIN_WIDTH,
-    height: WIN_HEIGHT,
-    minWidth: 380,
-    maxWidth: 560,
-    minHeight: WIN_MIN_HEIGHT,
-    maxHeight: WIN_MAX_HEIGHT,
-    frame: false,
+    width: 1100,
+    height: 760,
+    minWidth: 420,
+    minHeight: 600,
+    // The client draws its own header (see styles.css's `body.is-desktop`), so
+    // the traffic lights float over it instead of sitting in a title bar.
     titleBarStyle: "hiddenInset",
-    resizable: true,
-    fullscreenable: false,
-    maximizable: false,
-    vibrancy: "under-window",
-    visualEffectState: "active",
-    backgroundColor: "#00000000",
+    backgroundColor: "#0b0b0c",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
+      // The page is ordinary web content now, so it gets the posture ordinary
+      // web content gets: no Node, no shared world with the preload, and a
+      // sandboxed renderer process.
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
-  win.loadFile(join(__dirname, "../renderer/index.html"));
+  // A link in the transcript (a model's page on Printables, the PrusaSlicer
+  // download) belongs in the user's own browser, not in a second window of an
+  // app that is one window by design.
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (/^https?:/.test(target)) void shell.openExternal(target);
+    return { action: "deny" };
+  });
 
-  // Let the agent open external URLs (open_in_browser tool) in the system browser.
-  sessionState.openExternal = (url: string) => {
-    void shell.openExternal(url);
+  // The window may only ever be our own origin. Anything else — an injected
+  // redirect, a stray `location.href` — is refused and handed to the browser.
+  win.webContents.on("will-navigate", (event, target) => {
+    if (target.startsWith(serverUrl)) return;
+    event.preventDefault();
+    if (/^https?:/.test(target)) void shell.openExternal(target);
+  });
+
+  // The agent's `open_in_browser` tool. Set on the main process (not over IPC)
+  // because the tool runs HERE, inside the server this process is hosting, in
+  // the default session — which is the desktop session (see
+  // SessionStore.desktopSession).
+  sessionState.openExternal = (target: string) => {
+    if (/^https?:\/\//.test(target)) void shell.openExternal(target);
   };
 
   win.on("closed", () => {
     win = null;
   });
+
+  void win.loadURL(url);
 }
 
-function emitToRenderer(event: AgentEvent): void {
-  win?.webContents.send(IPC.agentEvent, event);
-}
+async function boot(): Promise<void> {
+  // A fresh secret per launch, held only in this process's memory and in the
+  // window's cookie jar. See server/desktop-token.ts for what it's for.
+  const desktopToken = randomBytes(24).toString("hex");
 
-function getAgent(): SlicelyAgent {
-  if (!agent) agent = new SlicelyAgent();
-  return agent;
-}
+  const started = await startServer({ host: "127.0.0.1", port: 0, desktopToken });
+  store = started.store;
+  serverUrl = started.url;
 
-function settingsState(): SettingsState {
-  const s = getSettings();
-  return {
-    current: { model: s.model, effort: s.effort },
-    models: MODEL_CATALOG.map((m) => ({
-      id: m.id,
-      label: m.label,
-      blurb: m.blurb,
-      supportsEffort: m.supportsEffort,
-      supportsXHigh: m.supportsXHigh,
-      supportsMax: m.supportsMax,
-    })),
-    efforts: EFFORT_LEVELS,
-    preferences: s.preferences,
-    printers: Object.entries(KNOWN_PRINTERS).map(([key, p]) => ({
-      key,
-      label: p.label,
-      nozzleMm: p.nozzleMm,
-      bed: p.bed,
-    })),
-    materials: MATERIALS,
-    goals: GOALS,
-  };
-}
-
-/** Accept incoming files and make them the active model so the agent's
- *  inspect/recommend/slice tools target them without a path argument. A ZIP or
- *  multiple dropped files become a multi-part model arranged on one plate. */
-async function acceptIncoming(paths: string[]) {
-  const results = await acceptUploads(paths);
-  // Prefer a directly-sliceable file as the primary; fall back to the last.
-  const active =
-    [...results].reverse().find((r) => r.sliceable) ??
-    results[results.length - 1];
-  if (active) sessionState.lastModelPath = active.localPath;
-  // Track all sliceable parts for multi-part plate arrangement.
-  const sliceable = results.filter((r) => r.sliceable).map((r) => r.localPath);
-  sessionState.lastModelParts = sliceable.length > 0 ? sliceable : active ? [active.localPath] : [];
-  return results;
-}
-
-/** Open one or more MODELS in the regular, EDITABLE PrusaSlicer editor with the
- *  most recent slice's settings loaded, in pre-sliced mode (background
- *  processing) so the toolpaths are ready under the Preview tab — the user only
- *  taps Preview, no Slice click. (This is the DEFAULT "open in PrusaSlicer"
- *  path: the editable editor, NOT the read-only G-code viewer.) */
-async function openModelInEditor(path: string | string[]): Promise<void> {
-  let guiConfig: string | undefined;
-  // Reuse the exact params + base config of the most recent slice, if any, so
-  // the GUI matches what Slicely sliced. Best-effort — fall back to a bare open.
-  if (sessionState.lastSliceParams) {
-    try {
-      guiConfig = await writeEffectiveConfig(
-        sessionState.lastSliceParams,
-        sessionState.lastConfigIni,
-      );
-    } catch {
-      /* fall back to opening the bare model */
-    }
-  }
-  await openModelInEditorSliced(path, guiConfig);
-}
-
-function registerIpc(): void {
-  // Renderer → agent: a user message. Streams events back via IPC.agentEvent.
-  ipcMain.handle(IPC.sendMessage, async (_e, message: string) => {
-    try {
-      await getAgent().send(message, emitToRenderer);
-    } catch (err) {
-      emitToRenderer({
-        type: "error",
-        message: (err as Error).message ?? String(err),
-      });
-      emitToRenderer({ type: "done" });
-    }
-  });
-
-  ipcMain.on(IPC.cancel, () => {
-    agent?.cancel();
-  });
-
-  ipcMain.handle(IPC.getStatus, async () => getStatus());
-
-  // A stub of the old env-derived ConfigState. The Anthropic key is no longer
-  // an environment value (it is per-session and encrypted — see userkey.ts), so
-  // `hasAnthropicKey` is reported false here and the web client's /api/config
-  // is the real source of truth. Task E1 deletes this channel along with the
-  // Electron renderer.
-  ipcMain.handle(IPC.getConfigState, async () => {
-    const cfg = getConfig();
-    return {
-      hasAnthropicKey: false,
-      hasThingiverseToken: cfg.thingiverseToken.length > 0,
-      model: cfg.model,
-      workdir: cfg.workdir,
-    };
-  });
-
-  ipcMain.handle(IPC.openExternal, async (_e, url: string) => {
-    if (/^https?:\/\//.test(url)) await shell.openExternal(url);
-  });
-
-  // "Open in PrusaSlicer" actions from a card / metric-panel button. Opens the
-  // MODEL in the regular editor (with the last slice's settings loaded), ready
-  // to slice. Accepts one path or many (many = one arranged plate).
-  ipcMain.handle(IPC.importModel, async (_e, path: string | string[]) => {
-    await openModelInEditor(path);
-  });
-  ipcMain.handle(IPC.openSlicer, async (_e, path: string | string[]) => {
-    await openModelInEditor(path);
-  });
-
-  // "View finished slice" — open an already-sliced .gcode in PrusaSlicer's
-  // G-code viewer (the finished toolpath / export view). Opt-in only.
-  ipcMain.handle(IPC.openGcode, async (_e, path: string) => {
-    await openGcodeInGui(path);
-  });
-
-  // Reveal a sliced G-code file in Finder.
-  ipcMain.handle(IPC.revealPath, async (_e, path: string) => {
-    if (path) shell.showItemInFolder(path);
-  });
-
-  // ── Settings: model + reasoning effort ──────────────────────────────────
-  ipcMain.handle(IPC.getSettings, async () => settingsState());
-  ipcMain.handle(
-    IPC.updateSettings,
-    async (_e, patch: Partial<UserSettings>): Promise<SettingsState> => {
-      updateSettings(patch);
-      return settingsState();
-    },
-  );
-
-  // ── Printing preferences: printer + slice defaults (persisted) ───────────
-  ipcMain.handle(
-    IPC.updatePreferences,
-    async (
-      _e,
-      patch: Partial<PrintPreferences>,
-    ): Promise<SettingsState> => {
-      const next = updatePreferences(
-        patch as Partial<Record<keyof PrintPreferences, unknown>>,
-      );
-      // Re-seed the live session so the change takes effect immediately (without
-      // waiting for a new agent instance / restart).
-      seedSessionFromPreferences({
-        printer: next.preferences.printer,
-        material: next.preferences.material,
-      });
-      return settingsState();
-    },
-  );
-
-  // ── User CAD uploads: native picker + dropped paths ─────────────────────
-  ipcMain.handle(IPC.pickFile, async () => {
-    if (!win) return [];
-    const res = await dialog.showOpenDialog(win, {
-      title: "Choose a 3D model to slice",
-      properties: ["openFile", "multiSelections"],
-      filters: [
-        { name: "3D models", extensions: pickerExtensions() },
-        { name: "All files", extensions: ["*"] },
-      ],
+  // The same Content-Security-Policy the server sends, applied at the Electron
+  // layer as well: a response that somehow reaches the window without passing
+  // through Express (an error page, a devtools-injected resource) is covered
+  // too, and the policy is stated from the one exported string rather than
+  // written out a second time.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [CSP_STRING],
+      },
     });
-    if (res.canceled || res.filePaths.length === 0) return [];
-    return acceptIncoming(res.filePaths);
   });
 
-  ipcMain.handle(IPC.uploadFiles, async (_e, paths: string[]) => {
-    return acceptIncoming(Array.isArray(paths) ? paths : []);
+  // BEFORE loadURL, and deliberately not in the URL: a token in a query string
+  // ends up in the window title, in history, and in any error report that
+  // echoes the address. httpOnly keeps it out of reach of the page's own
+  // JavaScript, so an XSS in the client cannot read it back out.
+  await session.defaultSession.cookies.set({
+    url: serverUrl,
+    name: "slicely_desktop",
+    value: desktopToken,
+    httpOnly: true,
+    sameSite: "strict",
   });
 
-  // Renderer asks the window to grow/shrink to fit its content.
-  ipcMain.on(IPC.resizeWindow, (_e, height: number) => {
-    if (!win) return;
-    const clamped = Math.max(
-      WIN_MIN_HEIGHT,
-      Math.min(Math.round(height), WIN_MAX_HEIGHT),
+  createWindow(serverUrl);
+}
+
+app.whenReady().then(async () => {
+  try {
+    await boot();
+  } catch (err) {
+    // Nothing useful can happen without the server: no window, no UI. Say so
+    // plainly and quit, rather than showing an empty frame forever.
+    dialog.showErrorBox(
+      "Slicely couldn't start",
+      `The local Slicely server failed to start.\n\n${(err as Error).message ?? String(err)}`,
     );
-    const [w] = win.getSize();
-    win.setSize(w, clamped, false);
-  });
-
-  // Printers, sourcing, and jobs live in their own module.
-  registerV2Ipc(() => win);
-}
-
-// Poll PrusaSlicer status and push to the renderer only when it changes, so
-// the UI's status pill reflects the user opening/closing PrusaSlicer live.
-let lastStatusKey = "";
-let statusTimer: ReturnType<typeof setInterval> | null = null;
-
-function startStatusPolling(): void {
-  const tick = async () => {
-    if (!win) return;
-    try {
-      const status = await getStatus();
-      const key = `${status.installed}|${status.running}|${status.version ?? ""}`;
-      if (key !== lastStatusKey) {
-        lastStatusKey = key;
-        emitToRenderer({ type: "status", status });
-      }
-    } catch {
-      /* transient; try again next tick */
-    }
-  };
-  void tick();
-  statusTimer = setInterval(tick, 4000);
-}
-
-app.whenReady().then(() => {
-  registerIpc();
-  createWindow();
-  startStatusPolling();
-  // Live printer state for the titlebar pill and the manage panel.
-  startPrinterPolling(() => win);
+    app.quit();
+    return;
+  }
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0 && serverUrl) createWindow(serverUrl);
   });
 });
 
 app.on("before-quit", () => {
-  if (statusTimer) clearInterval(statusTimer);
-  stopPrinterPolling();
+  store?.stopSweep();
 });
 
 app.on("window-all-closed", () => {
-  // Standard macOS behaviour: quit when all windows close (this is a utility
-  // app, not a background agent).
+  // Standard macOS behaviour for a utility app: quit with the last window
+  // rather than lingering as a background agent (and a listening port).
   app.quit();
 });

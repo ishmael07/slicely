@@ -14,6 +14,7 @@ import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import {
   corsGuard,
@@ -25,6 +26,7 @@ import {
   type RateLimitOptions,
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
+import { desktopTokenGuard } from "./desktop-token";
 import { webStatic } from "./static";
 import { sendError, WireError } from "./errors";
 import { createChatRouter } from "./routes/chat";
@@ -58,6 +60,11 @@ export interface CreateAppOptions {
    *  TESTS ONLY: it lets a test add a printer without a printer (or a network)
    *  on the other end. Never set in production. */
   printerTestOverride?: (printer: ResolvedPrinter) => Promise<PrinterTestResult>;
+  /** The per-launch secret the Electron app requires on every request (desktop
+   *  mode only — see desktop-token.ts). Absent in hosted mode, where the
+   *  session cookie is the identity; present but inert if `SLICELY_MODE` isn't
+   *  `desktop`. */
+  desktopToken?: string;
   /** Narrow (or widen) the rate-limit tiers. Production uses the `LIMITS`
    *  values from spec §2 verbatim; a test overrides a tier so it can prove the
    *  limiter fires in three requests instead of sixty. */
@@ -103,6 +110,9 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   const heavyLimit = tier(LIMITS.heavy, opts.limits?.heavy);
 
   app.use(securityHeaders());
+  // Before the static allow-list, and therefore before ANYTHING is served: in
+  // desktop mode the app shell is as private as the API (desktop-token.ts).
+  if (opts.desktopToken) app.use(desktopTokenGuard(opts.desktopToken));
   app.use(corsGuard());
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
@@ -178,20 +188,50 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   return app;
 }
 
-/** Boot the HTTP server on `SLICELY_PORT` (default 3000). Returns the raw
- *  `http.Server` plus the session store, so callers (and tests) can shut both
- *  down cleanly. */
-export function startServer(port = Number(process.env.SLICELY_PORT) || 3000): {
+export interface StartServerOptions {
+  /** Interface to bind. Hosted leaves it unset (every interface, which is what
+   *  a container wants); the Mac app passes `127.0.0.1` so nothing outside the
+   *  machine can even open a socket. */
+  host?: string;
+  /** TCP port. `0` asks the OS for a free one — what the Mac app does, since
+   *  there is no fixed port it could claim on someone's own machine. */
+  port?: number;
+  /** The per-launch desktop secret (see desktop-token.ts). */
+  desktopToken?: string;
+  /** Inject a store (the Mac app doesn't; tests do). */
+  store?: SessionStore;
+}
+
+/**
+ * Boot the HTTP server and resolve once it is actually listening.
+ *
+ * Async and returning the real `port`/`url` because of `port: 0`: the Electron
+ * app cannot load a window until it knows which port the OS handed out, and
+ * that is only knowable after `listen` completes. Hosted callers get the same
+ * shape with `SLICELY_PORT` (default 3000).
+ */
+export async function startServer(opts: StartServerOptions = {}): Promise<{
   server: Server;
   store: SessionStore;
-} {
-  const store = new SessionStore();
-  const app = createApp({ sessionStore: store });
+  port: number;
+  url: string;
+}> {
+  const store = opts.store ?? new SessionStore();
+  const app = createApp({ sessionStore: store, desktopToken: opts.desktopToken });
   const server = createServer(app);
 
-  server.listen(port, () => {
-    console.log(`Slicely web server listening on :${port}`);
+  const wanted = opts.port ?? (Number(process.env.SLICELY_PORT) || 3000);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    if (opts.host) server.listen(wanted, opts.host, () => resolve());
+    else server.listen(wanted, () => resolve());
   });
+  const port = (server.address() as AddressInfo).port;
+  // A bound-to-everything server has no single hostname, so the URL says
+  // loopback — the only address that is certainly ours to talk to.
+  const urlHost = !opts.host || opts.host === "0.0.0.0" || opts.host === "::" ? "127.0.0.1" : opts.host;
+  const url = `http://${urlHost.includes(":") ? `[${urlHost}]` : urlHost}:${port}`;
+  console.log(`Slicely server listening on ${url}`);
 
   let shuttingDown = false;
   const shutdown = () => {
@@ -203,12 +243,15 @@ export function startServer(port = Number(process.env.SLICELY_PORT) || 3000): {
     // Don't hang forever on a stuck keep-alive connection.
     setTimeout(() => process.exit(1), 5000).unref();
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
-  return { server, store };
+  return { server, store, port, url };
 }
 
 if (require.main === module) {
-  startServer();
+  void startServer().catch((err: unknown) => {
+    console.error("Slicely server failed to start:", err);
+    process.exit(1);
+  });
 }

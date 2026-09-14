@@ -36,8 +36,8 @@ import { basename, join, relative, resolve, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AgentEvent } from "../shared/types";
 import { getConfig } from "../main/config";
-import { isHosted } from "../main/mode";
-import { runInSession, sessionContext } from "../main/session-context";
+import { isDesktop, isHosted } from "../main/mode";
+import { DEFAULT_SESSION_ID, runInSession, sessionContext } from "../main/session-context";
 import { disposeSessionState } from "../main/agent/state";
 import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
@@ -182,6 +182,14 @@ export function isInsideDir(root: string, target: string): boolean {
 // ── Cookie plumbing (no `cookie`/`cookie-parser` dependency is installed, so
 //    this is the small, dependency-free subset Slicely actually needs) ──────
 
+/** One named cookie out of a `Cookie:` header, or `undefined`. Exported
+ *  because the desktop token guard (desktop-token.ts) has to read a cookie
+ *  before any session exists, and two cookie parsers in one server is one
+ *  parser too many. */
+export function readCookie(header: string | undefined, name: string): string | undefined {
+  return parseCookies(header)[name];
+}
+
 function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
@@ -256,6 +264,11 @@ function verify(cookieValue: string, secret: Buffer): string | undefined {
 export interface SessionStoreOptions {
   /** Root directory sessions live under. Default `<workdir>/sessions`. */
   sessionsRoot?: string;
+  /** DESKTOP MODE ONLY: the directory the single desktop session owns.
+   *  Default `getConfig().workdir`, which is what makes the Mac app's files
+   *  land exactly where they always have. Overridable so a test can exercise
+   *  desktop mode without writing into the user's real workdir. */
+  desktopDir?: string;
   /** Directory the cookie-signing secret is persisted under. Default the
    *  global workdir — overridable so tests never touch the real one. */
   secretDir?: string;
@@ -268,6 +281,7 @@ export interface SessionStoreOptions {
 export class SessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly root: string;
+  private readonly desktopDirOverride: string | undefined;
   private readonly secret: Buffer;
   private readonly idleMs: number;
   private readonly fileIdleMs: number;
@@ -276,11 +290,18 @@ export class SessionStore {
   constructor(opts: SessionStoreOptions = {}) {
     this.root = opts.sessionsRoot ?? join(getConfig().workdir, "sessions");
     mkdirSync(this.root, { recursive: true });
+    this.desktopDirOverride = opts.desktopDir;
     this.secret = loadOrCreateSecret(opts.secretDir ?? getConfig().workdir);
     this.idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
     this.fileIdleMs = opts.fileIdleMs ?? DEFAULT_FILE_IDLE_MS;
 
-    const interval = opts.sweepIntervalMs ?? SWEEP_INTERVAL_MS;
+    // NO SWEEPING ON THE DESKTOP. The single desktop session's directory IS the
+    // user's workdir (see `desktopSession`), so the file sweep — which deletes
+    // anything in uploads/downloads/slices older than two hours — would be
+    // deleting the user's own files off their own Mac while they were still
+    // using them. On a shared server those files are scratch; on someone's
+    // laptop they are their models.
+    const interval = isDesktop() ? 0 : opts.sweepIntervalMs ?? SWEEP_INTERVAL_MS;
     if (interval > 0) {
       // Two sweeps on one timer, deliberately different in aggressiveness:
       // records age out in 30 days, their scratch files in 2 hours.
@@ -302,7 +323,11 @@ export class SessionStore {
     const existing = this.lookup(req);
     if (existing) return { session: existing, minted: false };
 
-    const record = this.create();
+    // Desktop: one machine, one user, one workspace — every request resolves to
+    // the same record however it arrived. The cookie is still issued (harmless,
+    // and it keeps the rate limiter keyed on a session rather than an IP), but
+    // it is no longer what decides WHICH workspace answers.
+    const record = isDesktop() ? this.desktopSession() : this.create();
     const cookieValue = `${record.id}.${sign(record.id, this.secret)}`;
     // Hosted: ALWAYS Secure, whatever this particular hop looked like. The
     // deploy is behind TLS termination, so the proxy's last hop is plain http
@@ -324,7 +349,39 @@ export class SessionStore {
    *  `sessionMiddleware` asks first, so the per-IP mint cap can refuse a
    *  request before a workspace directory has been created for it. */
   hasValidSession(req: Request): boolean {
+    // Desktop mode never mints anything: there is exactly one workspace and it
+    // already exists (or is about to, once), so the per-IP mint cap has nothing
+    // to protect and would only be able to lock the user out of their own app.
+    if (isDesktop()) return true;
     return this.lookup(req) !== undefined;
+  }
+
+  /**
+   * The one session the desktop app has.
+   *
+   * Its id is `DEFAULT_SESSION_ID`, not a fresh random one, and its directory is
+   * the workdir itself. Both halves matter:
+   *
+   *  • THE DIRECTORY, because `sessionFile()` resolves against it, so
+   *    `settings.json`, `printers.json`, `jobs.json`, `master.key` and the
+   *    uploads/downloads/slices folders stay at exactly the paths the Electron
+   *    app has always used. An existing install keeps its setup with no
+   *    migration.
+   *  • THE ID, because the ambient-session caches (agent state, settings,
+   *    the decrypted user key, the printer registry) are keyed by session id,
+   *    and main-process code that runs OUTSIDE a request — Electron's own
+   *    startup, the agent's `openExternal` bridge — always resolves to
+   *    `DEFAULT_SESSION_ID`. Giving requests a different id (say "desktop")
+   *    would split the app in two: one settings cache for the window, another
+   *    for everything the main process does, both writing the same file.
+   */
+  desktopSession(): SessionRecord {
+    const existing = this.sessions.get(DEFAULT_SESSION_ID);
+    if (existing) {
+      existing.lastActiveAt = Date.now();
+      return existing;
+    }
+    return this.materialize(DEFAULT_SESSION_ID, this.desktopDirOverride ?? getConfig().workdir);
   }
 
   /** The live session `req`'s cookie proves ownership of, if any. Touches
@@ -343,7 +400,13 @@ export class SessionStore {
 
   private create(): SessionRecord {
     const id = randomBytes(16).toString("hex");
-    const dir = join(this.root, id);
+    return this.materialize(id, join(this.root, id));
+  }
+
+  /** Build (and register) the record for `id` rooted at `dir`, creating the
+   *  workspace directories. Shared by the per-visitor `create()` and the single
+   *  `desktopSession()`, which differ only in what those two arguments are. */
+  private materialize(id: string, dir: string): SessionRecord {
     const uploadsDir = join(dir, "uploads");
     const downloadsDir = join(dir, "downloads");
     const slicesDir = join(dir, "slices");
@@ -374,6 +437,9 @@ export class SessionStore {
    *  workspace so the server's disk doesn't grow forever. Best-effort —
    *  a failed delete just gets retried on the next sweep. */
   async sweep(): Promise<number> {
+    // See the constructor: the desktop session is the user's own workdir and is
+    // never evicted, whether the timer or a caller asks.
+    if (isDesktop()) return 0;
     const cutoff = Date.now() - this.idleMs;
     const toEvict = [...this.sessions.values()].filter((s) => s.lastActiveAt < cutoff);
     for (const s of toEvict) {
@@ -406,6 +472,7 @@ export class SessionStore {
    * left for the next sweep. Returns how many entries were removed.
    */
   async sweepFiles(): Promise<number> {
+    if (isDesktop()) return 0;
     const cutoff = Date.now() - this.fileIdleMs;
     let removed = 0;
     for (const session of this.sessions.values()) {
@@ -454,6 +521,25 @@ export class SessionStore {
   async destroy(id: string): Promise<void> {
     const s = this.sessions.get(id);
     if (!s) return;
+
+    // DESKTOP: the session's directory is `app.getPath("userData")` — Electron's
+    // own cookie jar, cache and local storage live in there, next to the user's
+    // models. "Delete my data" must therefore delete DATA, not the folder: the
+    // stored Anthropic key, the conversations, and the files. Configuration the
+    // app needs to keep working (settings.json, printers.json, master.key,
+    // .session-secret) stays, and the record itself lives on — there is only
+    // ever one of it.
+    if (isDesktop()) {
+      forgetSession(s);
+      s.gcodeFiles.clear();
+      s.activeModelPaths = [];
+      s.jobIds.clear();
+      s.agent = undefined;
+      s.activeChatId = undefined;
+      await clearPersonalData(s);
+      return;
+    }
+
     this.sessions.delete(id);
     forgetSession(s);
     await rm(s.dir, { recursive: true, force: true }).catch(() => undefined);
@@ -461,6 +547,30 @@ export class SessionStore {
 
   stopSweep(): void {
     if (this.timer) clearInterval(this.timer);
+  }
+}
+
+/**
+ * Everything "delete my data" removes when the session's directory cannot
+ * itself be deleted (desktop mode — see `destroy`): the files the user brought
+ * in or produced, the encrypted API key, and the chat history. Each is removed
+ * by name, so nothing outside this list can go with it by accident.
+ */
+async function clearPersonalData(session: SessionRecord): Promise<void> {
+  for (const key of SCRATCH_DIRS) {
+    const dir = session[key];
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      continue; // never created, or already gone
+    }
+    for (const entry of entries) {
+      await rm(join(dir, entry), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  for (const name of ["secrets.json", "chats"]) {
+    await rm(join(session.dir, name), { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
