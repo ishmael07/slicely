@@ -12,11 +12,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfig, resetConfigForTests } from "../config";
-import { isInsideSessionWorkspace, runInSession, sessionContext } from "../session-context";
+import {
+  DEFAULT_SESSION_ID,
+  isInsideSessionWorkspace,
+  runInSession,
+  sessionContext,
+} from "../session-context";
+// The same hook printers/util.ts re-exports; both guards now share one root.
+import { setVolumesRootForTests } from "../paths";
 import { sessionState } from "./state";
 import { resolvePathForTests } from "./tools";
 import { assertWorkspacePath, executeV2Tool } from "./tools-v2";
@@ -43,7 +50,11 @@ async function withMode<T>(mode: "hosted" | "desktop", fn: () => T | Promise<T>)
 /** Two session workspaces side by side, exactly as the hosted server lays them
  *  out (`<workdir>/sessions/<id>`), plus a directory outside both. */
 function workspaces(): { root: string; dirA: string; dirB: string; outside: string; cleanup: () => void } {
-  const root = mkdtempSync(join(tmpdir(), "slicely-workspace-"));
+  // realpathSync'd up front: tmpdir() sits behind macOS's own symlinks
+  // (/var -> /private/var), and the guards answer with the REAL path, so an
+  // unresolved root would make every "returns the path unchanged" assertion
+  // compare two spellings of the same file and fail for the wrong reason.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "slicely-workspace-")));
   const dirA = join(root, "sessions", "aaaa");
   const dirB = join(root, "sessions", "bbbb");
   const outside = join(root, "outside");
@@ -172,6 +183,152 @@ test("the v2 tools that take a path refuse one outside the workspace", async () 
       });
     });
   } finally {
+    cleanup();
+  }
+});
+
+test("the guard hands back the path it actually checked, symlinks resolved", async () => {
+  // A symlink INSIDE the workspace pointing at another file inside it is
+  // allowed — but the caller must open the file that was checked, not re-do
+  // the resolution itself at open() time.
+  const { dirA, cleanup } = workspaces();
+  try {
+    const real = join(dirA, "uploads", "x.stl");
+    const alias = join(dirA, "uploads", "alias.stl");
+    symlinkSync(real, alias);
+    await withMode("hosted", () =>
+      runInSession(sessionContext("aaaa", dirA), () => {
+        assert.equal(assertWorkspacePath(alias), real);
+      }),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("hosted: plan_job's REMEMBERED parts are checked, not trusted for being remembered", async () => {
+  // plan_job with no `parts` falls back to whatever split_model last recorded.
+  // That list is still just strings on a session record, so it goes through the
+  // same guard as an argument the model typed this turn.
+  const { dirA, outside, cleanup } = workspaces();
+  try {
+    await withMode("hosted", () =>
+      runInSession(sessionContext("plan-fallback", dirA), async () => {
+        sessionState.lastModelParts = [join(dirA, "uploads", "x.stl"), join(outside, "secret.stl")];
+        await assert.rejects(() => executeV2Tool("plan_job", {}, () => {}), isOutsideWorkspace);
+      }),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("hosted: the DEFAULT session is not a workspace — it fails closed, not open", async () => {
+  // `currentSession()` falls back to the default session for anything running
+  // outside runInSession, and the default session's directory is the WHOLE
+  // workdir: it contains every visitor's `sessions/<id>` and the
+  // `.session-secret` that signs their cookies. A hosted code path that forgot
+  // to establish a session must therefore reach nothing at all, rather than
+  // quietly being handed the lot.
+  const { root, dirA, cleanup } = workspaces();
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  process.env.SLICELY_WORKDIR = root;
+  resetConfigForTests();
+  try {
+    await withMode("hosted", () => {
+      const workdir = getConfig().workdir;
+
+      // No ambient session at all.
+      assert.equal(isInsideSessionWorkspace(join(workdir, ".session-secret")), false);
+      assert.equal(isInsideSessionWorkspace(join(workdir, "jobs.json")), false);
+      assert.equal(isInsideSessionWorkspace(join(dirA, "uploads", "x.stl")), false);
+      assert.throws(() => assertWorkspacePath(join(dirA, "uploads", "x.stl")), isOutsideWorkspace);
+
+      // And the same when the default session is established explicitly.
+      runInSession(sessionContext(DEFAULT_SESSION_ID), () => {
+        assert.equal(isInsideSessionWorkspace(join(workdir, ".session-secret")), false);
+        assert.equal(isInsideSessionWorkspace(join(dirA, "uploads", "x.stl")), false);
+      });
+
+      // A REAL session still works — this is a fail-closed default, not a ban.
+      runInSession(sessionContext("aaaa", dirA), () => {
+        assert.equal(isInsideSessionWorkspace(join(dirA, "uploads", "x.stl")), true);
+      });
+    });
+  } finally {
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    resetConfigForTests();
+    cleanup();
+  }
+});
+
+test("desktop: your own files are yours, but hidden folders are still not models", async () => {
+  // `$HOME` is a workspace root on the desktop, which would otherwise make
+  // `~/.ssh/id_rsa` a file the model can ask to have inspected or sliced — and
+  // the desktop's default session directory IS the workdir, where the
+  // cookie-signing secret lives.
+  const { dirA, cleanup } = workspaces();
+  try {
+    await withMode("desktop", () =>
+      runInSession(sessionContext("desktop-hidden", dirA), () => {
+        assert.equal(isInsideSessionWorkspace(join(homedir(), "Documents", "bracket.stl")), true);
+        assert.equal(isInsideSessionWorkspace(join(dirA, "uploads", "x.stl")), true);
+
+        for (const hidden of [
+          join(homedir(), ".ssh", "id_rsa"),
+          join(homedir(), ".aws", "credentials"),
+          join(homedir(), ".config", "anything"),
+          join(homedir(), "Documents", ".hidden", "x.stl"),
+          join(dirA, ".session-secret"),
+        ]) {
+          assert.equal(isInsideSessionWorkspace(hidden), false, `must be unreachable: ${hidden}`);
+        }
+        assert.throws(() => assertWorkspacePath(join(homedir(), ".ssh", "id_rsa")), isOutsideWorkspace);
+      }),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("desktop: a mounted drive is part of the workspace; a symlink out of one is not", async () => {
+  // An SD card or external SSD is where a lot of people keep their models, and
+  // /Volumes is where macOS mounts them. Containment is decided on the REAL
+  // path, exactly as assertAllowedOutputDir decides it, so `/Volumes/Macintosh
+  // HD/etc/passwd` — a symlink to `/` on every real Mac — cannot ride in.
+  const { dirA, outside, cleanup } = workspaces();
+  const volumes = realpathSync(mkdtempSync(join(tmpdir(), "slicely-fake-volumes-")));
+  setVolumesRootForTests(volumes);
+  try {
+    const card = join(volumes, "SDCARD");
+    mkdirSync(card, { recursive: true });
+    writeFileSync(join(card, "part.stl"), "solid p\nendsolid p\n");
+    symlinkSync(outside, join(volumes, "escape"));
+
+    await withMode("desktop", () =>
+      runInSession(sessionContext("desktop-volumes", dirA), () => {
+        assert.equal(isInsideSessionWorkspace(join(card, "part.stl")), true);
+        assert.equal(assertWorkspacePath(join(card, "part.stl")), join(card, "part.stl"));
+        // Filesystem bookkeeping on the card is hidden, same rule as $HOME.
+        assert.equal(isInsideSessionWorkspace(join(card, ".Trashes", "part.stl")), false);
+        // The "Macintosh HD" case: named under /Volumes, actually elsewhere.
+        assert.equal(isInsideSessionWorkspace(join(volumes, "escape", "secret.stl")), false);
+      }),
+    );
+
+    await withMode("hosted", () =>
+      runInSession(sessionContext("hosted-volumes", dirA), () => {
+        assert.equal(
+          isInsideSessionWorkspace(join(card, "part.stl")),
+          false,
+          "a shared server has no SD card of yours to read",
+        );
+      }),
+    );
+  } finally {
+    setVolumesRootForTests(undefined);
+    rmSync(volumes, { recursive: true, force: true });
     cleanup();
   }
 });

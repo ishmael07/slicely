@@ -10,6 +10,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { isHosted } from "../mode";
+import { hasHiddenSegment, volumesRoot } from "../paths";
 import { isLocalOrLinkLocalAddress, isPrivateAddress, normalizeIp } from "../sourcing/net";
 import { WireError } from "../../server/errors";
 
@@ -281,16 +282,13 @@ export function safeJobName(name: string | undefined, fallback: string): string 
  *  `/Volumes/Macintosh HD` is itself a symlink to `/` on every real Mac — a
  *  fact this module's containment check must survive — which is exactly why
  *  tests need a fake root of their own rather than pointing at the real one.
- *  A `let` (not `const`) so `setVolumesRootForTests` below can swap it. */
-let VOLUMES_ROOT = `${sep}Volumes`;
-
-/** Tests only: point the /Volumes containment check at a fake root (e.g. a
- *  temp dir standing in for the real, unwritable-in-CI /Volumes) so symlink
- *  and traversal scenarios can be built without touching real hardware. Pass
- *  `undefined` to restore the real `/Volumes`. */
-export function setVolumesRootForTests(root: string | undefined): void {
-  VOLUMES_ROOT = root ?? `${sep}Volumes`;
-}
+ *
+ *  Both the root and the dot-segment rule below now live in main/paths.ts,
+ *  because the agent's workspace boundary (session-context.ts) has to apply
+ *  the SAME two rules and a second copy of either one would drift.
+ *  `setVolumesRootForTests` is re-exported so the existing tests — and the
+ *  workspace-boundary tests — swap one shared root, not two. */
+export { setVolumesRootForTests } from "../paths";
 
 /**
  * Assert that `dir` is somewhere a person could plausibly have chosen to save a
@@ -328,7 +326,7 @@ export function assertAllowedOutputDir(dir: string): string {
   const target = resolvePath(dir);
   const rel = relative(home, target);
   const insideHome = !rel.startsWith("..") && !isAbsolute(rel);
-  const insideVolumes = target.startsWith(`${VOLUMES_ROOT}${sep}`);
+  const insideVolumes = target.startsWith(`${volumesRoot()}${sep}`);
 
   if (!insideHome && !insideVolumes) {
     throw new WireError(
@@ -338,8 +336,7 @@ export function assertAllowedOutputDir(dir: string): string {
     );
   }
 
-  const relSegments = (insideHome ? rel : relative(VOLUMES_ROOT, target)).split(sep);
-  if (relSegments.some((segment) => segment.startsWith("."))) {
+  if (hasHiddenSegment(insideHome ? rel : relative(volumesRoot(), target))) {
     throw new WireError(
       403,
       "That's a hidden system folder. Pick somewhere like your Desktop or a folder in Documents.",
@@ -360,7 +357,8 @@ export function assertAllowedOutputDir(dir: string): string {
     } catch {
       throw new WireError(403, "That drive isn't connected. Plug it in and try again.", "not_in_workspace");
     }
-    const resolvedInsideVolumes = resolved === VOLUMES_ROOT || resolved.startsWith(`${VOLUMES_ROOT}${sep}`);
+    const resolvedInsideVolumes =
+      resolved === volumesRoot() || resolved.startsWith(`${volumesRoot()}${sep}`);
     let isDir = false;
     if (resolvedInsideVolumes) {
       try {

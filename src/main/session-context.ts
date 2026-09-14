@@ -19,6 +19,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { getConfig } from "./config";
 import { isDesktop } from "./mode";
+import { hasHiddenSegment, volumesRoot } from "./paths";
 
 /** The single implicit session used by Electron and by any code outside a
  *  request. Its files live directly in the workdir, exactly where v1 put them,
@@ -134,9 +135,12 @@ function ensured(dir: string): string {
 //   • HOSTED — only this session's own directory. The server's disk is
 //     nobody's personal computer; there is no file on it a visitor is
 //     entitled to beyond the ones they put there.
-//   • DESKTOP — the session directory plus the app's downloads folder and the
-//     user's home directory. It is their machine and their files; refusing
-//     `~/Desktop/bracket.stl` there would be a bug, not a protection.
+//   • DESKTOP — the session directory plus the app's downloads folder, the
+//     user's home directory, and `/Volumes` (an SD card or external drive). It
+//     is their machine and their files; refusing `~/Desktop/bracket.stl` there
+//     would be a bug, not a protection. Hidden components are still refused,
+//     though: `~/.ssh/id_rsa` is not a model the user wants sliced, and
+//     `<workdir>/.session-secret` signs every session cookie.
 //
 // Containment is decided on the REAL path (symlinks resolved), not the
 // lexically normalised one. A writer inside the workspace — an extracted zip
@@ -175,11 +179,28 @@ function realPath(p: string): string {
   }
 }
 
-/** The directories the ambient session may read and write. Hosted: its own
- *  workspace, nothing else. Desktop: also the app's downloads folder and the
- *  user's home directory, because those files are the user's own. */
+/**
+ * The directories the ambient session may read and write.
+ *
+ * HOSTED: its own workspace, nothing else — and NOTHING AT ALL for the default
+ * session. `currentSession()` falls back to the default session whenever it is
+ * called outside `runInSession`, and the default session's directory is the
+ * whole workdir, which CONTAINS `sessions/*` and `.session-secret`. So a code
+ * path that forgot to establish a session would not have failed; it would have
+ * been handed every visitor's workspace and the cookie-signing key. On a shared
+ * server there is no legitimate caller in that position (sessionMiddleware
+ * wraps every request), so the empty list is the honest answer: every path is
+ * rejected, loudly, instead of every path being allowed, silently.
+ *
+ * DESKTOP: also the app's downloads folder, the user's home directory, and
+ * `/Volumes` (an SD card or external drive is where prints often live), because
+ * those files are the user's own. Dot-prefixed components are still refused
+ * below — see `hasHiddenSegment`.
+ */
 function workspaceRoots(): string[] {
-  const roots = [currentSession().dir];
+  const session = currentSession();
+  if (!isDesktop() && session.id === DEFAULT_SESSION_ID) return [];
+  const roots = [session.dir];
   if (isDesktop()) {
     try {
       roots.push(getConfig().downloadsDir);
@@ -187,19 +208,51 @@ function workspaceRoots(): string[] {
       /* config unavailable — the session directory still applies */
     }
     roots.push(homedir());
+    // A mounted drive is reached the same way assertAllowedOutputDir reaches
+    // it: name it as a root and let the realpath containment below do the
+    // work. `/Volumes/Macintosh HD/etc/passwd` therefore fails, because that
+    // path's REAL location is `/etc/passwd`, which is under no root at all.
+    roots.push(volumesRoot());
   }
   return roots.filter((r) => typeof r === "string" && r.length > 0);
 }
 
 /**
+ * The real path of `p` when the ambient session is allowed to touch it, or
+ * `undefined` when it isn't.
+ *
+ * Returns the REAL path rather than the caller's string so a caller opens the
+ * very file that was checked. `resolve(p)` and `realPath(p)` can name the same
+ * file through different routes (a symlink inside the workspace pointing at
+ * another file inside it; `/var` vs `/private/var` on macOS), and handing back
+ * the unresolved one leaves a second, unchecked resolution to happen later at
+ * open() time.
+ *
+ * Note this answers a question about a PATH, not about permission to perform an
+ * operation: callers still decide what they do with a contained path.
+ */
+export function resolveInsideSessionWorkspace(p: string): string | undefined {
+  if (typeof p !== "string" || p.trim().length === 0) return undefined;
+  const target = realPath(p);
+  const desktop = isDesktop();
+  for (const root of workspaceRoots()) {
+    const realRoot = realPath(root);
+    if (!isInsideDir(realRoot, target)) continue;
+    // The user's own machine is where the hidden-folder rule earns its keep:
+    // `$HOME` is a root there, and `$HOME/.ssh/id_rsa` is inside it. The
+    // default session's directory IS the workdir on the desktop, so this is
+    // also what keeps `.session-secret` out of the model's reach.
+    if (desktop && hasHiddenSegment(relative(realRoot, target))) continue;
+    return target;
+  }
+  return undefined;
+}
+
+/**
  * True when `p` names a file the ambient session is allowed to touch.
  *
- * See the block comment above for what counts as allowed in each mode. Note
- * that this answers a question about a PATH, not about permission to perform
- * an operation: callers still decide what they do with a contained path.
+ * See the block comment above for what counts as allowed in each mode.
  */
 export function isInsideSessionWorkspace(p: string): boolean {
-  if (typeof p !== "string" || p.trim().length === 0) return false;
-  const target = realPath(p);
-  return workspaceRoots().some((root) => isInsideDir(realPath(root), target));
+  return resolveInsideSessionWorkspace(p) !== undefined;
 }

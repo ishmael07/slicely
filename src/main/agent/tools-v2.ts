@@ -40,8 +40,7 @@ import {
 import { getPreferences, printerGeometry } from "../settings";
 import { sessionState } from "./state";
 import { colourRequest } from "./colourRequest";
-import { resolve } from "node:path";
-import { isInsideSessionWorkspace } from "../session-context";
+import { resolveInsideSessionWorkspace } from "../session-context";
 import { WireError } from "../../server/errors";
 
 type Emit = (event: AgentEvent) => void;
@@ -410,10 +409,15 @@ function activeGeometry(): {
  * session directory and the server's own disk; on the desktop it still means
  * the system, while leaving the user's own files alone. The message names no
  * path, so a refusal can't be used to map what is on disk.
+ *
+ * Returns the path with symlinks resolved — the exact path containment was
+ * decided on. Handing back `resolve(p)` instead would leave the caller's open()
+ * to do its own, second resolution, so the file that was checked and the file
+ * that is read would only usually be the same one.
  */
 export function assertWorkspacePath(p: string): string {
-  const target = resolve(p);
-  if (!isInsideSessionWorkspace(target)) {
+  const target = resolveInsideSessionWorkspace(p);
+  if (target === undefined) {
     throw new WireError(
       400,
       "That file isn't in your workspace. Import or upload it first.",
@@ -624,7 +628,14 @@ export async function executeV2Tool(
             copies: typeof p.copies === "number" ? p.copies : 1,
             colourHex: p.colourHex ? String(p.colourHex) : undefined,
           }))
-        : sessionState.lastModelParts.map((path) => ({ path, copies: 1 }));
+        // A remembered path is still only a path. `lastModelParts` is written by
+        // split_model, whose own source was checked — but a session survives a
+        // re-import, a settings change and (in Electron) a mode flip, so the
+        // remembered list is re-checked rather than grandfathered in.
+        : sessionState.lastModelParts.map((path) => ({
+            path: assertWorkspacePath(path),
+            copies: 1,
+          }));
 
       if (!parts.length) {
         return "No parts to plan. Import or upload a model first.";
