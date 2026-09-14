@@ -6,8 +6,8 @@
  * with no JavaScript at all; this file is what you edit. Keep the two in step —
  * main.js warns in the console when they disagree, naming both values.
  *
- * Before launch, the owner fills APP_URL in — it is a placeholder until the Fly
- * app exists. Change it here AND in the href attributes in index.html.
+ * APP_URL is the Fly deployment. If the app ever moves (a custom domain, say),
+ * change it here AND in the href attributes in index.html.
  *
  * CONTACT_EMAIL has no consumer on this page and is not meant to grow one: the
  * only place the site names an address is terms.html and privacy.html, and those

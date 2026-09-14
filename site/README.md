@@ -21,6 +21,15 @@ site/
 └── README.md         # you are here
 ```
 
+## Where it runs
+
+GitHub Pages serves this folder at https://ishmael07.github.io/slicely/ on every push to
+`slicely-v3` or `main` that touches `site/` (workflow under `.github/`). It lives under the
+`/slicely/` sub-path, so every link in here is relative — never `href="/..."`.
+
+The stylesheet is linked as `styles.css?v=N`. Bump `N` in all three HTML files whenever
+`styles.css` changes, or browsers will keep applying the old rules to the new markup.
+
 ## Run it locally
 
 ```bash
@@ -34,8 +43,8 @@ pages' relative links behave more like production over HTTP.
 
 ## Before you deploy — the checklist
 
-1. **`APP_URL`** — the deployed web app, which ships as the placeholder
-   `https://app.slicely.example`. It lives in **two** places and both must change:
+1. **`APP_URL`** — the deployed web app, currently `https://slicely.fly.dev`. It lives
+   in **two** places and both must change together if the app ever moves:
    `config.js`, and the `href` attributes in `index.html`. Every CTA carries both, on
    purpose: the `href` is what makes the link work and be keyboard-focusable with no
    JavaScript, and `config.js` is what `main.js` applies over the top at runtime. If the
