@@ -76,29 +76,45 @@ That's deliberate. Starting a print on a bed that still holds the last part wrec
 
 ## Bring your own key
 
-Chat runs on **your own Anthropic API key**. Nobody has to trust an operator with
-their conversations, and nobody gets a bill for somebody else's prints.
+Chat runs on **your own Anthropic or OpenAI API key** — either one on its own is
+enough, and you can connect both and switch models freely. Nobody has to trust an
+operator with their conversations, and nobody gets a bill for somebody else's
+prints.
 
-- **Get one** at [console.anthropic.com](https://console.anthropic.com) → *API keys*.
-  Make it a personal key and give it an expiry. Paste it into Slicely once, in
-  Settings → *AI* (or the card in an empty chat).
-- **A Claude Pro or Max subscription does not work here.** Those pay for
-  claude.ai, not for API calls, and Slicely will not accept a `claude.ai` login or
-  a `setup-token`. An API key (`sk-ant-…`) with credit on the account is the only
-  thing that works.
-- **Your account is billed for your own chat**, at Anthropic's usual rates. Slicely
-  adds nothing and takes nothing.
-- **Where the key lives:** encrypted at rest with AES-256-GCM under
-  `SLICELY_MASTER_KEY`, in your session's own `secrets.json` (mode `0600`). It is
-  never logged, never in any HTTP response, and never in an error message — the
-  client is only ever told `{ hasKey, keyHint }`, e.g. `…a1b2`. It leaves the
-  server only in a request to Anthropic.
-- **Removing it:** Settings → *AI* → *Disconnect*, or *Delete my data*, which
-  takes the whole session — chats, models, slices and key — with it.
-- **Running it for yourself?** The `ANTHROPIC_API_KEY` in your own environment is
-  used as a fallback in desktop mode, and on a server only if you deliberately set
-  `SLICELY_ALLOW_OPERATOR_KEY=1`. Read that row in the table below before you do:
-  it means every visitor's chat is billed to you.
+- **Get an Anthropic key** at [console.anthropic.com](https://console.anthropic.com)
+  → *API keys*, or an **OpenAI key** at
+  [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Make it a
+  personal key and give it an expiry. Paste it into Slicely once, in Settings →
+  *AI* (or the cards in an empty chat).
+- **A subscription does not work here — either provider's.** Claude Pro/Max pays
+  for claude.ai and ChatGPT Plus/Pro pays for chatgpt.com; neither pays for API
+  calls, and both providers allow subscription sign-in only in their own apps.
+  Slicely will not accept a `claude.ai` login, a `setup-token`, or a ChatGPT
+  sign-in. An API key (`sk-ant-api…` or `sk-…`) with credit on the account is the
+  only thing that works. "Sign in with ChatGPT" is not coming: the credential
+  behind it is loopback-only and refuses a custom system prompt, which is the whole
+  of what Slicely is.
+- **Models:** Opus 4.8 / Sonnet 4.6 / Haiku 4.5 on Anthropic; GPT-5.6 Terra
+  (cheapest per useful turn), GPT-5.6 Luna and GPT-6 Astra on OpenAI. The picker
+  groups them by provider and greys out the ones whose key you haven't connected.
+  A conversation cannot move between providers, so switching to the other one
+  starts a fresh chat and says so.
+- **Your account is billed for your own chat**, at that provider's usual rates.
+  Slicely adds nothing and takes nothing.
+- **Where the keys live:** encrypted at rest with AES-256-GCM under
+  `SLICELY_MASTER_KEY`, in your session's own `secrets.json` (mode `0600`), one
+  entry per provider. Neither is logged, in any HTTP response, or in an error
+  message — the client is only ever told `{ hasKey, keyHint }` per provider, e.g.
+  `…a1b2`. A key leaves the server only in a request to the provider it belongs to.
+  Requests to OpenAI set `store: false`, so OpenAI keeps no copy of your
+  conversation either.
+- **Removing one:** Settings → *AI* → *Remove* on that provider, or *Delete my
+  data*, which takes the whole session — chats, models, slices and both keys —
+  with it.
+- **Running it for yourself?** The `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in your
+  own environment are used as a fallback in desktop mode, and on a server only if
+  you deliberately set `SLICELY_ALLOW_OPERATOR_KEY=1`. Read that row in the table
+  below before you do: it means every visitor's chat is billed to you.
 
 ---
 
@@ -143,8 +159,9 @@ Type what you want, or paste a link:
 | --- | --- | --- | --- |
 | `SLICELY_MODE` | | `hosted` | `hosted` = a shared server anyone can reach (`__Host-` session cookie, LAN discovery and LAN-only printer transports refused, no filesystem access outside a session's own workspace). `desktop` = one person's own machine; Electron sets it. `npm run serve` and Docker default to `hosted`. |
 | `ANTHROPIC_API_KEY` | | — | **Yours**, not your visitors'. Read only in desktop mode, or on a hosted server with `SLICELY_ALLOW_OPERATOR_KEY=1`. Otherwise each user connects their own key in Settings and is billed for their own chat. |
-| `SLICELY_ALLOW_OPERATOR_KEY` | | off | Set to `1` to let a hosted server fall back to your `ANTHROPIC_API_KEY`. **Every visitor's chat is then billed to you**, so only for a private deployment or one you intend to pay for. |
-| `SLICELY_MASTER_KEY` | ✅ hosted | — | Encrypts every session's stored Anthropic key at rest (AES-256-GCM). 32 bytes base64: `openssl rand -base64 32`. Rotating it makes stored keys unreadable, so users simply reconnect. Desktop derives one into `userData` instead. |
+| `OPENAI_API_KEY` | | — | The same thing for OpenAI, under the same one gate. A key sitting in your environment for some other tool is **not** spent on visitors unless you set the flag below. |
+| `SLICELY_ALLOW_OPERATOR_KEY` | | off | Set to `1` to let a hosted server fall back to your own `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. **Every visitor's chat is then billed to you**, so only for a private deployment or one you intend to pay for. |
+| `SLICELY_MASTER_KEY` | ✅ hosted | — | Encrypts every session's stored provider keys at rest (AES-256-GCM). 32 bytes base64: `openssl rand -base64 32`. Rotating it makes stored keys unreadable, so users simply reconnect. Desktop derives one into `userData` instead. |
 | `SLICELY_PORT` | | `3000` | Web server port. |
 | `SLICELY_TRUST_PROXY` | | `0` | Set to `1` **only** behind a reverse proxy you control (Fly, Render, nginx), which makes `X-Forwarded-For` trusted. Per-IP rate limits and the session-mint cap depend on that address being honest, so setting it without a proxy lets any caller hand itself a fresh bucket per request. |
 | `SLICELY_MAX_SLICES` | | `2` | How many PrusaSlicer processes may run at once; the rest queue, and a caller who arrives behind a full queue is told "busy" rather than held open. Each slice saturates a core. |

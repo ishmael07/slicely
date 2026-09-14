@@ -10,7 +10,7 @@ import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "
 import type { SourceAvailability } from "../shared/sourcing";
 import { del, errorMessage, getJson, patchJson, resetSession } from "./api.js";
 import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
-import { configLoaded, renderAboutSection, renderAiSection } from "./onboarding.js";
+import { configLoaded, providerLabel, providersWithKeys, renderAboutSection, renderAiSection } from "./onboarding.js";
 
 export interface SettingsDeps {
   /** Report a failed change where the user will see it. */
@@ -101,9 +101,24 @@ function effortDisabled(lvl: EffortLevel, m: SettingsState["models"][number] | u
 function openModelMenu(): void {
   if (!settings) return;
   const { current, models } = settings;
+  // GROUPED BY PROVIDER, and a provider with no key has its models disabled with
+  // the missing step as the hint. Letting someone pick a model they cannot pay
+  // for would answer with a 409 from PATCH /api/settings and leave them to work
+  // out which of two keys was missing.
+  const connected = new Set(providersWithKeys());
   menu(
     modelTriggerBtn,
-    models.map((m) => ({ id: m.id, label: m.label, hint: m.blurb, active: m.id === current.model })),
+    models.map((m) => {
+      const usable = connected.has(m.provider);
+      return {
+        id: m.id,
+        label: m.label,
+        group: providerLabel(m.provider),
+        hint: usable ? m.blurb : `Connect an ${providerLabel(m.provider)} key in Settings → AI`,
+        disabled: !usable,
+        active: m.id === current.model && usable,
+      };
+    }),
     (id) => void changeSettings({ model: id }),
   );
 }

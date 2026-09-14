@@ -1588,6 +1588,19 @@ details.thinking summary::-webkit-details-marker {
     transform: translateY(5px) scale(0.97);
   }
 }
+/* A provider's name above its models. Presentational: the picker is grouped so
+   six models from two accounts read as two short lists, not one long one. */
+.menu-group {
+  padding: 7px 10px 3px;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.menu-group:not(:first-child) {
+  margin-top: 3px;
+  border-top: 0.5px solid var(--border);
+}
 .menu-item {
   display: flex;
   align-items: center;
@@ -2176,6 +2189,40 @@ button.menu-item:disabled {
    component both places, deliberately wordy: what it costs, who bills it, and
    why a Pro subscription won't do are all things a user should not have to
    discover by failing. */
+/* One card per provider, side by side where there is room and stacked on a
+   phone. Both are shown at once rather than behind a chooser: the answer to
+   "which do I need?" is "whichever account you already have", and a tab hides
+   half of that. */
+.key-block {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  text-align: left;
+}
+.key-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+.key-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.key-provider {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.key-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
 .key-card {
   border: 0.5px solid var(--border-bright);
   background: var(--panel);

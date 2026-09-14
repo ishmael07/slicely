@@ -179,6 +179,10 @@ export interface MenuItem {
   disabled?: boolean;
   /** Drawn with a check — the current choice. */
   active?: boolean;
+  /** Optional heading this item sits under. A heading is drawn once, when the
+   *  group changes — which is what lets the model picker show six models from
+   *  two providers without the reader having to know which is which. */
+  group?: string;
 }
 
 interface OpenMenu {
@@ -216,7 +220,16 @@ export function menu(
   if (labelledBy) el.setAttribute("aria-labelledby", labelledBy);
 
   const buttons: HTMLButtonElement[] = [];
+  let group: string | undefined;
   for (const item of items) {
+    if (item.group && item.group !== group) {
+      group = item.group;
+      const heading = make("div", "menu-group", item.group);
+      // Presentational: the check state already tells a screen reader which item
+      // is chosen, and a heading inside a menu is not a menuitem.
+      heading.setAttribute("role", "presentation");
+      el.appendChild(heading);
+    }
     const btn = make("button", `menu-item${item.active ? " active" : ""}${item.disabled ? " disabled" : ""}`);
     btn.type = "button";
     // `menuitemradio`, not `menuitem`: every menu built here is a single-choice

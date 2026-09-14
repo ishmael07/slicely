@@ -1,23 +1,38 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // onboarding.ts — what a first-time visitor sees, and the one place that knows
-// about the user's Anthropic key.
+// about the user's AI keys.
 //
 // Slicely is bring-your-own-key: the server never has an AI key of its own, so
 // until the user connects one there is nothing to chat with. That is stated
 // plainly rather than discovered by pressing Send and getting an error, and the
-// same card is used in the empty state, in Settings → AI, and in the transcript
-// when a turn comes back with `no_key`.
+// same cards are used in the empty state, in Settings → AI, and in the
+// transcript when a turn comes back with `no_key`.
 //
-// The client only ever sees `{ hasKey, keyHint }` — the key itself goes out in
-// one PUT body and is never read back, never logged, never in a URL.
+// TWO PROVIDERS, ONE CARD EACH. Anthropic and OpenAI are offered side by side
+// and either alone is enough — a user with one key is not a user without a key.
+// Each card carries its own field label, placeholder, console link and refusal
+// message, because the two keys look nothing alike and "that key looks wrong"
+// with no prefix to compare against is not help.
+//
+// The one thing both cards say, up front: A SUBSCRIPTION IS NOT AN API KEY.
+// Claude Pro/Max and ChatGPT Plus are the two things people arrive expecting to
+// use, and neither provider permits it outside its own apps. Said here, once,
+// rather than learned from a 401.
+//
+// The client only ever sees `{ hasKey, keyHint }` per provider — a key itself
+// goes out in one PUT body and is never read back, never logged, never in a URL.
 // ─────────────────────────────────────────────────────────────────────────────
+import type { ProviderId, ProviderInfo } from "../shared/types";
 import { ApiError, del, putJson, ready } from "./api.js";
 import { externalLink, make, toast } from "./ui.js";
 
 export interface AppConfig {
   mode: "hosted" | "desktop";
+  /** Does ANY provider have a key? */
   hasKey: boolean;
+  /** The hint for the provider the chosen model would bill. */
   keyHint?: string;
+  providers: ProviderInfo[];
   multiUser: boolean;
   slicerAvailable: boolean;
   sourceCommit: string;
@@ -25,6 +40,61 @@ export interface AppConfig {
   repoUrl: string;
   termsUrl: string;
   privacyUrl: string;
+}
+
+/**
+ * The per-provider copy the cards are built from.
+ *
+ * Duplicated deliberately from main/agent/provider-*.ts rather than shipped over
+ * the wire: it is static product copy, not state, and /api/config should carry
+ * what this session IS, not the words used to describe it.
+ */
+interface ProviderHelp {
+  id: ProviderId;
+  label: string;
+  keyLabel: string;
+  placeholder: string;
+  consoleUrl: string;
+  consoleLabel: string;
+  /** Where the key comes from, and which subscription will not do. */
+  detail: string;
+  /** The client-side guess when the server sends no message. */
+  formatMessage: string;
+}
+
+const PROVIDER_HELP: ProviderHelp[] = [
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    keyLabel: "Anthropic API key",
+    placeholder: "sk-ant-…",
+    consoleUrl: "https://console.anthropic.com/settings/keys",
+    consoleLabel: "console.anthropic.com",
+    detail:
+      "Create one under Settings → API keys. Claude Pro/Max can't be used — Anthropic allows subscription logins only in its own apps.",
+    formatMessage: "That doesn't look like an Anthropic API key — they start with sk-ant-api.",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    keyLabel: "OpenAI API key",
+    placeholder: "sk-…",
+    consoleUrl: "https://platform.openai.com/api-keys",
+    consoleLabel: "platform.openai.com/api-keys",
+    detail:
+      "Create one under API keys. ChatGPT Plus/Pro can't be used — OpenAI allows subscription sign-in only in its own apps.",
+    formatMessage: "That doesn't look like an OpenAI API key — they start with sk-.",
+  },
+];
+
+function help(id: ProviderId): ProviderHelp {
+  return PROVIDER_HELP.find((p) => p.id === id) ?? PROVIDER_HELP[0];
+}
+
+/** What /api/config said about one provider, or a keyless placeholder for a
+ *  server too old to mention it. */
+function providerState(id: ProviderId): ProviderInfo {
+  return current.providers.find((p) => p.id === id) ?? { id, label: help(id).label, hasKey: false };
 }
 
 /**
@@ -38,6 +108,7 @@ export interface AppConfig {
 const ASSUMED: AppConfig = {
   mode: "desktop",
   hasKey: true,
+  providers: [],
   multiUser: false,
   slicerAvailable: true,
   sourceCommit: "",
@@ -95,68 +166,83 @@ export async function loadConfig(): Promise<AppConfig> {
   return current;
 }
 
-// ── the key card ─────────────────────────────────────────────────────────────
+// ── the key cards ────────────────────────────────────────────────────────────
 
-const KEY_PARAGRAPHS: Array<Array<string | { bold: string }>> = [
+/**
+ * The fine print, said once for both cards — and said BELOW them.
+ *
+ * Three paragraphs above the fields pushed the fields themselves off the first
+ * screen, which is exactly backwards: someone who already has a key wants to
+ * paste it, and someone who doesn't is going to read either way.
+ */
+const KEY_FINE_PRINT: Array<Array<string | { bold: string }>> = [
   [
     { bold: "Use your own AI account." },
-    " Slicely runs on your own Anthropic API key. Usage is billed by Anthropic directly to you at their standard API rates; Slicely never pays for or resells AI usage.",
+    " Usage is billed by that provider directly to you at their standard API rates; Slicely never pays for or resells AI usage. Your key is encrypted on the server, only ever sent to the provider it belongs to, and never shown back to you — we suggest a personal key with an expiry.",
   ],
   [
-    "Paste a key from console.anthropic.com → Settings → API keys. We suggest a personal key with an expiry. Your key is encrypted on the server and only ever sent to Anthropic.",
-  ],
-  [
-    "Claude Pro/Max subscriptions can't be used here — Anthropic allows subscription logins only in its own apps. An API account is separate and pay-as-you-go.",
+    { bold: "A subscription is not an API key." },
+    " Claude Pro/Max and ChatGPT Plus can't be used here: both providers allow subscription logins only in their own apps. An API account is separate and pay-as-you-go.",
   ],
 ];
 
-const FORMAT_MESSAGE = "That doesn't look like an Anthropic API key — they start with sk-ant-.";
-const REJECTED_MESSAGE = "Anthropic rejected that key";
+const REJECTED_MESSAGE = "That key was rejected";
 
 let keyFieldSeq = 0;
 
-/**
- * The "connect your key" card.
- *
- * `note` is the reason it is on screen (e.g. the key was rejected mid-turn), so
- * the same component can introduce itself or explain itself.
- */
-export function buildKeyCard(opts: { note?: string } = {}): HTMLElement {
-  const card = make("div", "key-card");
-  const seq = ++keyFieldSeq;
-  const inputId = `apiKeyInput${seq}`;
-
-  for (const parts of KEY_PARAGRAPHS) {
+/** The fine print, as elements. */
+function finePrint(): HTMLElement[] {
+  return KEY_FINE_PRINT.map((parts) => {
     const p = make("p", "key-copy");
     for (const part of parts) {
       if (typeof part === "string") p.appendChild(document.createTextNode(part));
       else p.appendChild(make("strong", "", part.bold));
     }
-    card.appendChild(p);
-  }
+    return p;
+  });
+}
+
+/**
+ * One provider's card: the field, the console link, and what to do when the
+ * paste is refused.
+ *
+ * `note` is the reason it is on screen (e.g. this provider's key was rejected
+ * mid-turn), so the same component can introduce itself or explain itself.
+ */
+export function buildProviderKeyCard(id: ProviderId, opts: { note?: string } = {}): HTMLElement {
+  const h = help(id);
+  const card = make("div", `key-card provider-${id}`);
+  const seq = ++keyFieldSeq;
+  const inputId = `apiKeyInput${seq}`;
+
+  const head = make("div", "key-head");
+  head.appendChild(make("span", "key-provider", h.label));
+  head.appendChild(externalLink(h.consoleUrl, h.consoleLabel));
+  card.appendChild(head);
+  card.appendChild(make("p", "key-copy", h.detail));
 
   if (opts.note) card.appendChild(make("p", "key-note", opts.note));
 
   const form = make("form", "key-form");
-  const label = make("label", "key-label", "Anthropic API key");
+  const label = make("label", "key-label", h.keyLabel);
   label.htmlFor = inputId;
   const row = make("div", "key-row");
   const input = make("input", "key-input");
   input.id = inputId;
   input.type = "password";
   input.name = "apiKey";
-  input.placeholder = "sk-ant-…";
+  input.placeholder = h.placeholder;
   input.autocomplete = "off";
   input.spellcheck = false;
   input.setAttribute("autocapitalize", "off");
   const reveal = make("button", "btn ghost small key-reveal", "Show");
   reveal.type = "button";
-  reveal.setAttribute("aria-label", "Show the key");
+  reveal.setAttribute("aria-label", `Show the ${h.label} key`);
   reveal.addEventListener("click", () => {
     const shown = input.type === "password";
     input.type = shown ? "text" : "password";
     reveal.textContent = shown ? "Hide" : "Show";
-    reveal.setAttribute("aria-label", shown ? "Hide the key" : "Show the key");
+    reveal.setAttribute("aria-label", shown ? `Hide the ${h.label} key` : `Show the ${h.label} key`);
   });
   const submit = make("button", "btn primary", "Connect key");
   submit.type = "submit";
@@ -177,7 +263,7 @@ export function buildKeyCard(opts: { note?: string } = {}): HTMLElement {
     const apiKey = input.value.trim();
     error.classList.add("hidden");
     if (!apiKey) {
-      fail("Paste your key first.");
+      fail(`Paste your ${h.label} key first.`);
       return;
     }
     submit.disabled = true;
@@ -185,17 +271,20 @@ export function buildKeyCard(opts: { note?: string } = {}): HTMLElement {
     submit.textContent = "Checking…";
     void (async () => {
       try {
-        const result = await putJson<{ hasKey: true; keyHint: string }>("/api/key", { apiKey });
+        const result = await putJson<{ hasKey: true; provider: ProviderId; keyHint: string }>("/api/key", {
+          provider: id,
+          apiKey,
+        });
         input.value = "";
-        current = { ...current, hasKey: true, keyHint: result.keyHint };
-        toast(`Key connected · ${result.keyHint}`, "success");
-        card.replaceChildren(make("p", "key-copy", `Connected key: ${result.keyHint}`));
+        rememberKey(id, result.keyHint);
+        toast(`${h.label} key connected · ${result.keyHint}`, "success");
+        card.replaceChildren(make("p", "key-copy", `${h.label} key connected: ${result.keyHint}`));
         emit();
       } catch (err) {
         const api = err instanceof ApiError ? err : undefined;
-        if (api?.code === "key_invalid_format" || api?.status === 400) fail(api?.message || FORMAT_MESSAGE);
-        else if (api?.code === "key_rejected" || api?.status === 401) fail(REJECTED_MESSAGE);
-        else fail((err as Error).message || "Couldn't reach Anthropic to check that key.");
+        if (api?.code === "key_invalid_format" || api?.status === 400) fail(api?.message || h.formatMessage);
+        else if (api?.code === "key_rejected" || api?.status === 401) fail(api?.message || REJECTED_MESSAGE);
+        else fail((err as Error).message || `Couldn't reach ${h.label} to check that key.`);
       } finally {
         submit.disabled = false;
         submit.textContent = original;
@@ -206,14 +295,62 @@ export function buildKeyCard(opts: { note?: string } = {}): HTMLElement {
   return card;
 }
 
-/** The card as it appears mid-conversation, when a turn found no usable key. */
+/** Record a connected key locally, so the UI reflects it without another
+ *  /api/config round trip. */
+function rememberKey(id: ProviderId, keyHint: string | undefined): void {
+  const providers = PROVIDER_HELP.map((h) => {
+    const existing = providerState(h.id);
+    return h.id === id ? { ...existing, hasKey: true, keyHint } : existing;
+  });
+  const active = current.providers.find((p) => p.id === id);
+  current = {
+    ...current,
+    hasKey: providers.some((p) => p.hasKey),
+    // The top-level hint describes the ACTIVE model's provider, which only
+    // changed if that is the one just connected.
+    keyHint: active && current.keyHint === active.keyHint ? keyHint : current.keyHint,
+    providers,
+  };
+}
+
+function forgetKey(id: ProviderId): void {
+  const providers = PROVIDER_HELP.map((h) => {
+    const existing = providerState(h.id);
+    return h.id === id ? { ...existing, hasKey: false, keyHint: undefined } : existing;
+  });
+  current = {
+    ...current,
+    hasKey: providers.some((p) => p.hasKey),
+    keyHint: providers.some((p) => p.hasKey) ? current.keyHint : undefined,
+    providers,
+  };
+}
+
+/**
+ * The whole "connect a key" block: the shared copy, then one card per provider.
+ *
+ * Both are offered at once rather than behind a chooser, because the answer to
+ * "which do I need?" is "whichever account you already have", and a tab hides
+ * half of that.
+ */
+export function buildKeyCard(opts: { note?: string } = {}): HTMLElement {
+  const wrap = make("div", "key-block");
+  if (opts.note) wrap.appendChild(make("p", "key-note", opts.note));
+  const cards = make("div", "key-cards");
+  for (const h of PROVIDER_HELP) cards.appendChild(buildProviderKeyCard(h.id));
+  wrap.appendChild(cards);
+  for (const p of finePrint()) wrap.appendChild(p);
+  return wrap;
+}
+
+/** The block as it appears mid-conversation, when a turn found no usable key. */
 export function buildKeyPrompt(code: string): HTMLElement {
   const wrap = make("div", "key-prompt enter");
   wrap.appendChild(
     buildKeyCard({
       note:
         code === "key_rejected"
-          ? "Anthropic rejected the key on file. Paste a new one to carry on."
+          ? "The key on file was rejected. Paste a new one to carry on."
           : "Connect a key to chat. Searching and pasting links work without one.",
     }),
   );
@@ -260,7 +397,8 @@ export function buildEmptyState(onExample: (prompt: string) => void): HTMLElemen
   const steps = make("ol", "steps");
 
   const one = make("li", "step");
-  one.appendChild(make("h2", "step-title", "1. Connect your Claude key"));
+  one.appendChild(make("h2", "step-title", "1. Connect an AI key"));
+  one.appendChild(make("p", "step-sub", "Anthropic or OpenAI — either one on its own is enough."));
   one.appendChild(buildKeyCard());
   steps.appendChild(one);
 
@@ -335,38 +473,75 @@ export function initConsent(host: HTMLElement): void {
 
 // ── Settings → AI / Data / About ─────────────────────────────────────────────
 
-/** Settings → AI. Either the connected key with the two things you can do to
- *  it, or the card that connects one. */
+/**
+ * Settings → AI. One row per provider: either the connected key with the two
+ * things you can do to it, or the card that connects one.
+ *
+ * Every provider is always listed, connected or not — this is the panel a user
+ * opens to find out what they can switch to, and a provider that only appears
+ * once you already have its key answers that question backwards.
+ */
 export function renderAiSection(host: HTMLElement): void {
   host.replaceChildren();
   if (!current.hasKey) {
     host.appendChild(buildKeyCard());
     return;
   }
+  const list = make("div", "key-providers");
+  for (const h of PROVIDER_HELP) list.appendChild(providerRow(h, host));
+  host.appendChild(list);
+  for (const p of finePrint()) host.appendChild(p);
+}
+
+/** One provider in Settings → AI. */
+function providerRow(h: ProviderHelp, host: HTMLElement): HTMLElement {
+  const state = providerState(h.id);
+  if (!state.hasKey) {
+    const slot = make("div", "key-provider-slot");
+    slot.appendChild(buildProviderKeyCard(h.id));
+    return slot;
+  }
+
   const row = make("div", "key-status");
-  row.appendChild(make("span", "key-hint", `Connected key: ${current.keyHint ?? "connected"}`));
+  row.appendChild(make("span", "key-provider", h.label));
+  row.appendChild(make("span", "key-hint", state.keyHint ?? "connected"));
   const replace = make("button", "btn ghost small", "Replace");
   replace.type = "button";
   replace.addEventListener("click", () => {
-    host.replaceChildren(buildKeyCard({ note: "Paste the new key. The old one is replaced once this succeeds." }));
+    row.replaceWith(
+      buildProviderKeyCard(h.id, { note: "Paste the new key. The old one is replaced once this succeeds." }),
+    );
   });
   const remove = make("button", "btn ghost small danger", "Remove");
   remove.type = "button";
   remove.addEventListener("click", () => {
     void (async () => {
       try {
-        await del("/api/key");
-        current = { ...current, hasKey: false, keyHint: undefined };
-        toast("Key removed.", "info");
+        // The provider goes in the query, not a DELETE body: removing the wrong
+        // one would disconnect the key the user meant to keep.
+        await del(`/api/key?provider=${encodeURIComponent(h.id)}`);
+        forgetKey(h.id);
+        toast(`${h.label} key removed.`, "info");
         emit();
         renderAiSection(host);
       } catch (err) {
-        toast((err as Error).message || "Couldn't remove the key.", "error");
+        toast((err as Error).message || `Couldn't remove the ${h.label} key.`, "error");
       }
     })();
   });
   row.append(replace, remove);
-  host.appendChild(row);
+  return row;
+}
+
+/** Which providers this session has a key for — what the model picker needs to
+ *  know to disable the models it cannot pay for. */
+export function providersWithKeys(): ProviderId[] {
+  return current.providers.filter((p) => p.hasKey).map((p) => p.id);
+}
+
+/** How a provider is named in the UI, for a message about a model of theirs. */
+export function providerLabel(id: ProviderId): string {
+  return current.providers.find((p) => p.id === id)?.label ?? help(id).label;
 }
 
 /** Settings → About: what this build is, and where its terms live. */
