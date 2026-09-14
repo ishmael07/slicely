@@ -29,12 +29,14 @@ How to cut and ship a Slicely `.dmg`. Web/Docker deploys are a separate thing �
    block in `package.json` points at `ishmael07/slicely`) — you'll need a `GH_TOKEN` with
    `repo` scope in your environment. If you'd rather upload by hand (no token, or
    double-checking the build first), run `npm run dist:mac` instead and drag
-   `release/Slicely-<version>-arm64.dmg` onto a manually-created GitHub Release.
+   `release/Slicely-<version>-universal.dmg` onto a manually-created GitHub Release.
 
-   The build is **Apple silicon only** right now (`arm64`) — no Intel DMG. Going universal
-   is a one-line change (`build.mac.target[0].arch` → `["universal"]` in
-   `package.json`) now that both Electron zips are cached locally; it just hasn't been
-   done yet.
+   The DMG is **universal** — one download runs on both Intel and Apple silicon Macs
+   (`build.mac.target[0].arch` is `["universal"]` in `package.json`). electron-builder
+   builds both arch-specific `.app`s and merges them with `lipo`; that needs both
+   Electron zips (`electron-v<version>-darwin-arm64.zip` and `-x64.zip`) in
+   `~/Library/Caches/electron/`, and takes noticeably longer and more disk than a
+   single-arch build (both temp app dirs exist briefly before being merged and removed).
 
    Always build through `npm run dist:mac` or `npm run release:mac`, never by calling
    `electron-builder` directly: only the npm scripts pass `scripts/electron-builder.config.cjs`,
@@ -56,7 +58,6 @@ How to cut and ship a Slicely `.dmg`. Web/Docker deploys are a separate thing �
    - ...
 
    ## Known issues
-   - Apple silicon only — Intel Macs aren't supported yet.
    - Unsigned build — see "How to open an unsigned build" below.
 
    ## How to open an unsigned build
