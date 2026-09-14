@@ -160,7 +160,7 @@ test("a static path answers GET and HEAD only", async () => {
 
 test("the shell and its assets are revalidated, so a redeploy is not cached away", async () => {
   await withServer(async (base) => {
-    for (const path of ["/", "/app.css", "/web/app.js"]) {
+    for (const path of ["/", "/app.css", "/styles.css", "/web/app.js"]) {
       const resp = await fetch(`${base}${path}`);
       assert.match(
         resp.headers.get("cache-control") ?? "",

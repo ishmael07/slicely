@@ -32,6 +32,57 @@ export const DESKTOP_COOKIE = "slicely_desktop";
  *  Lower-case because that is how Node hands header names over. */
 export const DESKTOP_HEADER = "x-slicely-desktop";
 
+/** The only host names that name this machine's own loopback interface. */
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * True when `host` is an interface the desktop app may bind — i.e. loopback and
+ * nothing else. `undefined` is FALSE: an unset host means "every interface",
+ * which is what a container wants and the opposite of what a personal Mac app
+ * wants. Used by startServer (see index.ts).
+ */
+export function isLoopbackBindHost(host: string | undefined): boolean {
+  if (!host) return false;
+  const h = host.trim().toLowerCase();
+  // The whole 127/8 block, not just .0.1 — `127.0.0.2` is loopback too.
+  return LOOPBACK_NAMES.has(h) || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/**
+ * DNS-REBINDING HARDENING. True when a request's `Host` header names the
+ * loopback address and port this server is actually listening on.
+ *
+ * The attack the token already stops, and this stops a second time: a page on
+ * `http://evil.example` cannot read our responses (no CORS header, and the
+ * token), but its author controls DNS for their own name, so they can point
+ * `attack.evil.example` at `127.0.0.1` and have the victim's browser send us
+ * same-origin-looking requests with `Host: attack.evil.example`. A server that
+ * answers whatever Host it is given is then reachable from any web page the user
+ * visits, with the browser's own cookies attached.
+ *
+ * The expected port is the socket's own local port rather than a value threaded
+ * down from `listen`, because the desktop app asks the OS for port 0 and only
+ * learns the answer afterwards — the socket always knows, and cannot be lied to.
+ */
+export function isAllowedDesktopHost(header: string | undefined, localPort: number | undefined): boolean {
+  if (!header) return false; // HTTP/1.1 requires Host; a request without one is not ours.
+  let parsed: URL;
+  try {
+    // The Host header is an authority, not a URL — borrow a scheme to parse it
+    // with the same rules a browser uses (which is the point: no hand-rolled
+    // splitting on ":" that an IPv6 literal or a userinfo field walks past).
+    parsed = new URL(`http://${header.trim()}`);
+  } catch {
+    return false;
+  }
+  // A `Host` carrying userinfo, a path or a query is not a host at all.
+  if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search) return false;
+  if (!isLoopbackBindHost(parsed.hostname)) return false;
+  // An empty `port` means the scheme's default, which for the borrowed http is 80.
+  const port = parsed.port === "" ? 80 : Number(parsed.port);
+  return localPort !== undefined && port === localPort;
+}
+
 /** Constant-time compare that doesn't leak the token's length either: a
  *  mismatched length fails before timingSafeEqual (which throws on unequal
  *  buffers), and `presented` is always hashed to the same size first by being
@@ -43,7 +94,9 @@ function sameToken(expected: Buffer, presented: string): boolean {
 }
 
 /**
- * Refuse any desktop-mode request that doesn't carry the launch token.
+ * Refuse any desktop-mode request that doesn't carry the launch token — or that
+ * arrived under a host name that isn't this server's own loopback address (see
+ * `isAllowedDesktopHost`).
  *
  * Mounted on the WHOLE app rather than on `/api`, ahead of the static
  * allow-list: the app shell, the stylesheet and the client modules are just as
@@ -58,6 +111,13 @@ export function desktopTokenGuard(token: string): RequestHandler {
     // header no browser sends would refuse every visitor.
     if (!isDesktop()) {
       next();
+      return;
+    }
+
+    // Defence in depth, before the token is even looked at: a request that
+    // reached us under somebody else's host name is refused whatever it carries.
+    if (!isAllowedDesktopHost(req.headers.host, req.socket.localPort)) {
+      res.status(403).json({ error: "Forbidden.", code: "forbidden" });
       return;
     }
 

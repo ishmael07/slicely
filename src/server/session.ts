@@ -198,9 +198,24 @@ function parseCookies(header: string | undefined): Record<string, string> {
     if (eq < 0) continue;
     const k = part.slice(0, eq).trim();
     const v = part.slice(eq + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (k) out[k] = decodeValue(v);
   }
   return out;
+}
+
+/** A cookie value, percent-decoded when it can be. `decodeURIComponent` THROWS
+ *  a `URIError` on a malformed escape (`%zz`, a lone `%`), and this runs on the
+ *  very first middleware of every request: one junk cookie left in a browser —
+ *  or sent deliberately — turned every single response into a 500, for the app
+ *  shell as much as the API. A value that isn't valid percent-encoding is simply
+ *  not percent-encoded, so the raw text is the honest reading of it; a signed
+ *  session id or a hex token fails its own check a moment later anyway. */
+function decodeValue(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function serializeCookie(name: string, value: string, opts: { maxAgeMs: number; secure: boolean }): string {
@@ -553,8 +568,9 @@ export class SessionStore {
 /**
  * Everything "delete my data" removes when the session's directory cannot
  * itself be deleted (desktop mode — see `destroy`): the files the user brought
- * in or produced, the encrypted API key, and the chat history. Each is removed
- * by name, so nothing outside this list can go with it by accident.
+ * in or produced, the encrypted API key, the chat history, and the print-job
+ * queue. Each is removed by name, so nothing outside this list can go with it by
+ * accident.
  */
 async function clearPersonalData(session: SessionRecord): Promise<void> {
   for (const key of SCRATCH_DIRS) {
@@ -569,7 +585,13 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
       await rm(join(dir, entry), { recursive: true, force: true }).catch(() => undefined);
     }
   }
-  for (const name of ["secrets.json", "chats"]) {
+  // `jobs.json` belongs on this list and was missing from it: a print job names
+  // the model it came from, the plates it was split into and where every G-code
+  // file was written, so leaving the queue behind leaves a readable index of
+  // everything "delete my data" just deleted. `settings.json`, `printers.json`,
+  // `master.key` and `.session-secret` are configuration the app needs to keep
+  // working and deliberately stay.
+  for (const name of ["secrets.json", "chats", "jobs.json"]) {
     await rm(join(session.dir, name), { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -7,12 +7,17 @@
 // of that is gone and what is left is the four things a web page cannot do on
 // macOS and nothing else:
 //
-//   • open a file in PrusaSlicer (the editor, or the G-code viewer),
+//   • open a sliced G-code in PrusaSlicer's viewer,
 //   • reveal it in Finder,
 //   • ask for files through the native open dialog,
 //   • learn the real on-disk path of a dropped file.
 //
-// TOKENS, NOT PATHS. The first three take the opaque G-code token the server
+// Four, and no fifth: a channel nobody calls is still a channel a compromised
+// page can call, so anything the client does not use is not exposed. (Two were
+// removed in fix round 1 for exactly that reason — an "open in the editor" call
+// no button ever invoked, and a synchronous `version()` nothing displayed.)
+//
+// TOKENS, NOT PATHS. The first two take the opaque G-code token the server
 // already handed the page; the main process resolves it against this session's
 // own registry (see main.ts). The page therefore cannot ask macOS to open
 // `/etc/passwd`, or anything else it wasn't given — a path it makes up resolves
@@ -26,14 +31,9 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/types";
 import type { SlicelyDesktopApi } from "../shared/types";
 
-/** Read once, at preload time: a synchronous IPC round-trip is cheap here and
- *  free afterwards, and `version()` has to be synchronous for the About line. */
-const appVersion = String(ipcRenderer.sendSync(IPC.version) ?? "");
-
 const api: SlicelyDesktopApi = {
   openGcode: (token) => ipcRenderer.invoke(IPC.openGcode, token),
   revealGcode: (token) => ipcRenderer.invoke(IPC.revealGcode, token),
-  openInSlicer: (token) => ipcRenderer.invoke(IPC.openInSlicer, token),
   pickFiles: () => ipcRenderer.invoke(IPC.pickFiles),
 
   // The one place a real path crosses the bridge, and it crosses OUTWARD: the
@@ -55,8 +55,6 @@ const api: SlicelyDesktopApi = {
     }
     return out;
   },
-
-  version: () => appVersion,
 };
 
 contextBridge.exposeInMainWorld("slicely", api);

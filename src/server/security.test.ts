@@ -33,14 +33,17 @@ async function listen(app: express.Express): Promise<{ base: string; close: () =
 /** A real app (so the session middleware, the /api mount order and the tiers
  *  are all exercised as shipped) on a throwaway sessions directory, with the
  *  rate-limit tiers narrowed so a test doesn't have to fire 60 requests. */
-function testApp(limits: CreateAppOptions["limits"]): {
+function testApp(
+  limits: CreateAppOptions["limits"],
+  desktopToken?: string,
+): {
   app: express.Express;
   store: SessionStore;
   cleanup: () => void;
 } {
   const root = mkdtempSync(join(tmpdir(), "slicely-ratelimit-"));
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
-  const app = createApp({ sessionStore: store, limits });
+  const app = createApp({ sessionStore: store, limits, desktopToken });
   return {
     app,
     store,
@@ -512,10 +515,13 @@ test("a slow-refilling bucket is not reset by being idle — idling never buys t
 async function headersInMode(mode: "hosted" | "desktop"): Promise<Headers> {
   const prev = process.env.SLICELY_MODE;
   process.env.SLICELY_MODE = mode;
-  const { app, store, cleanup } = testApp(undefined);
+  // Desktop mode has no app without a launch token (index.ts refuses to build
+  // one), and in that mode the token is required on /healthz too.
+  const token = "headers-test-launch-token";
+  const { app, store, cleanup } = testApp(undefined, token);
   const { base, close } = await listen(app);
   try {
-    const resp = await fetch(`${base}/healthz`);
+    const resp = await fetch(`${base}/healthz`, { headers: { "x-slicely-desktop": token } });
     assert.equal(resp.status, 200);
     return resp.headers;
   } finally {

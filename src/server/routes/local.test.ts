@@ -17,6 +17,7 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApp } from "../index";
+import { DESKTOP_HEADER } from "../desktop-token";
 import { SessionStore } from "../session";
 import { resetConfigForTests } from "../../main/config";
 import { DEFAULT_SESSION_ID } from "../../main/session-context";
@@ -31,6 +32,10 @@ resetConfigForTests();
  *  components are refused on purpose, which would make this a test of the wrong
  *  thing. */
 const HOME_DIR = mkdtempSync(join(homedir(), "slicely-attach-test-"));
+
+/** The desktop launch token this harness's app is built with. Hosted mode
+ *  ignores it, which is why the same value can be sent in both modes. */
+const TOKEN = "attach-local-test-token";
 
 interface Harness {
   base: string;
@@ -49,7 +54,9 @@ async function withApp(mode: "hosted" | "desktop", fn: (h: Harness) => Promise<v
     desktopDir,
     sweepIntervalMs: 0,
   });
-  const server: Server = createServer(createApp({ sessionStore: store }));
+  // Desktop mode refuses to build an app without a launch token (see
+  // index.ts), so the harness mints one and every request below carries it.
+  const server: Server = createServer(createApp({ sessionStore: store, desktopToken: TOKEN }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
@@ -66,7 +73,7 @@ async function withApp(mode: "hosted" | "desktop", fn: (h: Harness) => Promise<v
 function attach(base: string, paths: unknown): Promise<Response> {
   return fetch(`${base}/api/attach-local`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", [DESKTOP_HEADER]: TOKEN },
     body: JSON.stringify({ paths }),
   });
 }

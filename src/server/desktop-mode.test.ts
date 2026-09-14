@@ -9,16 +9,21 @@
 // network, no Electron.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Express } from "express";
 import { createApp, startServer } from "./index";
 import { SessionStore } from "./session";
-import { DESKTOP_COOKIE, DESKTOP_HEADER } from "./desktop-token";
+import {
+  DESKTOP_COOKIE,
+  DESKTOP_HEADER,
+  isAllowedDesktopHost,
+  isLoopbackBindHost,
+} from "./desktop-token";
 import { resetConfigForTests } from "../main/config";
 import { DEFAULT_SESSION_ID } from "../main/session-context";
 
@@ -32,7 +37,29 @@ const TOKEN = "t0ken-for-this-launch";
 
 interface Harness {
   base: string;
+  /** The real port, for the tests that have to write the `Host` header by hand. */
+  port: number;
   store: SessionStore;
+}
+
+/** One GET over raw `node:http`, so the request's own `Host` header can be
+ *  chosen. `fetch` derives Host from the URL and will not let a caller set it,
+ *  which is exactly the header the DNS-rebinding guard is about. */
+function rawGet(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /** Run `fn` against a fresh app in `mode`, with the desktop token option set
@@ -57,7 +84,7 @@ async function withApp(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
-    await fn({ base: `http://127.0.0.1:${port}`, store });
+    await fn({ base: `http://127.0.0.1:${port}`, port, store });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.stopSweep();
@@ -171,6 +198,210 @@ test("startServer binds the port the OS picks, on loopback, with the token requi
     if (prevMode === undefined) delete process.env.SLICELY_MODE;
     else process.env.SLICELY_MODE = prevMode;
   }
+});
+
+// ── Fix round 1: desktop mode cannot run open ────────────────────────────────
+//
+// The guard used to be mounted only `if (opts.desktopToken)`, which meant the
+// one configuration that most needs it — a real TCP port on a machine with other
+// processes on it — was also the one that silently ran wide open if the caller
+// forgot the option. There is no second identity in desktop mode to fall back
+// to, so a missing token is a refusal to start.
+
+/** Run `fn` with SLICELY_MODE set, restoring it afterwards. */
+async function inMode(mode: "hosted" | "desktop", fn: () => Promise<void>): Promise<void> {
+  const prev = process.env.SLICELY_MODE;
+  process.env.SLICELY_MODE = mode;
+  try {
+    await fn();
+  } finally {
+    if (prev === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prev;
+  }
+}
+
+test("desktop: createApp REFUSES to build an app with no launch token", async () => {
+  await inMode("desktop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "slicely-desktop-notoken-"));
+    const store = new SessionStore({
+      sessionsRoot: root,
+      secretDir: root,
+      desktopDir: join(root, "desktop"),
+      sweepIntervalMs: 0,
+    });
+    try {
+      assert.throws(
+        () => createApp({ sessionStore: store }),
+        /desktop requires a per-launch desktop token/i,
+        "an unguarded desktop app must not exist at all, let alone listen",
+      );
+    } finally {
+      store.stopSweep();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("hosted: no token is required, because there is no token in hosted mode", async () => {
+  await inMode("hosted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "slicely-hosted-notoken-"));
+    const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+    try {
+      assert.doesNotThrow(() => createApp({ sessionStore: store }));
+    } finally {
+      store.stopSweep();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("desktop: startServer refuses to bind anything but loopback", async () => {
+  await inMode("desktop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "slicely-desktop-bind-"));
+    const store = new SessionStore({
+      sessionsRoot: root,
+      secretDir: root,
+      desktopDir: join(root, "desktop"),
+      sweepIntervalMs: 0,
+    });
+    try {
+      // Unset (= every interface, the container default), the wildcards, and a
+      // plausible LAN address: each would publish one person's workspace, key
+      // and printers to whatever network the Mac is on.
+      for (const host of [undefined, "0.0.0.0", "::", "192.168.1.42", "example.com"]) {
+        await assert.rejects(
+          () => startServer({ host, port: 0, desktopToken: TOKEN, store }),
+          /must bind a loopback interface/i,
+          `host ${String(host)} must not be bound in desktop mode`,
+        );
+      }
+      // And a missing token is refused here too, not only in createApp.
+      await assert.rejects(
+        () => startServer({ host: "127.0.0.1", port: 0, store }),
+        /desktop requires a per-launch desktop token/i,
+      );
+    } finally {
+      store.stopSweep();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Fix round 1: DNS-rebinding hardening ─────────────────────────────────────
+//
+// A page on the attacker's own domain can point that domain's DNS at 127.0.0.1
+// and have the victim's browser send us requests that look same-origin to it.
+// The token already stops those (the browser has no way to learn it), but a
+// loopback server should not answer to somebody else's name in the first place.
+
+test("desktop: a request under a rebound host name is refused, token or not", async () => {
+  await withApp("desktop", async ({ port }) => {
+    // The real thing, as the window sends it: allowed.
+    const ok = await rawGet(port, "/api/config", { host: `127.0.0.1:${port}`, [DESKTOP_HEADER]: TOKEN });
+    assert.equal(ok.status, 200);
+
+    // The rebinding attack: our port, the attacker's name.
+    for (const host of [`attack.evil.example:${port}`, "evil.example", `[::ffff:127.0.0.1]:${port}`]) {
+      const bad = await rawGet(port, "/api/config", { host, [DESKTOP_HEADER]: TOKEN });
+      assert.equal(bad.status, 403, `Host: ${host} must be refused`);
+      assert.deepEqual(JSON.parse(bad.body), { error: "Forbidden.", code: "forbidden" });
+    }
+
+    // A loopback name with the wrong port is not this server either.
+    const wrongPort = await rawGet(port, "/api/config", {
+      host: `127.0.0.1:${port + 1}`,
+      [DESKTOP_HEADER]: TOKEN,
+    });
+    assert.equal(wrongPort.status, 403);
+
+    // The app shell is covered as well, not just the API.
+    const shell = await rawGet(port, "/", { host: "evil.example", cookie: `${DESKTOP_COOKIE}=${TOKEN}` });
+    assert.equal(shell.status, 403);
+  });
+});
+
+test("hosted: the Host header is not policed — a hosted server has a real domain", async () => {
+  await withApp("hosted", async ({ port }) => {
+    const resp = await rawGet(port, "/api/config", { host: "slicely.example" });
+    assert.equal(resp.status, 200);
+  });
+});
+
+test("isLoopbackBindHost / isAllowedDesktopHost, as the two callers rely on them", () => {
+  // What may be bound.
+  assert.equal(isLoopbackBindHost("127.0.0.1"), true);
+  assert.equal(isLoopbackBindHost("127.0.0.2"), true, "the whole 127/8 block is loopback");
+  assert.equal(isLoopbackBindHost("::1"), true);
+  assert.equal(isLoopbackBindHost("localhost"), true);
+  assert.equal(isLoopbackBindHost(undefined), false, "unset means every interface");
+  assert.equal(isLoopbackBindHost("0.0.0.0"), false);
+  assert.equal(isLoopbackBindHost("192.168.1.42"), false);
+  assert.equal(isLoopbackBindHost("127.0.0.1.evil.example"), false);
+
+  // What may be in a Host header, against a server on port 4321.
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321", 4321), true);
+  assert.equal(isAllowedDesktopHost("localhost:4321", 4321), true);
+  assert.equal(isAllowedDesktopHost("[::1]:4321", 4321), true);
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4322", 4321), false, "wrong port");
+  assert.equal(isAllowedDesktopHost("127.0.0.1", 4321), false, "no port means 80");
+  assert.equal(isAllowedDesktopHost("evil.example:4321", 4321), false);
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321@evil.example:4321", 4321), false, "userinfo");
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321/../x", 4321), false);
+  assert.equal(isAllowedDesktopHost(undefined, 4321), false);
+  assert.equal(isAllowedDesktopHost("not a host", 4321), false);
+  assert.equal(isAllowedDesktopHost("127.0.0.1:4321", undefined), false, "no socket, no answer");
+});
+
+// ── Fix round 1: a malformed cookie is not a 500 ─────────────────────────────
+
+test("a malformed percent-escape in the desktop cookie is refused, not a 500", async () => {
+  await withApp("desktop", async ({ base }) => {
+    // `decodeURIComponent("%zz")` throws a URIError, and the cookie parser runs
+    // on the first middleware of EVERY request — so one junk cookie left in a
+    // browser turned the whole app, shell included, into a 500.
+    for (const cookie of [`${DESKTOP_COOKIE}=%zz`, `${DESKTOP_COOKIE}=%`, `${DESKTOP_COOKIE}=100%`]) {
+      const api = await fetch(`${base}/api/config`, { headers: { cookie } });
+      assert.equal(api.status, 403, `cookie ${cookie} must be a plain refusal`);
+      const shell = await fetch(`${base}/`, { headers: { cookie } });
+      assert.equal(shell.status, 403);
+    }
+
+    // And a valid token still gets in when a junk cookie rides alongside it.
+    const ok = await fetch(`${base}/api/config`, {
+      headers: { cookie: `junk=%zz; ${DESKTOP_COOKIE}=${TOKEN}` },
+    });
+    assert.equal(ok.status, 200);
+  });
+});
+
+// ── Fix round 1: "delete my data" takes the print queue with it ──────────────
+
+test("desktop: destroy() removes jobs.json and keeps the app's configuration", async () => {
+  await withApp("desktop", async ({ base, store }) => {
+    // A request first, so the one desktop session exists the way it does in the
+    // app rather than only in the store's constructor.
+    assert.equal((await fetch(`${base}/api/config`, { headers: withHeader })).status, 200);
+    const session = store.get(DEFAULT_SESSION_ID);
+    assert.ok(session);
+
+    const file = (name: string) => join(session!.dir, name);
+    // Personal data, all of it named here rather than deleted by wildcard.
+    writeFileSync(file("jobs.json"), JSON.stringify([{ id: "j1", name: "bracket.stl" }]));
+    writeFileSync(file("secrets.json"), "{}");
+    writeFileSync(join(session!.uploadsDir, "bracket.stl"), "solid x\nendsolid x\n");
+    // Configuration the app needs to keep working.
+    writeFileSync(file("settings.json"), "{}");
+    writeFileSync(file("printers.json"), "[]");
+
+    await store.destroy(DEFAULT_SESSION_ID);
+
+    assert.equal(existsSync(file("jobs.json")), false, "the print queue names every model and G-code path");
+    assert.equal(existsSync(file("secrets.json")), false);
+    assert.equal(existsSync(join(session!.uploadsDir, "bracket.stl")), false);
+    assert.equal(existsSync(file("settings.json")), true, "settings are configuration, not personal data");
+    assert.equal(existsSync(file("printers.json")), true);
+    assert.equal(existsSync(session!.dir), true, "the desktop workspace IS userData — it cannot be removed");
+  });
 });
 
 after(() => {

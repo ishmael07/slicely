@@ -252,21 +252,24 @@ export type AgentEvent =
  * the server over HTTP: two transports for one API, and every feature written
  * twice. The window now loads the web client, so the API is HTTP for everybody
  * and IPC is left with only what a browser genuinely cannot do: reach into
- * macOS. Each channel takes an OPAQUE TOKEN, never a filesystem path — main
- * resolves it against the session's own G-code registry, so the page can only
- * ever name files the server already gave it.
+ * macOS. The two "open this file" channels take an OPAQUE TOKEN, never a
+ * filesystem path — main resolves it against the session's own G-code registry,
+ * so the page can only ever name files the server already gave it.
+ *
+ * It is also exactly what the client CALLS. An unused channel is still reachable
+ * from a compromised page, so two were removed in fix round 1: `openInSlicer`
+ * (which handed a G-CODE token to the model editor — the wrong kind of file for
+ * that window, and no button ever invoked it) and a synchronous `version`, which
+ * nothing in the UI displayed. If "Open in PrusaSlicer" is wanted later it needs
+ * a MODEL-path token and a button that uses it, and can be added then.
  */
 export const IPC = {
   /** Open a sliced .gcode in PrusaSlicer's G-code viewer. */
   openGcode: "slicely:openGcode",
   /** Reveal a sliced .gcode in Finder. */
   revealGcode: "slicely:revealGcode",
-  /** Open the file in the editable PrusaSlicer editor, pre-sliced. */
-  openInSlicer: "slicely:openInSlicer",
   /** Native open dialog for mesh/CAD files; resolves to absolute paths. */
   pickFiles: "slicely:pickFiles",
-  /** Synchronous: the app's version, for the About line. */
-  version: "slicely:version",
 } as const;
 
 /** A reasoning-effort tier the user can pick. */
@@ -420,7 +423,7 @@ export const ACCEPTED_UPLOAD_EXTS = [
  * Mac: the PrusaSlicer GUI, Finder, the native file dialog, and the real
  * filesystem paths of dropped files (which the browser deliberately hides).
  *
- * The three "open this file" calls take the same opaque G-code token the server
+ * The two "open this file" calls take the same opaque G-code token the server
  * already handed the page (`GET /api/gcode/:id`), not a path. The page never
  * learns where anything is on disk, and a compromised page cannot ask macOS to
  * open an arbitrary file: main looks the token up in this session's own
@@ -436,9 +439,6 @@ export interface SlicelyDesktopApi {
   openGcode(token: string): Promise<void>;
   /** Reveal a sliced G-code file in Finder. */
   revealGcode(token: string): Promise<void>;
-  /** Open the file in the editable PrusaSlicer editor, with the last slice's
-   *  settings loaded and background processing done, so Preview is ready. */
-  openInSlicer(token: string): Promise<void>;
   /** Native open dialog, filtered to the accepted mesh/CAD extensions.
    *  Resolves to absolute paths (empty when cancelled) — hand them to
    *  `POST /api/attach-local`, which is the only thing that may read them. */
@@ -447,8 +447,6 @@ export interface SlicelyDesktopApi {
    *  cannot tell you about a file the user just dropped. Synchronous, because
    *  it must run inside the drop handler while the DataTransfer is alive. */
   pathsForDrop(files: File[]): string[];
-  /** The app's version, for the About line. */
-  version(): string;
 }
 
 declare global {

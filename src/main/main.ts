@@ -23,11 +23,8 @@ import { CSP_STRING } from "../server/security";
 import type { SessionStore } from "../server/session";
 import { IPC } from "../shared/types";
 import { sessionState } from "./agent/state";
-import {
-  openGcodeInGui,
-  openModelInEditorSliced,
-  writeEffectiveConfig,
-} from "./prusaslicer";
+import { isSameOrigin } from "./navigation";
+import { openGcodeInGui } from "./prusaslicer";
 import { pickerExtensions } from "./uploads";
 
 let win: BrowserWindow | null = null;
@@ -64,12 +61,25 @@ function createWindow(url: string): void {
     return { action: "deny" };
   });
 
-  // The window may only ever be our own origin. Anything else — an injected
-  // redirect, a stray `location.href` — is refused and handed to the browser.
+  // The window may only ever be our own ORIGIN — scheme, host and port, as the
+  // browser compares them (see navigation.ts for what a prefix check let
+  // through). Anything else — an injected redirect, a stray `location.href` — is
+  // refused, and nothing is opened in its place: every external link in the
+  // client is a `target="_blank"` one, so it goes through the window-open
+  // handler above and never reaches here. A navigation that lands here is not a
+  // link the user clicked, and handing it to the user's browser would just move
+  // the attack one window over.
   win.webContents.on("will-navigate", (event, target) => {
-    if (target.startsWith(serverUrl)) return;
+    if (isSameOrigin(target, serverUrl)) return;
     event.preventDefault();
-    if (/^https?:/.test(target)) void shell.openExternal(target);
+  });
+
+  // `will-navigate` does not fire for a redirect the server answers with, so the
+  // same rule is applied to those too. Our own server never redirects off its
+  // origin; if one ever did, this is what stops it.
+  win.webContents.on("will-redirect", (event, target) => {
+    if (isSameOrigin(target, serverUrl)) return;
+    event.preventDefault();
   });
 
   // The agent's `open_in_browser` tool. Set on the main process (not over IPC)
@@ -89,9 +99,10 @@ function createWindow(url: string): void {
 
 // ── The native bridge (Task E2) ──────────────────────────────────────────────
 //
-// Five channels, and every one of them resolves what it is given through the
-// session's own G-code registry rather than trusting it as a path. A token the
-// page invents resolves to nothing, and nothing is what happens.
+// Three channels. Two of them resolve what they are given through the session's
+// own G-code registry rather than trusting it as a path: a token the page
+// invents resolves to nothing, and nothing is what happens. The third opens the
+// native file dialog, which takes no argument at all.
 
 /** The file a G-code token names, or `undefined` if this session never issued
  *  that token. The registry is a Map, so there is no path to traverse and no
@@ -101,33 +112,7 @@ function resolveToken(token: unknown): string | undefined {
   return store?.desktopSession().gcodeFiles.get(token)?.path;
 }
 
-/**
- * Open one or more MODELS in the editable PrusaSlicer editor, pre-sliced (so
- * the toolpaths are ready under Preview without the user pressing Slice), with
- * the most recent slice's own settings loaded where we have them.
- *
- * Best-effort on the config: a failure there falls back to opening the bare
- * model, which is still the thing the user asked for.
- */
-async function openInEditor(path: string): Promise<void> {
-  let guiConfig: string | undefined;
-  if (sessionState.lastSliceParams) {
-    try {
-      guiConfig = await writeEffectiveConfig(sessionState.lastSliceParams, sessionState.lastConfigIni);
-    } catch {
-      /* fall back to opening the bare model */
-    }
-  }
-  await openModelInEditorSliced(path, guiConfig);
-}
-
 function registerNativeIpc(): void {
-  // Synchronous, and answered even before a window exists: the preload reads it
-  // once at load time (see preload.ts).
-  ipcMain.on(IPC.version, (event) => {
-    event.returnValue = app.getVersion();
-  });
-
   ipcMain.handle(IPC.openGcode, async (_e, token: unknown) => {
     const path = resolveToken(token);
     if (path) await openGcodeInGui(path);
@@ -136,11 +121,6 @@ function registerNativeIpc(): void {
   ipcMain.handle(IPC.revealGcode, async (_e, token: unknown) => {
     const path = resolveToken(token);
     if (path) shell.showItemInFolder(path);
-  });
-
-  ipcMain.handle(IPC.openInSlicer, async (_e, token: unknown) => {
-    const path = resolveToken(token);
-    if (path) await openInEditor(path);
   });
 
   // The native open dialog. It returns PATHS, not uploads: the client posts them
@@ -168,6 +148,14 @@ async function boot(): Promise<void> {
   const started = await startServer({ host: "127.0.0.1", port: 0, desktopToken });
   store = started.store;
   serverUrl = started.url;
+
+  // Slicely asks for no device permissions at all: no camera, no microphone, no
+  // geolocation, no notifications, no clipboard read. The Permissions-Policy
+  // header says so to a browser; Electron asks the APP instead, and with no
+  // handler installed it puts the question to the USER — a native permission
+  // prompt this app has no business raising. So the answer is "no", once, for
+  // every permission there is.
+  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
 
   // The same Content-Security-Policy the server sends, applied at the Electron
   // layer as well: a response that somehow reaches the window without passing

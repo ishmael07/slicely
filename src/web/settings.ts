@@ -84,7 +84,8 @@ function resolveBed(): { x: number; y: number; z: number } {
 }
 
 // ── model + effort dropdowns ─────────────────────────────────────────────────
-// Both are real menus now: ui.ts's menu() builds `role="menuitem"` buttons,
+// Both are real menus now: ui.ts's menu() builds `role="menuitemradio"` buttons
+// (single-choice menus, so the checked state is on the item rather than implied),
 // wires the arrow keys and Escape, and hands focus back to the trigger. The
 // items are built at open time from the settings just fetched, so the menu can
 // never show a stale model list.

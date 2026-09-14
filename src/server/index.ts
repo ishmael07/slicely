@@ -26,7 +26,8 @@ import {
   type RateLimitOptions,
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
-import { desktopTokenGuard } from "./desktop-token";
+import { desktopTokenGuard, isLoopbackBindHost } from "./desktop-token";
+import { isDesktop } from "../main/mode";
 import { webStatic } from "./static";
 import { sendError, WireError } from "./errors";
 import { createChatRouter } from "./routes/chat";
@@ -111,6 +112,20 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   const heavyLimit = tier(LIMITS.heavy, opts.limits?.heavy);
 
   app.use(securityHeaders());
+  // DESKTOP MODE CANNOT RUN WITHOUT A TOKEN. The guard used to be mounted only
+  // when a token was passed, which meant the one configuration that most needed
+  // it — desktop mode, a real TCP port on a machine with other processes on it —
+  // was also the configuration that silently ran wide open if the caller forgot
+  // the option. There is no sane fallback (there is no other identity in desktop
+  // mode: every request resolves to the single workspace), so this is a refusal
+  // to start rather than a warning. See desktop-token.ts.
+  if (isDesktop() && !opts.desktopToken) {
+    throw new Error(
+      "SLICELY_MODE=desktop requires a per-launch desktop token: without it every " +
+        "process on this machine could drive the app over its loopback port. " +
+        "Pass `desktopToken` to createApp/startServer (main.ts mints one per launch).",
+    );
+  }
   // Before the static allow-list, and therefore before ANYTHING is served: in
   // desktop mode the app shell is as private as the API (desktop-token.ts).
   if (opts.desktopToken) app.use(desktopTokenGuard(opts.desktopToken));
@@ -221,6 +236,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<{
   port: number;
   url: string;
 }> {
+  // DESKTOP MODE IS LOOPBACK-ONLY. The Mac app passes `127.0.0.1`; anything else
+  // — an unset host (which binds every interface, the right default for a
+  // container and the wrong one here), a LAN address, `0.0.0.0` — would publish
+  // one person's workspace, their Anthropic key and their printers to the
+  // network they happen to be on. The launch token would still be required, but
+  // the port has no business being reachable in the first place, so this refuses
+  // to listen rather than relying on the guard alone.
+  if (isDesktop() && !isLoopbackBindHost(opts.host)) {
+    throw new Error(
+      `SLICELY_MODE=desktop must bind a loopback interface, not ${opts.host ?? "every interface"}: ` +
+        "the Mac app's server is for the person sitting in front of it.",
+    );
+  }
+
   const store = opts.store ?? new SessionStore();
   const app = createApp({ sessionStore: store, desktopToken: opts.desktopToken });
   const server = createServer(app);

@@ -14,11 +14,16 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Express } from "express";
 import { createApp } from "./index";
+import { DESKTOP_HEADER } from "./desktop-token";
 import { SessionStore, isInsideDir, __disposeCallsForTests, type ChatAgent } from "./session";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "slicely-test-"));
 }
+
+/** A desktop launch token for the harnesses that build a desktop-mode app.
+ *  Hosted mode ignores the option entirely. */
+const TOKEN = "session-test-launch-token";
 
 const stubAgent: () => ChatAgent = () => ({
   async send(_message, emit) {
@@ -248,6 +253,30 @@ test("sweepFiles keeps a stale file the session is still holding a reference to"
   }
 });
 
+test("a cookie whose value is not valid percent-encoding is read, not fatal", async () => {
+  // `decodeURIComponent` THROWS a URIError on a malformed escape, and the cookie
+  // parser runs on the first middleware of every request — so one junk cookie
+  // (left by another app on the same origin, or sent on purpose) used to turn
+  // every single response into a 500. A value that isn't percent-encoded is
+  // simply read as itself; a session id then fails its own signature check.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  const { base, close } = await listen(app);
+  try {
+    for (const cookie of ["slicely_sid=%zz", "slicely_sid=%", "junk=100%; other=%E0%A4%A"]) {
+      const resp = await fetch(`${base}/api/config`, { headers: { cookie } });
+      assert.equal(resp.status, 200, `cookie ${cookie} must not break the request`);
+      // Unsigned/undecodable ⇒ not a session this server issued ⇒ a fresh one.
+      assert.ok(setCookieValue(resp), "a junk cookie mints a clean session rather than failing");
+    }
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ── Task D6: the session cookie's name and attributes ────────────────────────
 
 /** Mint a session against a real server running in `mode` and return the raw
@@ -257,10 +286,12 @@ async function mintedCookieLine(mode: "hosted" | "desktop"): Promise<string> {
   process.env.SLICELY_MODE = mode;
   const root = tmpRoot();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
-  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent });
+  // Desktop mode has no app without a launch token (index.ts refuses to build
+  // one); hosted mode ignores the option, so the same call serves both.
+  const app = createApp({ sessionStore: store, chatAgentFactory: stubAgent, desktopToken: TOKEN });
   const { base, close } = await listen(app);
   try {
-    const resp = await fetch(`${base}/api/config`);
+    const resp = await fetch(`${base}/api/config`, { headers: { [DESKTOP_HEADER]: TOKEN } });
     const raw = resp.headers.get("set-cookie");
     assert.ok(raw, "a first /api request must mint a session cookie");
     return raw!;

@@ -595,7 +595,7 @@ async function attachLocalPaths(paths: string[]): Promise<void> {
       renderError(`Not accepted: ${data.rejected.join(", ")}`);
     }
   } catch (err) {
-    renderError((err as Error).message || "Couldn't attach those files", () => void attachLocalPaths(paths));
+    renderError(errorMessage(err, "Couldn't attach those files."), () => void attachLocalPaths(paths));
   }
 }
 

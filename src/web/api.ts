@@ -60,6 +60,11 @@ const CODE_COPY: Record<string, string> = {
   not_in_workspace: "That file is outside your workspace.",
   forbidden_in_hosted_mode: "Not available on a shared server.",
   cross_origin: "That request was blocked for security reasons.",
+  // Desktop only: the per-launch token this window was given is missing, stale
+  // (the app was relaunched behind an old window) or the request reached the
+  // server under a host name that isn't its own. Reopening the app is the fix,
+  // and the only one the user can carry out.
+  forbidden: "This window isn't allowed to talk to the app. Reopen Slicely.",
   billing: "Your Anthropic account has no available credit.",
   busy: "Still working on your last message — wait for it to finish.",
   not_found: "That wasn't found. It may have already been removed.",

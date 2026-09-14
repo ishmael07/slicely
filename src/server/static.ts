@@ -66,7 +66,12 @@ function table(): Record<string, Servable> {
     // site stylesheet (the one the legal pages mean) and the app shell links
     // `/app.css` instead — see `src/web/index.html`.
     "/app.css": { file: ["src", "web", "styles.css"], type: CSS, cache: REVALIDATE },
-    "/styles.css": { file: ["site", "styles.css"], type: CSS, cache: PAGE_CACHE },
+    // REVALIDATE, like every other CSS here: this filename is not
+    // content-hashed either, so a cached copy is how a user keeps yesterday's
+    // stylesheet after a deploy. (It sat on PAGE_CACHE, which contradicted this
+    // module's own rule two comments up — only the favicon and the legal TEXT
+    // may sit in a cache.)
+    "/styles.css": { file: ["site", "styles.css"], type: CSS, cache: REVALIDATE },
     // The ◆ mark, shared with the marketing site so the two agree.
     "/favicon.svg": { file: ["site", "favicon.svg"], type: "image/svg+xml", cache: ASSET_CACHE },
     // Extension-less, because these are pages a user is linked to (Settings →

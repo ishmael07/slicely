@@ -39,8 +39,8 @@ Electron ┼─ HTTPS ─► Express (src/server) ┼── sourcing providers (
   Desktop mode keeps LAN transports and discovery; the server binds loopback only and
   requires a per-launch random bearer token in a cookie set by main.ts so other local
   processes can't drive it. The preload exposes only native-only actions
-  (`openInSlicer`, `openGcode`, `revealPath`, `pickFile`); the web client feature-detects
-  `window.slicely`.
+  (`openGcode`, `revealGcode`, `pickFiles`, `pathsForDrop` — see §4); the web client
+  feature-detects `window.slicely`.
 - **Web** = the same server in `mode: "hosted"` (multi-user on by default).
 
 ## Components
@@ -119,8 +119,15 @@ Electron ┼─ HTTPS ─► Express (src/server) ┼── sourcing providers (
   for http(s), `will-navigate` deny, CSP delivered via `session.webRequest.onHeadersReceived`
   from the same `securityHeaders()` string. Native drop: preload passes real paths via
   `webUtils.getPathForFile`, so uploads on desktop copy from disk instead of re-uploading.
-- Preload surface: `openInSlicer(gcodeIdOrToken)`, `openGcode(token)`, `revealPath(token)`,
-  `pickFiles()`, `getVersion()`. Tokens only, never raw paths.
+- Preload surface as shipped: `openGcode(token)`, `revealGcode(token)`, `pickFiles()`,
+  `pathsForDrop(files)`. Tokens only, never raw paths inward. (`openInSlicer` and
+  `version()` were specced above but removed before release: nothing in the client called
+  either, and an unused channel is still a channel a compromised page can call. An "Open in
+  PrusaSlicer" button would need a MODEL-path token, not the G-code one.)
+- `POST /api/attach-local` accepts a path anywhere in the D5 desktop root set — the session
+  directory, the app's downloads folder, `$HOME` **and `/Volumes`** (so a model on an
+  external disk or a USB stick can be dropped in), hidden components refused and
+  containment decided on the real path — not `$HOME` alone.
 - Web client shows "Open in PrusaSlicer" / "Reveal in Finder" only when `window.slicely`
   exists.
 
