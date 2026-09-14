@@ -329,6 +329,9 @@ function renderAccountRefusal(code: string | undefined): boolean {
   if (code === "credit_exhausted" || code === "free_tier_paused") {
     endBotBubble();
     if (code === "credit_exhausted") markExhausted();
+    // Paused, exhausted, or (eventually) low — only one credit card ever sits
+    // in the transcript. A second refusal replaces it rather than piling on.
+    messagesEl.querySelectorAll(".credit-card").forEach((el) => el.remove());
     mount(
       buildCreditCard(code as CreditState, {
         onAddKey: () => deps.onConnect(),
@@ -558,7 +561,7 @@ export function updateSendEnabled(): void {
       spent ? "Free credit used up — add your own key to keep going." : "Connect an AI provider to chat.",
     ),
   );
-  const connect = make("button", "link-btn", spent ? "Add a key" : "Connect");
+  const connect = make("button", "link-btn", "Connect");
   connect.type = "button";
   connect.addEventListener("click", () => deps.onConnect());
   composerNote.appendChild(connect);

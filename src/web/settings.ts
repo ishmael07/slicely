@@ -34,10 +34,13 @@ export interface SettingsDeps {
  *
  * The one question that decides whether a model can be chosen at all: free
  * credit runs on one model at one effort, so offering the pickers would be
- * offering something the server will refuse.
+ * offering something the server will refuse. True for anyone already signed
+ * in and on credit, but also for a signed-out visitor at an accounts deploy —
+ * they are headed for free credit the moment they sign in, so the pickers are
+ * just as wrong to offer them before that.
  */
 function onFreeCredit(): boolean {
-  return !hasKey() && account().signedIn;
+  return !hasKey() && (account().signedIn || config().accountsEnabled);
 }
 
 export interface SettingsApi {
@@ -219,7 +222,7 @@ function renderModelEffort(): void {
  */
 function renderFreeModelNote(): boolean {
   const free = freeTier();
-  const sayFree = Boolean(free) && !hasKey();
+  const sayFree = Boolean(free) && onFreeCredit();
   freeModelNote.classList.toggle("hidden", !sayFree);
   if (free && sayFree) {
     freeModelNote.textContent = `Free credit runs on ${free.modelLabel} at ${free.effort} effort. Add your own key to choose models.`;

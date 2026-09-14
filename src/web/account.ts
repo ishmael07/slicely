@@ -259,7 +259,10 @@ export function buildCreditCard(state: CreditState, on: CreditCardDeps): HTMLEle
   const copy = CREDIT_COPY[state];
   const card = make("div", "credit-card");
   card.setAttribute("role", "group");
-  card.append(make("h3", "credit-title", copy.title), make("p", "credit-body", copy.body));
+  const title = make("h3", "credit-title", copy.title);
+  title.id = "creditCardTitle";
+  card.setAttribute("aria-labelledby", "creditCardTitle");
+  card.append(title, make("p", "credit-body", copy.body));
 
   const actions = make("div", "credit-actions");
   const key = make("button", "btn primary", "Add my own key");
@@ -292,7 +295,13 @@ export function applyCreditEvent(e: {
   exhausted?: boolean;
 }): void {
   const me = account();
-  if (!me.signedIn || !me.account) return;
+  if (!me.signedIn || !me.account) {
+    // The server just billed a turn to someone's account, so somebody IS
+    // signed in even though this tab's store hasn't caught up yet (e.g. a
+    // stale boot fetch). Ask the server who, rather than drop the frame.
+    void refreshAccount();
+    return;
+  }
   setAccount({
     signedIn: true,
     account: {
