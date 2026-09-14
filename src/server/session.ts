@@ -1001,9 +1001,9 @@ export function sessionMiddleware(store: SessionStore, opts: SessionMiddlewareOp
  *  register it under a fresh opaque token. Used by both /api/slice and the
  *  job-run SSE stream so a plate's output is addressable only via
  *  `GET /api/gcode/:id` (and only from the session that made it) — never by
- *  the raw path main/prusaslicer.ts wrote it to (which is a GLOBAL shared
- *  directory; see prusaslicer.ts's `cfg.slicesDir`). Idempotent-ish: if the
- *  source file is already gone (e.g. relocated by a concurrent call), the
+ *  the raw path main/prusaslicer.ts wrote it to (which is this session's own
+ *  `slices/`; see session-context.ts's `sessionSlicesDir`). Idempotent-ish: if
+ *  the source file is already gone (e.g. relocated by a concurrent call), the
  *  original path is returned unchanged rather than throwing. */
 export async function adoptGcodeFile(
   session: SessionRecord,
@@ -1013,21 +1013,21 @@ export async function adoptGcodeFile(
   // wrote (`<session>/slices/plate-1.gcode`), so this has never had a client
   // string in it — but the function's whole job is to `rename()` whatever it is
   // given, and a rename is a move OUT of wherever the source was. Refusing
-  // anything that is not already this session's own (or the legacy shared slices
-  // directory the desktop still writes to) keeps that an invariant rather than a
-  // property of the current call sites.
+  // anything that is not already this session's own keeps that an invariant
+  // rather than a property of the current call sites.
+  //
+  // The session's own directory is the WHOLE rule. An earlier revision also
+  // accepted `getConfig().slicesDir` — `<workdir>/slices`, from when slicing
+  // wrote to one shared folder. Nothing writes a G-code there any more
+  // (prusaslicer.ts uses `sessionSlicesDir()`, which IS `<session>/slices`; on
+  // the desktop the session directory is the workdir, so that path is still
+  // adoptable there for the right reason), and in hosted mode that folder is
+  // cross-session: keeping it meant one visitor's session could adopt — move,
+  // and mint a download token for — a file sitting in a root shared by everyone.
+  // `printers/drivers/file.ts` still uses `<workdir>/slices`, but as an OUTPUT
+  // it copies finished G-code INTO; it never asks for adoption.
   const source = resolve(sourcePath);
-  const legacySlicesDir = (() => {
-    try {
-      return getConfig().slicesDir;
-    } catch {
-      return undefined;
-    }
-  })();
-  const adoptable =
-    isInsideDir(session.dir, source) ||
-    (legacySlicesDir !== undefined && isInsideDir(legacySlicesDir, source));
-  if (!adoptable) {
+  if (!isInsideDir(session.dir, source)) {
     throw new WireError(400, "That G-code isn't in your workspace.", "not_in_workspace");
   }
   await mkdir(session.slicesDir, { recursive: true });

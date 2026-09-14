@@ -22,7 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -197,6 +197,27 @@ test("GET /api/preview for a file that is gone is 404 not_found, not 500", async
     });
     assert.equal(outside.status, 400);
     assert.equal(((await outside.json()) as { code?: string }).code, "not_in_workspace");
+  } finally {
+    await r.close();
+  }
+});
+
+test("GET /api/preview for a DIRECTORY is 404 not_found, not 500", async () => {
+  // `uploads/` and `downloads/` hold directories in normal use — a multi-part
+  // download is unzipped into `downloads/kit/` — and the subtree rule admits the
+  // folder itself. `existsSync` said yes, and `previewMesh` then threw EISDIR
+  // into the generic funnel as a 500 "Something went wrong". There is no mesh at
+  // that path, which is the same answer as a file that is gone.
+  const r = await rig();
+  try {
+    mkdirSync(join(r.sessionDir, "uploads", "kit"), { recursive: true });
+    const resp = await fetch(`${r.base}/api/preview?path=${encodeURIComponent("uploads/kit")}`, {
+      headers: { cookie: r.cookie },
+    });
+    const raw = await resp.text();
+    assert.equal(resp.status, 404, `expected 404, got ${resp.status}: ${raw}`);
+    assert.equal((JSON.parse(raw) as { code?: string }).code, "not_found");
+    assert.ok(!raw.includes(r.sessionDir), raw);
   } finally {
     await r.close();
   }

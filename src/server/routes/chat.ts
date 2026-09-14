@@ -15,6 +15,7 @@ import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
 import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
 import { sendError, stripPaths, toWire } from "../errors";
+import { isDesktop } from "../../main/mode";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, toClientPaths, type ChatAgent, type SessionRecord } from "../session";
@@ -45,16 +46,35 @@ const KEEP_ALIVE_MS = 10_000;
  * because their opaque token is already on the wire.
  */
 function writeSse(session: SessionRecord, res: Response, wire: Record<string, unknown>): void {
-  res.write(`data: ${JSON.stringify(toClientPaths(session, wire))}\n\n`);
+  const scrubbed = toClientPaths(session, wire) as Record<string, unknown>;
+  // DESKTOP EXEMPTION — the model's OWN PROSE only.
+  //
+  // The rule "absolute paths never reach a client" is about a SERVER's layout
+  // reaching a stranger's browser. On the Mac app there is no stranger: the
+  // client is a window on the machine the files are on, the user picked
+  // `~/Desktop/x.stl` themselves, and `workspaceRef` deliberately hands the
+  // model that full path because nothing shorter resolves again
+  // (main/session-context.ts). Scrubbing it here turned the app's own answer
+  // into "I sliced <file>", which is useless to the one reader who is entitled
+  // to the name.
+  //
+  // Narrow on purpose: only `text`/`thinking`, only in desktop mode. Every
+  // other field — a tool's exception `summary`, a `plate_failed` `error`, every
+  // path-shaped KEY — still goes through the scrub in both modes, and hosted
+  // behaviour is unchanged.
+  if (isDesktop() && typeof wire.text === "string" && (wire.type === "text" || wire.type === "thinking")) {
+    scrubbed.text = wire.text;
+  }
+  res.write(`data: ${JSON.stringify(scrubbed)}\n\n`);
 }
 
 /**
  * Forward one AgentEvent to the browser, widened to a plain record (not the
  * strict AgentEvent union — see routes/jobs.ts for why) so a "metrics" event
- * can carry an extra `gcodeId`. tools.ts's slice_model writes its G-code
- * straight into the GLOBAL shared slices directory (it predates sessions);
- * this is the one place that file becomes reachable from THIS session at all
- * — without it, a chat-driven slice could never be sent to a printer via
+ * can carry an extra `gcodeId`. tools.ts's slice_model writes its G-code into
+ * this session's own `slices/` (session-context.ts's `sessionSlicesDir`), and
+ * this is the one place that file becomes ADDRESSABLE to the browser — without
+ * it, a chat-driven slice could never be downloaded, or sent to a printer via
  * /api/printers/:id/send, which only accepts a gcodeId from the session's own
  * registry. Chained per-response so relocating a file (async) can never
  * reorder frames relative to the surrounding text/tool events.
@@ -197,7 +217,12 @@ export function createChatRouter(
       // on every reopen of the conversation, so a path saved here leaks once
       // live and then for good. The assembled string is the only place the whole
       // path is guaranteed to be contiguous.
-      recordTurn(session, agent, message, stripPaths(replyText));
+      //
+      // DESKTOP keeps the path, for the same reason `writeSse` does: the saved
+      // transcript is redrawn in the app on the user's own Mac, and a reopened
+      // conversation that says "I sliced <file>" has lost the only name the user
+      // could act on. Hosted still scrubs before anything touches chats.json.
+      recordTurn(session, agent, message, isDesktop() ? replyText : stripPaths(replyText));
       // Pull back whatever the agent imported/downloaded/sliced this turn, so
       // a later turn — or a REST call like /api/slice — keeps working from
       // this session's file.

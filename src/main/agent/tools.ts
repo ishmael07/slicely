@@ -597,7 +597,11 @@ export async function executeTool(
       const status = await getStatus();
       emit({ type: "status", status });
       if (!status.installed) {
-        return "PrusaSlicer is NOT installed (expected at /Applications/PrusaSlicer.app). Tell the user they need to install it from prusa3d.com to slice.";
+        // No install path in the sentence: the model repeats tool results to the
+        // user almost verbatim, and "expected at /Applications/PrusaSlicer.app"
+        // is both a server path on a hosted deployment and a wrong guess on a
+        // Mac where Settings points somewhere else.
+        return "PrusaSlicer isn't installed, or isn't where Settings points. Tell the user to install it from prusa3d.com (or fix the path in Settings) to slice.";
       }
       return `PrusaSlicer ${status.version ?? "(unknown version)"} is installed${
         status.running ? " and currently running" : " (not currently running)"

@@ -9,7 +9,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { basename } from "node:path";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import {
   getModelInfo,
   recommendSettings,
@@ -208,7 +208,20 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
     // already name — and the alternative was `previewMesh`'s own ENOENT falling
     // through the generic funnel as "Something went wrong", which is the wrong
     // sentence for a model the session deleted or never finished uploading.
-    if (!existsSync(path)) {
+    //
+    // `isFile()`, not `existsSync`: `uploads/` can hold a DIRECTORY (an
+    // unzipped multi-part download lands as `downloads/kit/`, and the subtree
+    // rule happily admits `downloads/kit` itself), and a directory "exists" —
+    // so the old check waved it through and `previewMesh` threw EISDIR into the
+    // generic funnel as a 500 "Something went wrong". There is no mesh at that
+    // path either way, which is the same answer as a file that is gone.
+    let isFile = false;
+    try {
+      isFile = statSync(path).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) {
       sendError(res, new WireError(404, "That file is no longer in your workspace.", "not_found"));
       return;
     }

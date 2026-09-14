@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "./session";
+import { getConfig, resetConfigForTests } from "../main/config";
 import { relocateJobEventGcode } from "./routes/jobs";
 import { runInSession, sessionContext } from "../main/session-context";
 import { saveJobs } from "../main/jobs/store";
@@ -89,6 +90,53 @@ test("adoptGcodeFile refuses to mint a token for a file that does not exist", as
     assert.ok(existsSync(stray), "the refused file must be left exactly where it was");
     assert.equal(session.gcodeFiles.size, 0, "no token may be registered");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hosted: the old shared <workdir>/slices root is NOT adoptable — only the session's own", async () => {
+  // `adoptGcodeFile` used to accept `getConfig().slicesDir` as well, from when
+  // slicing wrote every plate into one folder. Nothing writes a G-code there any
+  // more (prusaslicer.ts uses `sessionSlicesDir()`), and on a hosted server that
+  // folder is CROSS-SESSION: while it stayed adoptable, any visitor could move a
+  // file out of it and mint themselves a download token for it. The session
+  // directory is now the whole rule.
+  const root = mkdtempSync(join(tmpdir(), "slicely-adopt-root-"));
+  const prevWorkdir = process.env.SLICELY_WORKDIR;
+  const prevMode = process.env.SLICELY_MODE;
+  process.env.SLICELY_WORKDIR = join(root, "work");
+  process.env.SLICELY_MODE = "hosted";
+  resetConfigForTests();
+  try {
+    const session = fakeSession(join(root, "sessions"), "s1");
+    // The shared root, with a file in it that does NOT belong to this session.
+    const shared = getConfig().slicesDir;
+    mkdirSync(shared, { recursive: true });
+    const strayInShared = join(shared, "plate-1.gcode");
+    writeFileSync(strayInShared, "; somebody else's plate\n");
+
+    await assert.rejects(
+      () => adoptGcodeFile(session, strayInShared),
+      (err: unknown) => (err as { code?: string }).code === "not_in_workspace",
+      "the shared slices root must not be adoptable in hosted mode",
+    );
+    assert.ok(existsSync(strayInShared), "the refused file must be left exactly where it was");
+    assert.equal(session.gcodeFiles.size, 0, "no token may be registered");
+
+    // And the real path — where the slicer actually writes — still works.
+    mkdirSync(session.slicesDir, { recursive: true });
+    const mine = join(session.slicesDir, "plate-1.gcode");
+    writeFileSync(mine, "; my plate\n");
+    const adopted = await adoptGcodeFile(session, mine);
+    assert.equal(adopted.path, mine, "already ours: adopted in place");
+    assert.match(adopted.id, /^[0-9a-f]+$/);
+    assert.ok(existsSync(adopted.path));
+  } finally {
+    if (prevWorkdir === undefined) delete process.env.SLICELY_WORKDIR;
+    else process.env.SLICELY_WORKDIR = prevWorkdir;
+    if (prevMode === undefined) delete process.env.SLICELY_MODE;
+    else process.env.SLICELY_MODE = prevMode;
+    resetConfigForTests();
     rmSync(root, { recursive: true, force: true });
   }
 });

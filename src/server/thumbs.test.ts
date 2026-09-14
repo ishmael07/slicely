@@ -9,7 +9,13 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { createThumbsRouter, THUMB_TIMEOUT_MS } from "./routes/thumbs";
+import {
+  createThumbsRouter,
+  THUMB_MAX_CONCURRENT,
+  THUMB_QUEUE_TIMEOUT_MS,
+  THUMB_TIMEOUT_MS,
+  type ThumbsRouterOptions,
+} from "./routes/thumbs";
 import type { guardedFetch } from "../main/sourcing/net";
 
 async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
@@ -109,4 +115,83 @@ test("the proxy waits the 15 s a full-resolution listing photo needs", async () 
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
+});
+
+// ── Concurrency ─────────────────────────────────────────────────────────────
+//
+// A twelve-result search paints twelve cards, so the browser opens twelve of
+// these AT ONCE, each allowed 15 s upstream (above). Unbounded, all twelve race
+// that ceiling together — twelve sockets and up to twelve MAX_BYTES buffers —
+// and one slow CDN in the set drags the whole grid to the timeout. The proxy
+// therefore runs at most THUMB_MAX_CONCURRENT fetches and queues the rest.
+
+/** A router with its own server, plus a fake upstream that holds each request
+ *  open for `holdMs` and records the high-water mark of concurrent fetches. */
+async function withSlowUpstream(
+  opts: { holdMs: number } & Omit<ThumbsRouterOptions, "fetch">,
+  fn: (base: string, peak: () => number) => Promise<void>,
+): Promise<void> {
+  let inFlight = 0;
+  let peak = 0;
+  const fakeFetch: typeof guardedFetch = async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    try {
+      await new Promise((r) => setTimeout(r, opts.holdMs));
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    } finally {
+      inFlight--;
+    }
+  };
+  const app = express();
+  app.use("/api", createThumbsRouter({ ...opts, fetch: fakeFetch }));
+  const server: Server = createServer(app);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await fn(`http://127.0.0.1:${port}`, () => peak);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+}
+
+test("six concurrent thumbnails never put more than four fetches in flight", async () => {
+  assert.equal(THUMB_MAX_CONCURRENT, 4);
+  // The queue wait must stay BELOW the fetch ceiling: a request that has already
+  // waited 10 s must not then be granted another 15 s upstream.
+  assert.ok(THUMB_QUEUE_TIMEOUT_MS < THUMB_TIMEOUT_MS, "the queue wait is shorter than the fetch timeout");
+
+  await withSlowUpstream({ holdMs: 60 }, async (base, peak) => {
+    const urls = Array.from({ length: 6 }, (_, i) => `https://media.printables.com/p${i}.jpg`);
+    const results = await Promise.all(urls.map((u) => thumb(base, u)));
+    for (const res of results) {
+      assert.equal(res.status, 200, "every one of the six still gets its image");
+      assert.equal(res.headers.get("content-type"), "image/jpeg");
+    }
+    assert.ok(peak() <= THUMB_MAX_CONCURRENT, `peak concurrency was ${peak()}, expected <= ${THUMB_MAX_CONCURRENT}`);
+    assert.ok(peak() > 1, `the bound must not have serialized everything (peak ${peak()})`);
+  });
+});
+
+test("a thumbnail that waits too long for a slot is 503 busy, not 502", async () => {
+  // 502 says "this image is dead" and the card draws its placeholder for good;
+  // `busy` says "the server is full", which is true and retryable. Driven with a
+  // one-slot, 20 ms queue so the real 10 s wait isn't spent in the test suite.
+  await withSlowUpstream({ holdMs: 400, maxConcurrent: 1, queueTimeoutMs: 20 }, async (base) => {
+    const first = thumb(base, "https://media.printables.com/slow.jpg");
+    // Behind it in the queue, and it will time out there.
+    const second = await thumb(base, "https://media.printables.com/queued.jpg");
+    assert.equal(second.status, 503);
+    const body = (await second.json()) as { error?: string; code?: string };
+    assert.equal(body.code, "busy");
+    assert.ok(body.error && body.error.length > 0, "a wire error always carries a sentence");
+
+    // The holder still finishes, and its permit goes back.
+    assert.equal((await first).status, 200);
+    const after = await thumb(base, "https://media.printables.com/later.jpg");
+    assert.equal(after.status, 200, "the slot must be reusable once the queue drains");
+  });
 });

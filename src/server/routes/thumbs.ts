@@ -13,6 +13,8 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { guardedFetch } from "../../main/sourcing/net";
+import { Semaphore, SemaphoreTimeoutError } from "../../main/semaphore";
+import { sendError, WireError } from "../errors";
 
 /**
  * Hosts whose thumbnails may be proxied.
@@ -65,17 +67,47 @@ const MAX_BYTES = 16 * 1024 * 1024;
  */
 export const THUMB_TIMEOUT_MS = 15_000;
 
-/** What this router needs to reach the internet. Injectable ONLY so a test can
- *  see which URL and which timeout the route asked for without a network; the
- *  default is the SSRF-guarded fetch and nothing else may be passed in
- *  production (index.ts calls this with no options). */
+/**
+ * How many thumbnails may be in flight at once, and how long a request will
+ * queue for a slot before giving up.
+ *
+ * A twelve-result search paints twelve cards, so the browser opens twelve of
+ * these AT ONCE — and each one is a full-resolution photo on someone else's CDN
+ * with a 15 s ceiling (above). Unbounded, all twelve race that ceiling
+ * together: twelve sockets, twelve buffers of up to MAX_BYTES, and a slow host
+ * anywhere in the set drags the whole grid to the timeout. Four at a time is
+ * fast enough to fill a grid (they finish in waves) and small enough that the
+ * memory and the socket count are bounded by the constant rather than by how
+ * many cards a search returned.
+ *
+ * The queue wait is deliberately SHORTER than the fetch timeout: a request that
+ * has already waited 10 s for a slot would, if let through, be allowed another
+ * 15 s upstream — long past the point where the browser has given up and the
+ * card has drawn its placeholder. Better to say "busy" while someone is still
+ * listening. Both are exported so the test asserts the numbers the route
+ * actually uses.
+ */
+export const THUMB_MAX_CONCURRENT = 4;
+export const THUMB_QUEUE_TIMEOUT_MS = 10_000;
+
+/** What this router needs to reach the internet, and how much of it at a time.
+ *  Injectable ONLY so a test can see which URL and which timeout the route asked
+ *  for without a network, and exercise the queue without waiting real seconds;
+ *  the defaults are the SSRF-guarded fetch and the constants above, and nothing
+ *  else may be passed in production (index.ts calls this with no options). */
 export interface ThumbsRouterOptions {
   fetch?: typeof guardedFetch;
+  maxConcurrent?: number;
+  queueTimeoutMs?: number;
 }
 
 export function createThumbsRouter(opts: ThumbsRouterOptions = {}): Router {
   const router = Router();
   const fetchUpstream = opts.fetch ?? guardedFetch;
+  // One semaphore per router, not per process: a test builds its own router,
+  // and index.ts builds exactly one.
+  const slots = new Semaphore(opts.maxConcurrent ?? THUMB_MAX_CONCURRENT);
+  const queueTimeoutMs = opts.queueTimeoutMs ?? THUMB_QUEUE_TIMEOUT_MS;
 
   router.get("/thumb", async (req: Request, res: Response) => {
     const raw = typeof req.query.url === "string" ? req.query.url : "";
@@ -93,6 +125,34 @@ export function createThumbsRouter(opts: ThumbsRouterOptions = {}): Router {
     }
     if (url.protocol !== "https:" || !hostAllowed(url.hostname)) {
       res.status(403).end();
+      return;
+    }
+
+    // Take a slot. AFTER the cheap rejections above, so a 400/403 never sits in
+    // a queue behind twelve real fetches.
+    let release: () => void;
+    try {
+      release = await slots.acquire(queueTimeoutMs);
+    } catch (err) {
+      if (err instanceof SemaphoreTimeoutError) {
+        // 503 `busy`, not 502. A 502 says "this thumbnail is dead" and the UI
+        // draws its placeholder for good; `busy` says "this server is full",
+        // which is both true and retryable — and it is one of the stable wire
+        // codes, so the client already knows it.
+        sendError(
+          res,
+          new WireError(503, "Too many thumbnails at once. Try again in a moment.", "busy"),
+        );
+        return;
+      }
+      res.status(502).end();
+      return;
+    }
+    // The grid may have scrolled away, or the tab closed, while this waited in
+    // the queue. Spending a slot on a socket nobody is reading is the whole
+    // thing the queue exists to prevent.
+    if (res.writableEnded || res.destroyed) {
+      release();
       return;
     }
 
@@ -146,6 +206,11 @@ export function createThumbsRouter(opts: ThumbsRouterOptions = {}): Router {
       // A dead thumbnail is not worth an error in the UI; the card falls back
       // to its placeholder on a non-200.
       res.status(502).end();
+    } finally {
+      // Never conditional, never skipped: a permit that is not given back is
+      // gone for the life of the process, and four of those wedge the endpoint
+      // permanently.
+      release();
     }
   });
 
