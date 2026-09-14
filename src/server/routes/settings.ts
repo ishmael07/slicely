@@ -21,7 +21,9 @@ import {
   EFFORT_LEVELS,
 } from "../../main/settings";
 import { providerForModel } from "../../main/agent/provider";
+import { resolveTurnFunding } from "../../main/agent/funding";
 import { getUserApiKey } from "../../main/userkey";
+import { signinProvidersFromEnv } from "./config";
 import { KNOWN_PRINTERS } from "../../main/profiles";
 import { seedSessionFromPreferences } from "../../main/agent/state";
 import type {
@@ -62,6 +64,27 @@ function settingsState(): SettingsState {
   };
 }
 
+/**
+ * True when THIS request's next chat turn would be paid for out of free credit.
+ *
+ * Asked by resolving the funding for real, rather than by re-deriving the rule,
+ * so the picker and the chat route cannot disagree about who is paying. Every
+ * refusal `resolveTurnFunding` can throw — not signed in, blocked, capped, broke
+ * — means the caller is not currently ON credit, and those cases fall through to
+ * the per-model key check below, which is the answer they had before accounts
+ * existed.
+ */
+function onFreeCredit(req: Request): boolean {
+  try {
+    return resolveTurnFunding({
+      accountId: req.session?.accountId,
+      oauthConfigured: signinProvidersFromEnv().length > 0,
+    }).source === "free";
+  } catch {
+    return false;
+  }
+}
+
 export function createSettingsRouter(): Router {
   const router = Router();
 
@@ -87,6 +110,24 @@ export function createSettingsRouter(): Router {
     if (!Object.keys(patch).length) {
       sendError(res, new WireError(400, "No valid model or effort supplied."));
       return;
+    }
+    // ON FREE CREDIT THERE IS NO PICKER. The free tier runs one model at one
+    // effort — that is what makes fifty cents buy a real trial — and
+    // `resolveTurnFunding` would override a stored choice anyway, so saving one
+    // would only ever be a lie the Settings sheet told. The refusal names the
+    // fix, and the SENTENCE IS THE ONE THE UI SHOWS, deliberately: two copies of
+    // it is how the server and the client come to say different things.
+    //
+    // The provider asked about is the one for the REQUESTED model (or the current
+    // one for an effort-only change): someone who holds an OpenAI key and is on
+    // credit for an Anthropic model can still switch to the model they can pay
+    // for. That is the point of the switch.
+    if (onFreeCredit(req)) {
+      const target = providerForModel(patch.model ?? getSettings().model);
+      if (!getUserApiKey(target.id)) {
+        sendError(res, new WireError(403, "Add your own key to choose models.", "forbidden"));
+        return;
+      }
     }
     // A model is only choosable if the key that pays for it exists. Refusing
     // here — with the provider NAMED, since that is the missing piece — beats

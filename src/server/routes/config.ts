@@ -23,7 +23,13 @@ import { getMode, isHosted } from "../../main/mode";
 import { getUserApiKey, hasAnyUserApiKey, userKeyHint } from "../../main/userkey";
 import { PROVIDERS, providerForModel } from "../../main/agent/provider";
 import { getSettings } from "../../main/settings";
-import type { ProviderInfo } from "../../shared/types";
+import { accountsEnabled, freeTierInfo } from "../../main/agent/funding";
+import { formatMoney } from "../../main/pricing";
+import { balanceMicros, type Account } from "../../main/accounts/store";
+import { chatAllowance } from "../../main/accounts/meter";
+import type {
+  AccountView, FreeTierView, ProviderInfo, SigninProvider,
+} from "../../shared/types";
 
 /** A string that is not a key and not one of the prefixes any provider names
  *  specially, so `formatMessage` returns its GENERAL refusal — the sentence the
@@ -54,6 +60,92 @@ export interface ConfigResponse {
   repoUrl: string;
   termsUrl: "/terms";
   privacyUrl: "/privacy";
+  /** Should the sign-in block render at all? Hosted, a fundable free tier, and
+   *  at least one OAuth provider fully configured — all three, or this is
+   *  exactly today's bring-your-own-key product. */
+  accountsEnabled: boolean;
+  /** Which buttons to show, in the order to show them. Empty when
+   *  `accountsEnabled` is false. */
+  signinProviders: SigninProvider[];
+  /** What free credit runs on, or null when there is none. Per-deploy facts
+   *  only — what one PERSON has left is on GET /api/me. */
+  freeTier: FreeTierView | null;
+}
+
+/**
+ * The two ways in, in the order the UI shows them.
+ *
+ * FIXED ORDER, because a list assembled from `Object.entries(process.env)` would
+ * reorder itself between deploys and move the buttons under the user's cursor.
+ *
+ * A provider counts as configured only with BOTH halves of its client AND
+ * `SLICELY_PUBLIC_URL`: redirect URIs are built from that origin and never from
+ * a request's `Host` header, so without it there is nothing to send the person
+ * back to and the flow would fail after they had already typed their password.
+ * Half a client is no client.
+ *
+ * ON MERGING WITH THE OAUTH LANE: `src/server/routes/auth.ts` exports
+ * `signInProviders()`, which answers this same question from the provider
+ * objects themselves (`OauthProvider.configured()`). That is the better source —
+ * it cannot drift from the flow that actually runs — so at merge time pass it in
+ * as `createConfigRouter({ signinProviders: signInProviders })` and this
+ * function becomes the fallback for a server built without the auth router.
+ */
+export function signinProvidersFromEnv(): SigninProvider[] {
+  if (!isHosted() || !getConfig().publicUrl) return [];
+  const out: SigninProvider[] = [];
+  const configured = (prefix: string): boolean =>
+    Boolean(process.env[`${prefix}_CLIENT_ID`]?.trim() && process.env[`${prefix}_CLIENT_SECRET`]?.trim());
+  if (configured("GOOGLE")) out.push({ id: "google", label: "Google" });
+  if (configured("GITHUB")) out.push({ id: "github", label: "GitHub" });
+  return out;
+}
+
+/**
+ * One account as its owner is shown it — and the whole of what ever crosses the
+ * wire about a person (see `AccountView`).
+ *
+ * Exported so `GET /api/me` (routes/auth.ts, lane B) renders the same shape from
+ * the same code. Two copies of "what does a signed-in person look like" is how a
+ * balance in the header comes to disagree with the balance in Settings.
+ *
+ * `initial` is the first character of the address, uppercased — not of the name,
+ * which may be absent, may be a company, and may be in a script with no
+ * uppercase at all. `"?"` when there is no first character to take, because a
+ * monogram with a blank in it reads as a broken avatar rather than as an unusual
+ * address.
+ */
+export function accountView(account: Account): AccountView {
+  const chats = chatAllowance(account);
+  const balance = balanceMicros(account);
+  return {
+    email: account.email,
+    ...(account.name ? { name: account.name } : {}),
+    initial: account.email.trim()[0]?.toUpperCase() ?? "?",
+    balanceMicros: balance,
+    balanceLabel: formatMoney(balance),
+    grantedMicros: account.grantedMicros,
+    grantedLabel: formatMoney(account.grantedMicros),
+    chatsToday: chats.used,
+    chatsPerDay: chats.limit,
+    exhausted: balance <= 0,
+  };
+}
+
+export interface ConfigRouterOptions {
+  /**
+   * The OAuth providers this deployment offers, injected.
+   *
+   * Structurally the subset of lane B's `OauthConfig` this route needs, so a
+   * real `OauthConfig` is assignable to it: `configured()` is asked of each, and
+   * nothing else about a provider is any of this route's business.
+   */
+  oauth?: {
+    providers?: readonly { id: "google" | "github"; label: string; configured(): boolean }[];
+  };
+  /** Override how the provider list is resolved — see `signinProvidersFromEnv`.
+   *  Takes precedence over `oauth`. */
+  signinProviders?: () => SigninProvider[];
 }
 
 let commitCache: string | undefined;
@@ -111,14 +203,31 @@ function slicerAvailable(): boolean {
   }
 }
 
-export function createConfigRouter(): Router {
+export function createConfigRouter(opts: ConfigRouterOptions = {}): Router {
   const router = Router();
   // Resolve the commit AT BOOT (app construction), not on the first request:
   // asking git is a subprocess, and no visitor should wait for it.
   sourceCommit();
 
+  /** Read per request, not per boot: a Fly secret change means a restart, but a
+   *  test flips the environment between two requests to the same app. */
+  const listProviders = (): SigninProvider[] => {
+    if (opts.signinProviders) return opts.signinProviders();
+    if (opts.oauth?.providers) {
+      return opts.oauth.providers
+        .filter((p) => p.configured())
+        .map((p) => ({ id: p.id, label: p.label }));
+    }
+    return signinProvidersFromEnv();
+  };
+
   router.get("/config", (_req: Request, res: Response) => {
     const active = providerForModel(getSettings().model).id;
+    const signinProviders = listProviders();
+    // All three legs, in one place: the client should never have to work out
+    // from three fields whether the sign-in block is worth rendering.
+    const accounts = accountsEnabled(signinProviders.length > 0);
+    const free = accounts ? freeTierInfo() : undefined;
     const body: ConfigResponse = {
       mode: getMode(),
       hasKey: hasAnyUserApiKey(),
@@ -145,6 +254,19 @@ export function createConfigRouter(): Router {
       repoUrl: process.env.SLICELY_REPO_URL?.trim() || DEFAULT_REPO_URL,
       termsUrl: "/terms",
       privacyUrl: "/privacy",
+      accountsEnabled: accounts,
+      // Empty rather than "the configured ones" when accounts are off: a button
+      // that starts a flow with nothing to fund is a dead end with a password
+      // prompt in the middle of it.
+      signinProviders: accounts ? signinProviders : [],
+      freeTier: free
+        ? {
+            model: free.model,
+            modelLabel: free.modelLabel,
+            effort: free.effort,
+            creditCents: free.creditCents,
+          }
+        : null,
     };
     res.json(body);
   });

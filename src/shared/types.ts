@@ -300,6 +300,57 @@ export interface ProviderInfo {
   keyHelp?: ProviderKeyHelp;
 }
 
+/** One way to sign in, as /api/config offers it. The ORDER of the array is the
+ *  UI's order and is fixed by the server, so the buttons never swap places
+ *  between two renders of the same page. */
+export interface SigninProvider {
+  id: "google" | "github";
+  /** "Google" | "GitHub" — the spelling the button shows. */
+  label: string;
+}
+
+/** The free tier as /api/config describes it: per-DEPLOY facts only, so the boot
+ *  call stays the boot call. What one PERSON has left is on /api/me. */
+export interface FreeTierView {
+  model: string;
+  modelLabel: string;
+  effort: "medium";
+  /** The one-time grant in whole cents, for the "50¢ to try it" copy. */
+  creditCents: number;
+}
+
+/**
+ * One account as its own owner is shown it — and the whole of what ever crosses
+ * the wire about a person.
+ *
+ * An email, a letter, four integers and two pre-formatted strings. No account
+ * id (the session cookie already settles which account this is), no provider
+ * id, no token, no ledger. The two `*Label` strings are formatted on the SERVER
+ * so a client cannot invent its own rounding and then disagree with the meter
+ * about how much money is left.
+ */
+export interface AccountView {
+  email: string;
+  name?: string;
+  /** One uppercase letter for the header monogram, or "?" when the address does
+   *  not start with one. */
+  initial: string;
+  balanceMicros: number;
+  /** "$0.42" — floored, so a balance never reads higher than it is. */
+  balanceLabel: string;
+  grantedMicros: number;
+  grantedLabel: string;
+  chatsToday: number;
+  chatsPerDay: number;
+  exhausted: boolean;
+}
+
+/** GET /api/me. `account` is ABSENT, not null, when nobody is signed in. */
+export interface MeResponse {
+  signedIn: boolean;
+  account?: AccountView;
+}
+
 /** One provider's key-card copy, flattened for the wire (`formatMessage` is a
  *  sentence here, not the function it is on the server). */
 export interface ProviderKeyHelp {
