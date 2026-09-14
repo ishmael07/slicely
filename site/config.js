@@ -18,7 +18,7 @@
  * discovering a second one later.
  */
 window.SLICELY_SITE = {
-  APP_URL: "https://app.slicely.example",
+  APP_URL: "https://slicely.fly.dev",
   DOWNLOAD_URL: "https://github.com/ishmael07/slicely/releases/latest",
   REPO_URL: "https://github.com/ishmael07/slicely",
   CONTACT_EMAIL: "{{CONTACT_EMAIL}}",

@@ -1,56 +1,36 @@
-/* Slicely landing page — dark, coral, sleek. Matches the app palette.
-   Shared by index.html, terms.html and privacy.html. */
+/* Slicely landing page. Dark, one coral accent, hairline borders — the app's
+   palette, used quietly. Shared by index.html, terms.html and privacy.html. */
 
 /* ---------- fonts ----------
-   Inter, self-hosted, latin subset only (~18 KB each) from the official release at
-   github.com/rsms/inter — see fonts/LICENSE.txt (SIL OFL 1.1). font-display: swap so
-   text is readable on the first paint even on a cold cache. */
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/inter-latin-400.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('fonts/inter-latin-600.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('fonts/inter-latin-700.woff2') format('woff2');
-}
+   Inter, self-hosted, latin subset (~18 KB each), SIL OFL 1.1 — fonts/LICENSE.txt. */
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/inter-latin-400.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap; src: url('fonts/inter-latin-600.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap; src: url('fonts/inter-latin-700.woff2') format('woff2'); }
 
 :root {
   --bg: #0a0a0b;
-  --bg-soft: #111114;
-  --panel: rgba(255, 255, 255, 0.04);
-  --panel-line: rgba(255, 255, 255, 0.09);
+  --bg-1: #111114;
+  --panel: rgba(255, 255, 255, 0.055);
+  --panel-2: rgba(255, 255, 255, 0.09);
+  --line: rgba(255, 255, 255, 0.1);
+  --line-2: rgba(255, 255, 255, 0.22);
   --text: #f4f4f7;
-  --text-dim: #a2a2ae;
-  --text-faint: #6c6c78;
+  --dim: #a2a2ae;
+  --faint: #6c6c78;
   --accent: #ff7a45;
   --accent-2: #ffb15c;
-  --accent-soft: rgba(255, 122, 69, 0.14);
-  --accent-glow: rgba(255, 122, 69, 0.45);
+  --accent-soft: rgba(255, 122, 69, 0.16);
   --ok: #4ade80;
-  --radius: 18px;
-  --maxw: 1120px;
+  --maxw: 1080px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  /* The app replica uses the app's own font stack, not the site's. */
+  --app-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-
-html { scroll-behavior: smooth; }
-
+html { scroll-behavior: smooth; font-size: 17px; }
 body {
   font-family: var(--sans);
   background: var(--bg);
@@ -59,480 +39,476 @@ body {
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
-
 a { color: inherit; text-decoration: none; }
-
-/* Keyboard focus has to be visible against a dark canvas, and the browser default
-   mostly is not. :focus-visible rather than :focus, so a mouse click on a button
-   does not leave a ring sitting behind it. */
-a:focus-visible,
-.btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
+a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 code {
-  font-family: var(--mono);
-  font-size: 0.9em;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 5px;
-  padding: 1px 5px;
+  font-family: var(--mono); font-size: 0.88em;
+  background: var(--panel-2); border-radius: 4px; padding: 1px 5px;
 }
-
-/* Visually hidden but read out — used for the empty corner cell of the table. */
-.vh {
-  position: absolute; width: 1px; height: 1px;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
-}
-
-
-/* ---------- ambient background ---------- */
-.bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; }
-
-.aurora {
-  position: absolute;
-  top: -30%; left: 50%;
-  width: 90vw; height: 90vw;
-  max-width: 1100px; max-height: 1100px;
-  transform: translateX(-50%);
-  background:
-    radial-gradient(closest-side, rgba(255, 122, 69, 0.30), transparent 70%),
-    radial-gradient(closest-side, rgba(255, 177, 92, 0.18), transparent 70%);
-  filter: blur(40px);
-  animation: drift 18s var(--ease) infinite alternate;
-}
-
-@keyframes drift {
-  0%   { transform: translateX(-55%) translateY(0) scale(1); }
-  100% { transform: translateX(-45%) translateY(6%) scale(1.12); }
-}
-
-.grid {
-  position: absolute; inset: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 80%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 80%);
-}
+ul, ol { list-style: none; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* ---------- nav ---------- */
 .nav {
   position: sticky; top: 0; z-index: 40;
   display: flex; align-items: center; gap: 18px;
   max-width: var(--maxw); margin: 0 auto;
-  padding: 18px 24px;
-  backdrop-filter: blur(8px);
+  padding: 16px 24px;
+  background: rgba(10, 10, 11, 0.7);
+  backdrop-filter: blur(12px);
 }
-
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 1.15rem; }
-.brand-mark { color: var(--accent); font-size: 1.05rem; filter: drop-shadow(0 2px 10px var(--accent-glow)); }
-.brand-name { letter-spacing: -0.02em; }
-
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 1.05rem; letter-spacing: -0.01em; }
+.brand-mark { color: var(--accent); font-size: 0.95rem; }
 .nav-links { margin-left: auto; display: flex; gap: 26px; }
-.nav-links a { color: var(--text-dim); font-size: 0.92rem; font-weight: 600; transition: color 0.2s; }
+.nav-links a { color: var(--dim); font-size: 0.92rem; font-weight: 500; transition: color 0.15s; }
 .nav-links a:hover { color: var(--text); }
 
 /* ---------- buttons ---------- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  font: inherit; font-weight: 600; cursor: pointer;
-  border: 1px solid transparent; border-radius: 999px;
-  padding: 12px 22px; font-size: 0.95rem;
-  transition: transform 0.18s var(--ease), box-shadow 0.25s var(--ease), background 0.2s, border-color 0.2s;
-  white-space: nowrap;
+  font: inherit; font-weight: 600; font-size: 0.95rem; cursor: pointer;
+  border: 1px solid transparent; border-radius: 10px;
+  padding: 11px 18px; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.btn:active { transform: translateY(1px) scale(0.99); }
-
-.btn-primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #2a1206;
-  box-shadow: 0 8px 24px -8px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-}
-.btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 14px 38px -10px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.4);
-}
-
-.btn-ghost {
-  background: var(--panel); color: var(--text);
-  border-color: var(--panel-line);
-}
-.btn-ghost:hover { border-color: rgba(255, 255, 255, 0.22); transform: translateY(-2px); }
-
-.btn-sm { padding: 9px 16px; font-size: 0.88rem; }
-.btn-lg { padding: 16px 30px; font-size: 1.05rem; }
-.arrow { transition: transform 0.2s var(--ease); }
-.btn:hover .arrow { transform: translateX(4px); }
+.btn-primary { background: var(--accent); color: #1a0c04; }
+.btn-primary:hover { background: #ff8a5c; }
+.btn-ghost { background: transparent; color: var(--text); border-color: var(--line-2); }
+.btn-ghost:hover { border-color: rgba(255, 255, 255, 0.35); background: var(--panel); }
+.btn-sm { padding: 8px 14px; font-size: 0.88rem; }
+.btn-lg { padding: 14px 24px; font-size: 1rem; }
 
 /* ---------- hero ---------- */
 .hero {
   max-width: var(--maxw); margin: 0 auto;
-  padding: 70px 24px 90px;
-  display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center;
+  padding: 56px 24px 88px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center;
 }
-
-.eyebrow {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-size: 0.82rem; font-weight: 600; color: var(--text-dim);
-  background: var(--panel); border: 1px solid var(--panel-line);
-  padding: 7px 14px; border-radius: 999px; margin-bottom: 22px;
-}
-.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
-
+.hero > * { min-width: 0; }
 h1 {
-  font-size: clamp(2.4rem, 5.2vw, 3.9rem);
-  line-height: 1.05; letter-spacing: -0.035em; font-weight: 700;
+  font-size: clamp(2.4rem, 4.6vw, 3.5rem);
+  line-height: 1.04; letter-spacing: -0.035em; font-weight: 700;
+  max-width: 11em;
 }
-.grad {
-  background: linear-gradient(110deg, var(--accent), var(--accent-2) 60%, #ffd9a8);
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-}
-
-.lead {
-  margin-top: 22px; max-width: 30em;
-  font-size: 1.12rem; color: var(--text-dim);
-}
-
-.hero-cta { display: flex; gap: 14px; margin-top: 32px; flex-wrap: wrap; align-items: flex-start; }
-.cta-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 20rem; }
-.cta-micro { font-size: 0.78rem; line-height: 1.45; color: var(--text-faint); }
-
-/* ---------- hero demo (animated in the "hero demo timeline" block below) ---------- */
-.hero-app { position: relative; }
-.hero-app::before {
-  content: ''; position: absolute; inset: 8% 6% 6% 6%; z-index: -1;
-  background: radial-gradient(closest-side, var(--accent-glow), transparent 75%);
-  filter: blur(50px); opacity: 0.55;
-}
-
-.demo { max-width: 380px; margin: 0 auto; }
-.demo-frame {
-  background: linear-gradient(180deg, rgba(28, 28, 33, 0.94), rgba(16, 16, 20, 0.94));
-  border: 1px solid var(--panel-line);
-  border-radius: 24px; overflow: hidden;
-  box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
-.demo-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 13px 16px; border-bottom: 1px solid var(--panel-line);
-  background: rgba(255, 255, 255, 0.02);
-}
-.demo-mark { color: var(--accent); font-size: 0.8rem; }
-.demo-title { font-weight: 700; font-size: 0.9rem; letter-spacing: -0.01em; }
-.status-pill {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
-  font-size: 0.7rem; color: var(--text-dim);
-  background: var(--panel); border: 1px solid var(--panel-line);
-  padding: 4px 10px; border-radius: 999px;
-}
-.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-
-/* A fixed height keeps the page from reflowing as the stages come and go. */
-.demo-stage {
-  padding: 16px; min-height: 290px;
-  display: flex; flex-direction: column; gap: 11px;
-}
-
-.demo-prompt {
-  display: flex; align-items: center;
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: 12px; padding: 11px 13px;
-  font-family: var(--mono); font-size: 0.78rem;
-}
-.demo-typed {
-  display: inline-block; white-space: nowrap; overflow: hidden;
-  width: 30ch; /* "print me a phone stand, sturdy" is exactly 30 characters */
-  border-right: 2px solid var(--accent);
-  vertical-align: bottom;
-}
-
-.demo-model {
-  display: flex; align-items: center; gap: 11px;
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: 12px; padding: 10px;
-}
-.demo-thumb {
-  flex: 0 0 auto; width: 46px; height: 46px; border-radius: 9px;
-  background:
-    linear-gradient(135deg, rgba(255, 122, 69, 0.55), rgba(255, 177, 92, 0.22)),
-    repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.22) 0 3px, transparent 3px 6px);
-  border: 1px solid rgba(255, 122, 69, 0.3);
-}
-.demo-model-text { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; font-size: 0.82rem; }
-
-.pill {
-  display: inline-block; font-size: 0.66rem; font-weight: 600;
-  color: var(--text-dim); background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--panel-line); border-radius: 999px; padding: 2px 9px;
-}
-.pill-ok { color: #bbf7d0; background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.35); }
-
-.demo-metrics {
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: 12px; padding: 12px 13px;
-  display: flex; flex-direction: column; gap: 8px;
-}
-.demo-row { display: grid; grid-template-columns: 4.4rem 1fr 3.4rem; align-items: center; gap: 9px; }
-.demo-k { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
-.demo-track { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
-.demo-fill {
-  display: block; height: 100%; border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-}
-.demo-fill.f1 { width: 78%; }
-.demo-fill.f2 { width: 46%; }
-.demo-fill.f3 { width: 62%; }
-.demo-v { font-size: 0.76rem; font-weight: 700; color: var(--accent-2); text-align: right; }
-.demo-note { margin-top: 2px; font-size: 0.68rem; color: var(--text-faint); font-family: var(--mono); }
-
-.demo-sent { margin-top: auto; }
-
-/* ---------- hero demo timeline ----------
-   One ~9 s loop telling the whole story: a prompt is typed, Slicely shows what it
-   found, the slice metrics fill in, the file goes to the printer. Every element runs
-   its own 9 s animation with percentage keyframes rather than a chain of delays, so
-   the stages stay in lockstep no matter when the page loaded.
-
-     0.0 – 2.2 s   the prompt types itself, one character per step
-     2.2 – 4.5 s   the model card rises in
-     4.5 – 7.0 s   the metrics panel rises in and its three bars fill
-     7.0 – 8.6 s   "Sent to Ender 3 ✓" pops
-     8.6 – 9.0 s   the stage fades out and the loop restarts
-
-   Only opacity and transform move, apart from four short width animations on very
-   small elements (the typed span and the three 6 px bars), so nothing here costs a
-   layout pass on anything but the frame itself — and the frame has a fixed height.
-
-   The base rules above are the FINAL frame, not the first: if animations never run,
-   the reader still sees a complete, sensible screenshot rather than an empty box. */
-
-@keyframes demo-cycle {
-  0%, 95.6% { opacity: 1; }
-  100%      { opacity: 0; }
-}
-
-@keyframes demo-type {
-  0%    { width: 0; animation-timing-function: steps(1, end); }
-  1.7%  { width: 0; animation-timing-function: steps(30, end); }
-  24.4% { width: 30ch; animation-timing-function: steps(1, end); }
-  100%  { width: 30ch; }
-}
-
-@keyframes demo-caret {
-  0%, 49%    { border-right-color: var(--accent); }
-  50%, 100%  { border-right-color: transparent; }
-}
-
-@keyframes demo-rise-model {
-  0%, 24.4%   { opacity: 0; transform: translateY(10px); }
-  32.2%, 100% { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes demo-rise-metrics {
-  0%, 50%     { opacity: 0; transform: translateY(10px); }
-  56.7%, 100% { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes demo-fill-1 { 0%, 51.1% { width: 0; } 68.9%, 100% { width: 78%; } }
-@keyframes demo-fill-2 { 0%, 53.3% { width: 0; } 71.1%, 100% { width: 46%; } }
-@keyframes demo-fill-3 { 0%, 55.6% { width: 0; } 73.3%, 100% { width: 62%; } }
-
-@keyframes demo-pop {
-  0%, 77.8%   { opacity: 0; transform: scale(0.82); }
-  81.1%       { opacity: 1; transform: scale(1.06); }
-  83.3%, 100% { opacity: 1; transform: scale(1); }
-}
-
-.demo-stage   { animation: demo-cycle 9s linear infinite; }
-.demo-typed   { animation: demo-type 9s linear infinite, demo-caret 1s linear infinite; }
-.demo-model   { animation: demo-rise-model 9s var(--ease) infinite; }
-.demo-metrics { animation: demo-rise-metrics 9s var(--ease) infinite; }
-.demo-fill.f1 { animation: demo-fill-1 9s var(--ease) infinite; }
-.demo-fill.f2 { animation: demo-fill-2 9s var(--ease) infinite; }
-.demo-fill.f3 { animation: demo-fill-3 9s var(--ease) infinite; }
-.demo-sent    { animation: demo-pop 9s var(--ease) infinite; }
+.lead { margin-top: 20px; max-width: 24em; font-size: 1.2rem; color: var(--dim); }
+.hero-cta { display: flex; gap: 10px; margin-top: 30px; flex-wrap: wrap; }
+.btn .apple { width: 1em; height: 1em; fill: currentColor; margin-top: -2px; }
 
 /* ---------- sections ---------- */
-section { position: relative; }
-.section-title {
-  text-align: center; font-size: clamp(1.6rem, 3.4vw, 2.4rem);
-  letter-spacing: -0.03em; font-weight: 700; margin-bottom: 14px;
-}
-.section-sub {
-  text-align: center; color: var(--text-dim); font-size: 1.05rem;
-  margin: 0 auto 48px; max-width: 40em;
-}
+.section { max-width: var(--maxw); margin: 0 auto; padding: 72px 24px; border-top: 1px solid var(--line); }
+.section-head { margin-bottom: 40px; max-width: 40em; }
+.section-head h2, .byo h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); letter-spacing: -0.03em; font-weight: 700; line-height: 1.15; }
+.section-head p { margin-top: 10px; color: var(--dim); font-size: 1.05rem; }
 
-.how, .features, .compare, .byo, .reqs { max-width: var(--maxw); margin: 0 auto; padding: 80px 24px; }
+/* how it works */
+.flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; position: relative; }
+.flow-step { position: relative; padding: 26px 24px 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.flow-ico {
+  width: 26px; height: 26px; margin-bottom: 22px;
+  fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.flow-n { position: absolute; top: 24px; right: 24px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; color: var(--faint); }
+.flow-step h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.01em; }
+.flow-step p { color: var(--dim); font-size: 1rem; }
+.note { margin-top: 22px; font-size: 0.95rem; color: var(--dim); padding-left: 14px; border-left: 2px solid var(--accent); }
+.feature h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.01em; }
+.feature p { color: var(--dim); font-size: 0.95rem; }
 
-/* steps */
-.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; }
-.step {
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: var(--radius); padding: 26px 22px;
-  transition: transform 0.3s var(--ease), border-color 0.3s;
+/* features */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px 32px; }
+.feature-ico {
+  width: 24px; height: 24px; margin-bottom: 14px;
+  fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
-.step:hover { transform: translateY(-4px); border-color: rgba(255, 122, 69, 0.4); }
-.step-n {
-  width: 34px; height: 34px; display: grid; place-items: center;
-  border-radius: 11px; font-size: 0.9rem; font-weight: 700; margin-bottom: 16px;
-  color: var(--accent-2);
-  background: var(--accent-soft); border: 1px solid rgba(255, 122, 69, 0.28);
-}
-.step h3 { font-size: 1.05rem; margin-bottom: 8px; letter-spacing: -0.01em; }
-.step p { color: var(--text-dim); font-size: 0.92rem; }
-.step p b { color: var(--text); font-weight: 600; }
-
-.callout {
-  display: flex; align-items: flex-start; gap: 12px;
-  margin-top: 22px; padding: 18px 22px;
-  background: linear-gradient(180deg, rgba(255, 122, 69, 0.10), rgba(255, 122, 69, 0.03));
-  border: 1px solid rgba(255, 122, 69, 0.28); border-radius: var(--radius);
-  color: var(--text-dim); font-size: 0.98rem;
-}
-.callout b { color: var(--text); }
-.callout-mark { color: var(--accent); line-height: 1.55; }
-
-/* features — flex rather than grid so the odd last row centres instead of dangling */
-.feature-grid { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; }
-.card {
-  flex: 1 1 300px; max-width: 344px;
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: var(--radius); padding: 24px 22px;
-  transition: transform 0.3s var(--ease), border-color 0.3s, background 0.3s;
-}
-.card:hover { transform: translateY(-5px); border-color: rgba(255, 122, 69, 0.4); background: rgba(255, 122, 69, 0.05); }
-.card h3 { font-size: 1.05rem; margin-bottom: 8px; letter-spacing: -0.01em; }
-.card p { color: var(--text-dim); font-size: 0.92rem; }
 
 /* web or mac */
-.table-wrap { overflow-x: auto; border: 1px solid var(--panel-line); border-radius: var(--radius); }
-.compare-table { width: 100%; border-collapse: collapse; font-size: 0.93rem; min-width: 560px; }
-.compare-table th, .compare-table td { padding: 14px 18px; text-align: left; vertical-align: top; }
-.compare-table thead th {
-  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-faint); font-weight: 700;
-  background: rgba(255, 255, 255, 0.02); border-bottom: 1px solid var(--panel-line);
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+.compare { width: 100%; border-collapse: collapse; font-size: 0.95rem; min-width: 560px; }
+.compare th, .compare td { padding: 14px 18px; text-align: left; vertical-align: top; }
+.compare thead th {
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--faint); font-weight: 600; border-bottom: 1px solid var(--line);
 }
-.compare-table tbody tr + tr th, .compare-table tbody tr + tr td { border-top: 1px solid var(--panel-line); }
-.compare-table tbody th { font-weight: 600; width: 34%; }
-.compare-table tbody td { color: var(--text-dim); }
-.th-note { display: block; font-size: 0.76rem; font-weight: 400; color: var(--text-faint); }
-.compare-table .yes { color: var(--ok); font-weight: 600; }
-.compare-table .no { color: var(--text-faint); }
-.compare-note { margin-top: 20px; color: var(--text-faint); font-size: 0.88rem; max-width: 60em; }
+.compare tbody tr + tr th, .compare tbody tr + tr td { border-top: 1px solid var(--line); }
+.compare tbody th { font-weight: 600; width: 34%; }
+.compare tbody th small { display: block; font-size: 0.8rem; font-weight: 400; color: var(--faint); }
+.compare tbody td { color: var(--dim); }
+.compare .yes { color: var(--ok); font-weight: 600; }
+.compare .no { color: var(--faint); }
 
-/* bring your own AI */
-.byo-inner {
-  max-width: 680px; margin: 0 auto;
-  background: linear-gradient(180deg, rgba(255, 122, 69, 0.09), rgba(255, 122, 69, 0.02));
-  border: 1px solid rgba(255, 122, 69, 0.24);
-  border-radius: 28px; padding: 44px 40px;
-}
-.byo-inner h2 { font-size: clamp(1.5rem, 3vw, 2rem); letter-spacing: -0.03em; margin-bottom: 18px; }
-.byo-inner p { color: var(--text-dim); font-size: 0.98rem; }
-.byo-inner p + p { margin-top: 14px; }
-.byo-inner a { color: var(--accent-2); text-decoration: underline; text-decoration-color: rgba(255, 177, 92, 0.4); }
-.byo-inner a:hover { text-decoration-color: var(--accent-2); }
-
-/* requirements */
-.req-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
-.req {
-  background: var(--panel); border: 1px solid var(--panel-line);
-  border-radius: var(--radius); padding: 24px 22px;
-}
-.req h3 { font-size: 1rem; margin-bottom: 8px; }
-.req p { color: var(--text-dim); font-size: 0.92rem; }
-.req a { color: var(--accent-2); text-decoration: underline; text-decoration-color: rgba(255, 177, 92, 0.4); }
-.final-cta { display: flex; gap: 14px; justify-content: center; margin-top: 40px; flex-wrap: wrap; }
+/* your key */
+.byo { display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px; align-items: start; }
+.byo p { margin-top: 14px; color: var(--dim); font-size: 1rem; max-width: 34em; }
+.byo p.fine { font-size: 0.9rem; color: var(--faint); }
+.byo a, .needs a { color: var(--text); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.byo a:hover, .needs a:hover { text-decoration-color: var(--accent); }
+.needs { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.needs li { display: grid; grid-template-columns: 7em 1fr; gap: 12px; padding: 14px 18px; font-size: 0.95rem; background: var(--panel); }
+.needs li + li { border-top: 1px solid var(--line); }
+.needs b { font-weight: 600; }
+.needs span { color: var(--dim); }
+.final-cta { display: flex; gap: 10px; margin-top: 56px; flex-wrap: wrap; }
 
 /* footer */
 .footer {
   max-width: var(--maxw); margin: 0 auto;
-  padding: 36px 24px 56px;
-  border-top: 1px solid var(--panel-line);
-  color: var(--text-dim); font-size: 0.88rem;
+  padding: 32px 24px 56px; border-top: 1px solid var(--line);
+  color: var(--dim); font-size: 0.9rem;
 }
-.footer-top {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; flex-wrap: wrap;
-}
-.footer .brand { font-size: 1rem; }
-.footer-links { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--text-faint); }
-.footer-links a { color: var(--text-dim); }
+.footer-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.footer .brand { font-size: 0.95rem; }
+.footer-links { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; color: var(--faint); }
+.footer-links a { color: var(--dim); }
 .footer-links a:hover { color: var(--text); }
-.footer-fine { margin-top: 18px; color: var(--text-faint); font-size: 0.78rem; max-width: 70em; }
+.footer-fine { margin-top: 18px; color: var(--faint); font-size: 0.82rem; max-width: 70em; }
 
-/* ---------- reveal animation ----------
-   Gated on .js, which the inline script in <head> sets before the first paint.
-   Only something that can be un-hidden may start hidden: with JavaScript off,
-   nothing here applies and the page is simply visible. */
-.js .reveal { opacity: 0; transform: translateY(22px); transition: opacity 0.7s var(--ease), transform 0.7s var(--ease); }
+/* =====================================================================
+   The app, replayed. Every size below is the real client's (src/web/
+   styles.css, measured rendered), so the frame is a screenshot with a
+   timeline, not an illustration.
+   ===================================================================== */
+.hero-demo { display: flex; justify-content: center; }
+.app {
+  width: 100%; max-width: 470px; min-width: 0; zoom: 0.85;
+  display: flex; flex-direction: column; position: relative;
+  background: linear-gradient(170deg, var(--bg-1), var(--bg));
+  border: 0.5px solid var(--line-2); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 40px 80px -40px rgba(0, 0, 0, 0.8);
+  font-family: var(--app-font); font-size: 14px; line-height: 1.5; text-align: left;
+}
+.app svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* titlebar */
+.app-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 0.5px solid var(--line); background: rgba(10, 10, 11, 0.6);
+}
+.app-brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 16px; letter-spacing: 0.2px; }
+.app-brand i {
+  font-style: normal; font-size: 16px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.app-bar-right { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.app-pill {
+  display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim);
+  padding: 5px 10px; border-radius: 20px; background: var(--panel); border: 0.5px solid var(--line); white-space: nowrap;
+}
+.app-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.app-dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.app-ico { flex: 0 0 auto; width: 30px; height: 30px; padding: 7px; border-radius: 9px; border: 0.5px solid var(--line); background: var(--panel); color: var(--dim); }
+
+/* transcript — bottom-anchored, clipped at the top, like a chat scrolled to the end */
+.app-msgs {
+  position: relative; height: 640px; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 14px 12px 8px;
+}
+.app-msgs > * { flex: 0 0 auto; margin-top: 11px; }
+
+/* the empty state, before the first message */
+.m-empty {
+  position: absolute; inset: 0; margin: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px 28px; text-align: center; color: var(--dim); font-size: 13.5px; line-height: 1.6;
+  opacity: 0; pointer-events: none;
+}
+.m-empty i {
+  font-style: normal; font-size: 40px; line-height: 1; margin-bottom: 10px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.m-empty p { max-width: 340px; }
+.m-empty b { color: var(--text); font-weight: 600; }
+.m-empty span {
+  width: 100%; max-width: 320px; margin-top: 7px; font-size: 12.5px; color: var(--text); text-align: left;
+  padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 0.5px solid var(--line);
+}
+.m-empty p + span { margin-top: 16px; }
+
+/* bubbles */
+.m-user { display: flex; justify-content: flex-end; }
+.m-user > span {
+  max-width: 92%; padding: 10px 14px; border-radius: 16px 16px 5px 16px;
+  background: linear-gradient(135deg, #ff7a45, #ff9152); color: #1a1006; font-weight: 550;
+  box-shadow: 0 3px 14px rgba(255, 122, 69, 0.28);
+}
+.m-bot { display: flex; }
+.m-bot > span {
+  max-width: 92%; padding: 10px 14px; border-radius: 16px 16px 16px 5px;
+  background: var(--panel); border: 0.5px solid var(--line);
+}
+.m-bot > span::after { content: '▍'; color: var(--accent); margin-left: 1px; }
+
+/* activity strip */
+.m-act { display: flex; }
+.m-act-line {
+  position: relative; display: flex; align-items: center; gap: 8px; min-width: 170px; min-height: 29px;
+  padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 0.5px solid var(--line);
+  font-size: 12px; color: var(--dim);
+}
+.m-spin {
+  position: absolute; left: 12px; width: 11px; height: 11px; border-radius: 50%;
+  border: 1.6px solid var(--line-2); border-top-color: var(--accent); animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.m-act-a { position: absolute; left: 30px; white-space: nowrap; }
+.m-act-b { color: var(--text); white-space: nowrap; }
+.m-act-n { text-decoration: underline; text-underline-offset: 2px; opacity: 0.75; white-space: nowrap; }
+
+/* model cards — 190 px, horizontal, the third one clipped as in a scroll row */
+.m-cards { display: flex; gap: 10px; padding: 2px 2px 6px; overflow: hidden; margin-right: -12px; }
+.m-card {
+  flex: 0 0 auto; width: 190px; border-radius: 11px; overflow: hidden;
+  background: var(--panel); border: 0.5px solid var(--line); display: flex; flex-direction: column;
+}
+.m-thumb {
+  height: 120px; padding: 26px 48px; color: rgba(255, 255, 255, 0.42);
+  background: linear-gradient(160deg, rgba(255, 122, 69, 0.14), var(--panel-2));
+}
+.m-thumb svg { stroke-width: 2.2; }
+.m-meta { padding: 9px 10px 10px; display: flex; flex-direction: column; gap: 5px; }
+.m-meta b { font-size: 12.5px; font-weight: 650; line-height: 1.3; }
+.m-sub { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--faint); }
+.m-sub span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-lic { font-size: 11px; color: var(--faint); }
+.m-actions { display: flex; gap: 6px; }
+.m-meta .m-actions { margin-top: 3px; }
+.m-btn {
+  display: inline-block; font-style: normal; font-size: 11px; font-weight: 600; white-space: nowrap;
+  padding: 5px 9px; border-radius: 999px; background: var(--panel-2); border: 0.5px solid var(--line); color: var(--text);
+}
+.m-btn.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #1a1006; border: none;
+  box-shadow: 0 3px 12px rgba(255, 122, 69, 0.3);
+}
+
+/* slice result panel — the app's panel, with the numbers drawn as filling bars */
+.m-panel-in { border-radius: 11px; background: var(--panel); border: 0.5px solid var(--line); padding: 12px 13px; }
+.m-panel-h { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 650; color: var(--accent-2); margin-bottom: 10px; }
+.m-panel-h i { font-style: normal; }
+.m-row { display: grid; grid-template-columns: 5.4em 1fr 3.6em; align-items: center; gap: 10px; }
+.m-row + .m-row { margin-top: 9px; }
+.m-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+.m-track { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.m-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.m-fill.f1 { width: 78%; }
+.m-fill.f2 { width: 46%; }
+.m-fill.f3 { width: 62%; }
+.m-v {
+  font-size: 13.5px; font-weight: 700; text-align: right; white-space: nowrap;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.m-tail { margin-top: 12px; padding-top: 11px; border-top: 0.5px solid var(--line); }
+
+/* toast — bottom centre, over the composer, as the real one */
+.app-toast {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 2;
+  padding: 9px 14px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; white-space: nowrap;
+  background: rgba(20, 20, 24, 0.96); border: 0.5px solid var(--line-2); color: var(--text);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* composer */
+.app-composer { border-top: 0.5px solid var(--line); background: rgba(10, 10, 11, 0.6); padding: 8px 10px 12px; }
+.app-pickers { display: flex; gap: 6px; margin-bottom: 8px; }
+.app-picker {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--dim);
+  padding: 5px 11px; border-radius: 999px; border: 0.5px solid var(--line); background: var(--panel); white-space: nowrap;
+}
+.app-picker .app-dot { width: 6px; height: 6px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.app-picker em { font-style: normal; font-size: 9px; opacity: 0.7; }
+.app-row { display: flex; align-items: flex-end; gap: 8px; }
+.app-circ { flex: 0 0 auto; width: 42px; height: 42px; padding: 12px; border-radius: 50%; background: var(--panel); border: 0.5px solid var(--line); color: var(--dim); }
+.app-circ svg { stroke-width: 1.9; }
+.app-input {
+  flex: 1 1 auto; min-width: 0; min-height: 42px; display: flex; align-items: center; position: relative;
+  padding: 10px 13px; border-radius: 14px; background: var(--panel); border: 0.5px solid var(--line); font-size: 15px; line-height: 1.45;
+}
+.app-typed { white-space: nowrap; overflow: hidden; width: 0; border-right: 1.5px solid var(--accent); }
+.app-ph { position: absolute; left: 13px; right: 13px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-send {
+  flex: 0 0 auto; width: 42px; height: 42px; padding: 11px; border-radius: 50%;
+  background: linear-gradient(140deg, var(--accent-2), var(--accent)); color: #2a1505;
+  box-shadow: 0 4px 14px rgba(255, 122, 69, 0.34);
+}
+.app-send svg { stroke-width: 2.2; }
+
+/* ---------- the 16 s timeline ----------
+   Every element runs its own 16 s animation with percentage keyframes, so the
+   stages stay in lockstep however late the page loaded. A message "arrives"
+   the same way every time: it grows from the bottom of the bottom-anchored
+   transcript (pushing the older ones up, the way a chat scrolls) while it
+   fades and rises in — one eased motion, nothing snaps.
+
+     0.0 –  2.4 s   the prompt types into the composer          (0 – 15%)
+     2.6 s          it posts as a user bubble                   (16%)
+     3.2 –  5.4 s   "Searching 8 sources…"                      (20 – 34%)
+     5.6 s          "Found 12 models · 3 steps", cards slide in  (35 – 43%)
+     7.5 –  9.3 s   the reply streams                           (47 – 58%)
+     9.6 – 12.6 s   the slice result, three bars filling in turn (60 – 79%)
+    12.6 – 15.0 s   "Sent to Ender 3 ✓"                         (79 – 94%)
+    15.2 – 16.0 s   the transcript fades and the loop restarts  (95 – 100%)
+
+   The base rules above are the final frame: with animations off the reader
+   sees a finished screenshot, not an empty window. */
+
+@keyframes d-fade  { 0%, 95% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes d-type  {
+  0%     { width: 0; opacity: 1; animation-timing-function: steps(1, end); }
+  2%     { width: 0; animation-timing-function: steps(39, end); }
+  15%    { width: 39ch; opacity: 1; animation-timing-function: ease; }
+  15.5%  { opacity: 1; }
+  16.5%, 100% { width: 39ch; opacity: 0; }
+}
+@keyframes d-caret { 0%, 49% { border-right-color: var(--accent); } 50%, 100% { border-right-color: transparent; } }
+@keyframes d-ph { 0%, 16.5% { opacity: 0; } 18%, 100% { opacity: 1; } }
+@keyframes d-empty { 0%, 14% { opacity: 1; } 17%, 100% { opacity: 0; } }
+
+/* arrivals */
+@keyframes d-user {
+  0%, 16%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
+  17%    { opacity: 0; transform: translateY(10px); }
+  19%    { max-height: 60px; margin-top: 11px; }
+  20.5%  { opacity: 1; transform: none; overflow: hidden; }
+  20.6%, 100% { max-height: 60px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-act {
+  0%, 20%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
+  21%    { opacity: 0; transform: translateY(10px); }
+  23%    { max-height: 40px; margin-top: 11px; }
+  24.5%  { opacity: 1; transform: none; overflow: hidden; }
+  24.6%, 100% { max-height: 40px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-act-a { 0%, 34% { opacity: 1; } 36%, 100% { opacity: 0; } }
+@keyframes d-act-b { 0%, 34% { opacity: 0; } 36%, 100% { opacity: 1; } }
+@keyframes d-cards {
+  0%, 35%  { max-height: 0; margin-top: 0; opacity: 0; }
+  38%      { max-height: 240px; margin-top: 11px; opacity: 1; }
+  100%     { max-height: 240px; margin-top: 11px; opacity: 1; }
+}
+@keyframes d-card1 { 0%, 36%   { opacity: 0; transform: translateX(18px); } 40%, 100%   { opacity: 1; transform: none; } }
+@keyframes d-card2 { 0%, 37.5% { opacity: 0; transform: translateX(18px); } 41.5%, 100% { opacity: 1; transform: none; } }
+@keyframes d-card3 { 0%, 39%   { opacity: 0; transform: translateX(18px); } 43%, 100%   { opacity: 1; transform: none; } }
+@keyframes d-bot {
+  0%, 47%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
+  48%    { opacity: 0; transform: translateY(10px); }
+  50%    { max-height: 90px; margin-top: 11px; }
+  51.5%  { opacity: 1; transform: none; overflow: hidden; }
+  51.6%, 100% { max-height: 90px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-bot-caret { 0%, 58% { opacity: 1; } 59%, 100% { opacity: 0; } }
+@keyframes d-panel {
+  0%, 60%  { max-height: 0; margin-top: 0; opacity: 0; transform: translateY(10px); overflow: hidden; }
+  61%    { opacity: 0; transform: translateY(10px); }
+  63%    { max-height: 240px; margin-top: 11px; }
+  64.5%  { opacity: 1; transform: none; overflow: hidden; }
+  64.6%, 100% { max-height: 240px; margin-top: 11px; opacity: 1; transform: none; overflow: visible; }
+}
+@keyframes d-fill-1 { 0%, 63% { width: 0; } 70%, 100% { width: 78%; } }
+@keyframes d-fill-2 { 0%, 65% { width: 0; } 72%, 100% { width: 46%; } }
+@keyframes d-fill-3 { 0%, 67% { width: 0; } 74%, 100% { width: 62%; } }
+@keyframes d-v1 { 0%, 68% { opacity: 0; } 71%, 100% { opacity: 1; } }
+@keyframes d-v2 { 0%, 70% { opacity: 0; } 73%, 100% { opacity: 1; } }
+@keyframes d-v3 { 0%, 72% { opacity: 0; } 75%, 100% { opacity: 1; } }
+@keyframes d-tail { 0%, 75% { opacity: 0; } 78.5%, 100% { opacity: 1; } }
+@keyframes d-toast {
+  0%, 79%   { opacity: 0; transform: translate(-50%, 10px); }
+  81.5%, 91% { opacity: 1; transform: translate(-50%, 0); }
+  93.5%, 100% { opacity: 0; transform: translate(-50%, 0); }
+}
+
+.app-msgs  { animation: d-fade 16s linear infinite; }
+.app-typed { animation: d-type 16s linear infinite, d-caret 1s linear infinite; }
+.app-ph    { animation: d-ph 16s var(--ease) infinite; }
+.m-empty   { animation: d-empty 16s var(--ease) infinite; }
+.m-user    { animation: d-user 16s var(--ease) infinite; }
+.m-act     { animation: d-act 16s var(--ease) infinite; }
+.m-act-a   { animation: d-act-a 16s var(--ease) infinite; }
+.m-spin    { animation: d-act-a 16s var(--ease) infinite, spin 0.7s linear infinite; }
+.m-act-b, .m-act-n { animation: d-act-b 16s var(--ease) infinite; }
+.m-cards   { animation: d-cards 16s var(--ease) infinite; }
+.m-card:nth-child(1) { animation: d-card1 16s var(--ease) infinite; }
+.m-card:nth-child(2) { animation: d-card2 16s var(--ease) infinite; }
+.m-card:nth-child(3) { animation: d-card3 16s var(--ease) infinite; }
+.m-bot     { animation: d-bot 16s var(--ease) infinite; }
+.m-bot > span::after { animation: d-bot-caret 16s var(--ease) infinite; }
+.m-panel   { animation: d-panel 16s var(--ease) infinite; }
+.m-fill.f1 { animation: d-fill-1 16s var(--ease) infinite; }
+.m-fill.f2 { animation: d-fill-2 16s var(--ease) infinite; }
+.m-fill.f3 { animation: d-fill-3 16s var(--ease) infinite; }
+.m-v.v1 { animation: d-v1 16s var(--ease) infinite; }
+.m-v.v2 { animation: d-v2 16s var(--ease) infinite; }
+.m-v.v3 { animation: d-v3 16s var(--ease) infinite; }
+.m-tail    { animation: d-tail 16s var(--ease) infinite; }
+.app-toast { animation: d-toast 16s var(--ease) infinite; }
+
+/* ---------- scroll reveal ----------
+   Gated on .js, set by the inline script in <head> before first paint. */
+.js .reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.6s var(--ease), transform 0.6s var(--ease); }
 .js .reveal.in { opacity: 1; transform: none; }
-.js .reveal[data-delay="1"] { transition-delay: 0.08s; }
-.js .reveal[data-delay="2"] { transition-delay: 0.16s; }
-.js .reveal[data-delay="3"] { transition-delay: 0.24s; }
-.js .reveal[data-delay="4"] { transition-delay: 0.32s; }
+.js .reveal[data-delay="1"] { transition-delay: 0.07s; }
+.js .reveal[data-delay="2"] { transition-delay: 0.14s; }
+.js .reveal[data-delay="3"] { transition-delay: 0.21s; }
+.js .reveal[data-delay="4"] { transition-delay: 0.28s; }
 
 /* ---------- legal pages ---------- */
-.legal { max-width: 760px; margin: 0 auto; padding: 24px 24px 80px; }
+.legal { max-width: 720px; margin: 0 auto; padding: 24px 24px 80px; }
 .legal-banner {
   display: flex; gap: 12px; align-items: flex-start;
-  background: rgba(255, 177, 92, 0.10);
-  border: 1px solid rgba(255, 177, 92, 0.38);
-  border-radius: 14px; padding: 14px 18px; margin-bottom: 36px;
-  color: var(--accent-2); font-size: 0.9rem; font-weight: 600;
+  background: rgba(255, 177, 92, 0.08); border: 1px solid rgba(255, 177, 92, 0.3);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 36px;
+  color: var(--accent-2); font-size: 0.92rem; font-weight: 600;
 }
-.legal h1 { font-size: clamp(1.9rem, 4vw, 2.6rem); margin-bottom: 10px; }
-.legal .legal-meta { color: var(--text-faint); font-size: 0.85rem; margin-bottom: 8px; }
-.legal .legal-intro { color: var(--text-dim); margin: 18px 0 8px; }
-.legal h2 {
-  font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em;
-  margin: 38px 0 10px; padding-top: 18px; border-top: 1px solid var(--panel-line);
-}
+.legal h1 { font-size: clamp(1.9rem, 4vw, 2.4rem); margin-bottom: 10px; letter-spacing: -0.03em; }
+.legal .legal-meta { color: var(--faint); font-size: 0.88rem; margin-bottom: 8px; }
+.legal .legal-intro { color: var(--dim); margin: 18px 0 8px; }
+.legal h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; margin: 38px 0 10px; padding-top: 18px; border-top: 1px solid var(--line); }
 .legal h3 { font-size: 1rem; font-weight: 600; margin: 22px 0 8px; }
-.legal p, .legal li { color: var(--text-dim); font-size: 0.95rem; }
+.legal p, .legal li { color: var(--dim); font-size: 0.97rem; }
 .legal p + p { margin-top: 12px; }
 .legal ul, .legal ol { margin: 12px 0 0 1.2em; display: flex; flex-direction: column; gap: 8px; }
-.legal a { color: var(--accent-2); text-decoration: underline; text-decoration-color: rgba(255, 177, 92, 0.4); }
-.legal a:hover { text-decoration-color: var(--accent-2); }
+.legal ul { list-style: disc; }
+.legal ol { list-style: decimal; }
+.legal a { color: var(--text); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.legal a:hover { text-decoration-color: var(--accent); }
 .legal strong { color: var(--text); }
 .legal .ph {
-  font-family: var(--mono); font-size: 0.85em;
-  background: rgba(255, 122, 69, 0.12); border: 1px dashed rgba(255, 122, 69, 0.4);
-  border-radius: 5px; padding: 0 5px; color: var(--accent-2);
+  font-family: var(--mono); font-size: 0.85em; color: var(--accent-2);
+  background: var(--accent-soft); border: 1px dashed rgba(255, 122, 69, 0.4); border-radius: 4px; padding: 0 5px;
 }
 .legal .toc { columns: 2; column-gap: 32px; margin: 18px 0 0 1.2em; }
 .legal .toc li { break-inside: avoid; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 880px) {
-  .hero { grid-template-columns: 1fr; gap: 44px; padding-top: 40px; }
-  .hero-app { order: -1; }
+  .hero { grid-template-columns: 1fr; gap: 44px; padding-top: 36px; }
+  .hero-demo { order: 2; }
   .nav-links { display: none; }
-  .steps { grid-template-columns: 1fr; }
+  .flow { grid-template-columns: 1fr; gap: 12px; }
+  .features { grid-template-columns: 1fr 1fr; gap: 32px 24px; }
+  .byo { grid-template-columns: 1fr; gap: 32px; }
   .legal .toc { columns: 1; }
 }
-
 @media (max-width: 560px) {
-  .how, .features, .compare, .byo, .reqs { padding: 56px 20px; }
-  .hero { padding: 32px 20px 64px; }
+  html { font-size: 16px; }
+  .section { padding: 56px 20px; }
+  .hero { padding: 24px 20px 64px; }
   .nav { padding: 14px 20px; gap: 12px; }
-  .brand-name { font-size: 0.98rem; }
-  .hero-cta { flex-direction: column; align-items: stretch; }
-  .cta-stack { max-width: none; align-items: stretch; }
-  .byo-inner { padding: 32px 24px; border-radius: 22px; }
-  .final-cta { flex-direction: column; }
+  .hero-cta, .final-cta { flex-direction: column; }
+  .hero-cta .btn, .final-cta .btn { width: 100%; }
+  .features { grid-template-columns: 1fr; }
+  .needs li { grid-template-columns: 1fr; gap: 3px; }
   .footer, .legal { padding-left: 20px; padding-right: 20px; }
   .footer-top { flex-direction: column; align-items: flex-start; }
-  .demo-stage { min-height: 300px; }
+  .app-pill:nth-child(2) { display: none; }
 }
 
-/* ---------- reduced motion ---------- */
+/* ---------- reduced motion ----------
+   Everything freezes, except that the demo must not freeze on its FIRST frame
+   (an empty window). A negative delay of -14.25 s seeks each paused animation to
+   89% of its cycle — the finished screenshot, toast included. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;
@@ -542,18 +518,27 @@ section { position: relative; }
   }
   .js .reveal { opacity: 1; transform: none; }
 
-  /* The hero demo is the one thing the blanket rule above must not simply erase:
-     flattened to 0.001 ms it would freeze on its FIRST frame — an empty app window
-     — and the reader would lose the whole story rather than just the motion.
-     A negative delay of -8.5 s seeks the paused animation to 94% of its cycle
-     instead, which is the finished frame: prompt typed, model found, metrics
-     filled, print sent. Still, and complete. */
-  .demo-stage   { animation: demo-cycle 9s linear -8.5s infinite paused !important; }
-  .demo-typed   { animation: demo-type 9s linear -8.5s infinite paused !important; border-right-color: var(--accent); }
-  .demo-model   { animation: demo-rise-model 9s linear -8.5s infinite paused !important; }
-  .demo-metrics { animation: demo-rise-metrics 9s linear -8.5s infinite paused !important; }
-  .demo-fill.f1 { animation: demo-fill-1 9s linear -8.5s infinite paused !important; }
-  .demo-fill.f2 { animation: demo-fill-2 9s linear -8.5s infinite paused !important; }
-  .demo-fill.f3 { animation: demo-fill-3 9s linear -8.5s infinite paused !important; }
-  .demo-sent    { animation: demo-pop 9s linear -8.5s infinite paused !important; }
+  .app-msgs  { animation: d-fade 16s linear -14.25s infinite paused !important; }
+  .app-typed { animation: d-type 16s linear -14.25s infinite paused !important; }
+  .app-ph    { animation: d-ph 16s linear -14.25s infinite paused !important; }
+  .m-empty   { animation: d-empty 16s linear -14.25s infinite paused !important; }
+  .m-user    { animation: d-user 16s linear -14.25s infinite paused !important; }
+  .m-act     { animation: d-act 16s linear -14.25s infinite paused !important; }
+  .m-act-a, .m-spin { animation: d-act-a 16s linear -14.25s infinite paused !important; }
+  .m-act-b, .m-act-n { animation: d-act-b 16s linear -14.25s infinite paused !important; }
+  .m-cards   { animation: d-cards 16s linear -14.25s infinite paused !important; }
+  .m-card:nth-child(1) { animation: d-card1 16s linear -14.25s infinite paused !important; }
+  .m-card:nth-child(2) { animation: d-card2 16s linear -14.25s infinite paused !important; }
+  .m-card:nth-child(3) { animation: d-card3 16s linear -14.25s infinite paused !important; }
+  .m-bot     { animation: d-bot 16s linear -14.25s infinite paused !important; }
+  .m-bot > span::after { animation: d-bot-caret 16s linear -14.25s infinite paused !important; }
+  .m-panel   { animation: d-panel 16s linear -14.25s infinite paused !important; }
+  .m-fill.f1 { animation: d-fill-1 16s linear -14.25s infinite paused !important; }
+  .m-fill.f2 { animation: d-fill-2 16s linear -14.25s infinite paused !important; }
+  .m-fill.f3 { animation: d-fill-3 16s linear -14.25s infinite paused !important; }
+  .m-v.v1 { animation: d-v1 16s linear -14.25s infinite paused !important; }
+  .m-v.v2 { animation: d-v2 16s linear -14.25s infinite paused !important; }
+  .m-v.v3 { animation: d-v3 16s linear -14.25s infinite paused !important; }
+  .m-tail    { animation: d-tail 16s linear -14.25s infinite paused !important; }
+  .app-toast { animation: d-toast 16s linear -14.25s infinite paused !important; }
 }
