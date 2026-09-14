@@ -253,7 +253,8 @@ test("the legal pages' home link points at the site root, not the app shell's in
     for (const page of ["/terms", "/privacy"]) {
       const html = await (await fetch(`${base}${page}`)).text();
       assert.ok(!html.includes('href="index.html"'), `${page} must not link a relative index.html`);
-      assert.match(html, /<a[^>]+href="\/"[^>]*>\s*Home\s*</, `${page} should link Home to /`);
+      // "./" so the same file works under GitHub Pages' /slicely/ sub-path; "/" is fine too.
+      assert.match(html, /<a[^>]+href="(\.\/|\/)"[^>]*>\s*Home\s*</, `${page} should link Home to the site root`);
     }
   });
 });
