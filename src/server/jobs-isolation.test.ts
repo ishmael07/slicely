@@ -5,7 +5,7 @@
 // Hermetic: temp dirs only, no network, no PrusaSlicer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "./session";
@@ -39,7 +39,15 @@ test("adoptGcodeFile is idempotent: re-adopting returns the SAME token, not a de
   const root = mkdtempSync(join(tmpdir(), "slicely-adopt-"));
   try {
     const session = fakeSession(root, "s1");
-    const src = join(root, "plate-1.gcode");
+    // The source is INSIDE the session, as it is in production: the slicer
+    // writes to `<session>/slices` (main/session-context.ts's
+    // sessionSlicesDir). A path outside the session is now refused outright —
+    // adoptGcodeFile renames, and a rename moves a file out of wherever it was.
+    // `scratch` rather than `slices` only so the rename branch is still the one
+    // under test; in production source and destination are often the same file,
+    // which is what the idempotence branch below is for.
+    const src = join(session.scratchDir, "plate-1.gcode");
+    mkdirSync(session.scratchDir, { recursive: true });
     writeFileSync(src, "; gcode\n");
 
     const first = await adoptGcodeFile(session, src);
@@ -66,10 +74,19 @@ test("adoptGcodeFile refuses to mint a token for a file that does not exist", as
   try {
     const session = fakeSession(root, "s1");
     await assert.rejects(
-      () => adoptGcodeFile(session, join(root, "never-existed.gcode")),
-      /no longer exists/,
+      () => adoptGcodeFile(session, join(session.scratchDir, "never-existed.gcode")),
+      /no longer on disk/,
       "a vanished source must throw, not hand back a downloadable id",
     );
+    // And a real file OUTSIDE the session is refused before anything is moved.
+    const stray = join(root, "somebody-elses.gcode");
+    writeFileSync(stray, "; gcode\n");
+    await assert.rejects(
+      () => adoptGcodeFile(session, stray),
+      (err: unknown) => (err as { code?: string }).code === "not_in_workspace",
+      "adoption must never rename a file in from outside the session",
+    );
+    assert.ok(existsSync(stray), "the refused file must be left exactly where it was");
     assert.equal(session.gcodeFiles.size, 0, "no token may be registered");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -81,8 +98,8 @@ test("two sessions adopting same-named G-code keep separate files and tokens", a
   try {
     const a = fakeSession(root, "alice");
     const b = fakeSession(root, "bob");
-    const srcA = join(root, "a", "plate.gcode");
-    const srcB = join(root, "b", "plate.gcode");
+    const srcA = join(a.scratchDir, "plate.gcode");
+    const srcB = join(b.scratchDir, "plate.gcode");
     for (const [p, body] of [[srcA, "; alice\n"], [srcB, "; bob\n"]] as const) {
       const { mkdirSync } = await import("node:fs");
       mkdirSync(join(p, ".."), { recursive: true });
@@ -215,8 +232,9 @@ test("a plate's .3mf project is adopted into the session and gets its own token"
   const root = mkdtempSync(join(tmpdir(), "slicely-project-"));
   try {
     const session = fakeSession(root, "s1");
-    const gcode = join(root, "plate-1.gcode");
-    const project = join(root, "plate-1.3mf");
+    const gcode = join(session.scratchDir, "plate-1.gcode");
+    const project = join(session.scratchDir, "plate-1.3mf");
+    mkdirSync(session.scratchDir, { recursive: true });
     writeFileSync(gcode, "; gcode\n");
     writeFileSync(project, "PKfake-3mf");
 

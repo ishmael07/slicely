@@ -522,6 +522,21 @@ test("resolveSessionPath accepts the client's relative reference and refuses esc
     // Nor is multer's landing strip, which is never handed out to anybody.
     refused("scratch/upload_abc123");
 
+    // ── And the same rule, spelled ABSOLUTELY ───────────────────────────────
+    // The subtree check used to be asked of the caller's SPELLING, so it bound
+    // the relative form and skipped the absolute one — `<session.dir>/
+    // secrets.json` passed containment, because of course it is inside the
+    // session. It is now asked of the resolved path, which is where both forms
+    // meet.
+    refused(join(session.dir, "secrets.json"));
+    refused(join(session.dir, "printer-secrets.json"));
+    refused(join(session.dir, "printers.json"));
+    refused(join(session.dir, "master.key"));
+    refused(join(session.dir, ".session-secret"));
+    refused(join(session.dir, "scratch", "upload_abc123"));
+    refused(session.dir);
+    refused(join(session.dir, "uploads", "..", "secrets.json"));
+
     // The other two subtrees the server does hand out still work.
     assert.equal(
       resolveSessionPath(session, "downloads/kit/part1.stl"),
@@ -587,15 +602,44 @@ test("delete-my-data removes EVERY per-session file, in every shape its writers 
     writeFileSync(join(session.slicesDir, "plate-1.gcode"), "G1\n");
     writeFileSync(join(session.scratchDir, "upload_abc123"), "raw multipart");
 
+    // The census as it stands on disk, taken BEFORE the delete. Everything the
+    // lines above wrote is one writer's real output; `isInterruptedAtomicWrite`
+    // decides which of them are temp siblings (matched by shape, so a name added
+    // to PERSONAL_FILES tomorrow is covered without anybody remembering its temp
+    // form too).
+    const scratch = ["uploads", "downloads", "slices", "scratch"];
+    const before = readdirSync(session.dir).filter((n) => !scratch.includes(n));
+    const classified = new Set<string>([...SESSION_PERSONAL_FILES, ...SESSION_KEPT_FILES]);
+    // EVERY top-level file has to be classified as personal or kept. Driven by
+    // the directory rather than by a second copy of the list, so a writer added
+    // to the codebase and to this census — but not to either constant — fails
+    // here instead of quietly leaving personal data behind.
+    for (const name of before) {
+      if (/\.tmp(-[0-9a-f]+)?$/.test(name)) continue; // an interrupted write, matched by shape
+      assert.ok(
+        classified.has(name),
+        `${name} is written per session but classified as neither personal nor kept`,
+      );
+    }
+    // And in the other direction: a name on either list that nothing writes is a
+    // stale entry (the historical `chats`, which never existed, is the one
+    // deliberate exception — it is kept on the list precisely so an old install's
+    // file is still removed).
+    for (const name of classified) {
+      if (name === "chats") continue;
+      assert.ok(before.includes(name), `${name} is classified but nothing in the census writes it`);
+    }
+
     await store.destroy(session.id);
 
-    const scratch = ["uploads", "downloads", "slices", "scratch"];
+    // AFTER: scan the directory and assert nothing unclassified survived — the
+    // question asked of the filesystem, not of a constant.
     const left = readdirSync(session.dir)
       .filter((n) => !scratch.includes(n))
       .sort();
     assert.deepEqual(
       left,
-      [...SESSION_KEPT_FILES].sort(),
+      [...SESSION_KEPT_FILES].filter((n) => before.includes(n)).sort(),
       `unexpected leftovers: ${left.join(", ")}`,
     );
     // Nothing on the personal list survived, under any spelling.
@@ -606,25 +650,6 @@ test("delete-my-data removes EVERY per-session file, in every shape its writers 
       assert.deepEqual(readdirSync(dir), [], `${dir} still has files in it`);
     }
     assert.ok(existsSync(session.dir), "the desktop workspace itself must survive");
-
-    // The two lists must between them account for every per-session file, so
-    // adding a writer without classifying its file fails here rather than
-    // quietly leaving personal data behind.
-    assert.deepEqual(
-      [...SESSION_PERSONAL_FILES, ...SESSION_KEPT_FILES].sort(),
-      [
-        ".session-secret",
-        "chats",
-        "chats.json",
-        "jobs.json",
-        "master.key",
-        "printer-secrets.json",
-        "printers.json",
-        "secrets.json",
-        "settings.json",
-      ],
-      "a new per-session file has to be classified as personal or kept",
-    );
   } finally {
     store.stopSweep();
     rmSync(root, { recursive: true, force: true });

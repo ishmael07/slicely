@@ -332,3 +332,86 @@ test("desktop: a mounted drive is part of the workspace; a symlink out of one is
     cleanup();
   }
 });
+
+test("the uploads/downloads/slices rule binds an ABSOLUTE path too, in both modes", async () => {
+  // `isSafeWorkspaceRelPath` confines a RELATIVE reference to the three subtrees
+  // Slicely actually hands out. Spelled ABSOLUTELY, the same file only had to
+  // clear containment — and `<session>/secrets.json` (the encrypted Anthropic
+  // key) is inside the session. The model types tool arguments; `inspect_model
+  // {"path": "<session>/secrets.json"}` was one token away.
+  const { dirA, cleanup } = workspaces();
+  try {
+    writeFileSync(join(dirA, "secrets.json"), '{"ciphertext":"nope"}');
+    writeFileSync(join(dirA, "printer-secrets.json"), "{}");
+    writeFileSync(join(dirA, "settings.json"), "{}");
+    mkdirSync(join(dirA, "scratch"), { recursive: true });
+    writeFileSync(join(dirA, "scratch", "upload_abc123"), "raw multipart bytes");
+
+    for (const mode of ["hosted", "desktop"] as const) {
+      await withMode(mode, () =>
+        runInSession(sessionContext("aaaa", dirA), () => {
+          for (const name of ["secrets.json", "printer-secrets.json", "settings.json"]) {
+            assert.equal(
+              isInsideSessionWorkspace(join(dirA, name)),
+              false,
+              `${mode}: ${name} must be unreachable however it is spelled`,
+            );
+            assert.throws(() => assertWorkspacePath(join(dirA, name)), isOutsideWorkspace);
+          }
+          // multer's landing strip is never handed out either.
+          assert.equal(isInsideSessionWorkspace(join(dirA, "scratch", "upload_abc123")), false);
+          // The session directory itself is not a file to open.
+          assert.equal(isInsideSessionWorkspace(dirA), false);
+          // A subtree rule, not a ban on absolute paths: the desktop's
+          // attach-local flow and the agent's own writers both deal in them.
+          assert.equal(
+            assertWorkspacePath(join(dirA, "uploads", "x.stl")),
+            join(dirA, "uploads", "x.stl"),
+          );
+        }),
+      );
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("desktop: $HOME being a workspace root does not re-admit a file inside the session directory", async () => {
+  // THE ORDER BUG this guards. On the desktop the roots are [session.dir,
+  // downloads, $HOME, /Volumes], and the default session's directory is the
+  // workdir — which lives under `~/Library/Application Support`. So refusing a
+  // file for failing the session's subtree rule and then simply trying the next
+  // root meant the $HOME root said yes to the very file the session root had
+  // just refused. Being inside Slicely's own directory has to be the STRICTER
+  // rule, not one opinion among four.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "slicely-fake-home-")));
+  const sessionDir = join(home, "Library", "Application Support", "Slicely");
+  mkdirSync(join(sessionDir, "uploads"), { recursive: true });
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    writeFileSync(join(sessionDir, "master.key"), "0123456789abcdef");
+    writeFileSync(join(sessionDir, "uploads", "x.stl"), "solid x\nendsolid x\n");
+
+    await withMode("desktop", () =>
+      runInSession(sessionContext(DEFAULT_SESSION_ID, sessionDir), () => {
+        assert.equal(homedir(), home, "the fake home must be what homedir() reports");
+        assert.equal(
+          isInsideSessionWorkspace(join(sessionDir, "master.key")),
+          false,
+          "the key vault is not a model, however many roots contain it",
+        );
+        assert.equal(isInsideSessionWorkspace(join(sessionDir, "uploads", "x.stl")), true);
+        // The user's own files, outside the session directory, are untouched by
+        // the rule — that is the whole point of the desktop roots.
+        mkdirSync(join(home, "Desktop"), { recursive: true });
+        writeFileSync(join(home, "Desktop", "bracket.stl"), "solid b\nendsolid b\n");
+        assert.equal(isInsideSessionWorkspace(join(home, "Desktop", "bracket.stl")), true);
+      }),
+    );
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});

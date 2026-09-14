@@ -40,8 +40,8 @@ import {
 import { getPreferences, printerGeometry } from "../settings";
 import { sessionState } from "./state";
 import { colourRequest } from "./colourRequest";
-import { resolveInsideSessionWorkspace } from "../session-context";
-import { WireError } from "../../server/errors";
+import { resolveInsideSessionWorkspace, workspaceRef } from "../session-context";
+import { stripPaths, WireError } from "../../server/errors";
 
 type Emit = (event: AgentEvent) => void;
 
@@ -169,7 +169,8 @@ export const V2_TOOLS: Anthropic.Tool[] = [
         },
         gcodePath: {
           type: "string",
-          description: "Path to the .gcode. Omit to use the most recent slice.",
+          description:
+            'Workspace path to the .gcode, as a slice result gave it to you (e.g. "slices/plate-1.gcode"). Omit to use the most recent slice.',
         },
         start: {
           type: "boolean",
@@ -225,7 +226,11 @@ export const V2_TOOLS: Anthropic.Tool[] = [
           items: {
             type: "object",
             properties: {
-              path: { type: "string", description: "Absolute path to the mesh." },
+              path: {
+                type: "string",
+                description:
+                  'Workspace path to the mesh, as a tool result gave it to you (e.g. "downloads/kit/part1.stl").',
+              },
               copies: { type: "integer", description: "How many. Default 1." },
               colourHex: { type: "string", description: 'Requested colour, e.g. "#c81e1e".' },
             },
@@ -319,7 +324,11 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path to the model. Omit to use the active model." },
+        path: {
+          type: "string",
+          description:
+            'Workspace path to the model, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the active model.',
+        },
         write: {
           type: "boolean",
           description:
@@ -338,7 +347,11 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path to the mesh. Omit to use the active model." },
+        path: {
+          type: "string",
+          description:
+            'Workspace path to the mesh, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the active model.',
+        },
         goal: { type: "string", enum: ["draft", "quality", "functional"] },
       },
       required: [],
@@ -496,13 +509,13 @@ export async function executeV2Tool(
       const resolution = await resolveUrl(url);
       emit({ type: "resolved", resolution });
       if (resolution.kind === "unsupported") {
-        return `Could not use that link: ${resolution.message}`;
+        return `Could not use that link: ${stripPaths(resolution.message)}`;
       }
       const files = resolution.files
         .map((f) => `  • ${f.name}${f.sizeBytes ? ` (${Math.round(f.sizeBytes / 1024)} KB)` : ""}`)
         .join("\n");
       return (
-        `Link resolved as ${resolution.kind}: ${resolution.message}\n` +
+        `Link resolved as ${resolution.kind}: ${stripPaths(resolution.message)}\n` +
         `${resolution.files.length} downloadable file(s):\n${files}\n` +
         `Call import_from_url with the same URL to download.`
       );
@@ -516,8 +529,14 @@ export async function executeV2Tool(
       sessionState.lastModelParts = (result.parts ?? [
         { localPath: result.localPath },
       ]).map((p) => p.localPath);
+      // The WORKSPACE path, never the absolute one. This sentence is the single
+      // most-quoted tool result there is — the model repeats it to the user
+      // verbatim — and it is also the string it hands to plan_job next, so the
+      // form it speaks has to be the form every tool accepts. See workspaceRef.
       return (
-        `Downloaded "${result.fileName}" (${Math.round(result.sizeBytes / 1024)} KB) to ${result.localPath}.` +
+        `Downloaded "${result.fileName}" (${Math.round(result.sizeBytes / 1024)} KB) to ${workspaceRef(
+          result.localPath,
+        )}.` +
         (result.parts && result.parts.length > 1
           ? ` It contains ${result.parts.length} parts — consider plan_job to lay them out.`
           : "")
@@ -585,10 +604,13 @@ export async function executeV2Tool(
         startImmediately: input.start === true,
       });
       emit({ type: "sent", printerId, result });
-      if (!result.ok) return `Send failed: ${result.message}`;
+      // A driver failure quotes the file it was uploading; the model repeats
+      // whatever this says straight to the user.
+      const message = stripPaths(result.message);
+      if (!result.ok) return `Send failed: ${message}`;
       return result.started
-        ? `Printing on ${printers.find((p) => p.id === printerId)?.label}. ${result.message}`
-        : `Uploaded and queued (NOT started): ${result.message} Tell the user to check the bed is clear, then start it from the printer — or arm auto-start in settings.`;
+        ? `Printing on ${printers.find((p) => p.id === printerId)?.label}. ${message}`
+        : `Uploaded and queued (NOT started): ${message} Tell the user to check the bed is clear, then start it from the printer — or arm auto-start in settings.`;
     }
 
     case "control_printer": {
@@ -599,7 +621,7 @@ export async function executeV2Tool(
       const result = await controlPrinter(printerId, action);
       const status = await printerStatus(printerId);
       emit({ type: "printers", printers, statuses: [status] });
-      return result.ok ? result.message : `Could not ${action}: ${result.message}`;
+      return result.ok ? stripPaths(result.message) : `Could not ${action}: ${stripPaths(result.message)}`;
     }
 
     case "discover_printers": {
@@ -754,7 +776,8 @@ export async function executeV2Tool(
       const done = job.plates.filter((p) => p.status === "done" || p.status === "ready");
       const failed = job.plates.filter((p) => p.status === "failed");
       const lines = job.plates.map((pl) => {
-        if (pl.status === "failed") return `  Plate ${pl.index}: FAILED — ${pl.error ?? "unknown"}`;
+        // A plate error is PrusaSlicer's own stderr, absolute paths and all.
+        if (pl.status === "failed") return `  Plate ${pl.index}: FAILED — ${stripPaths(pl.error ?? "") || "unknown"}`;
         const m = pl.metrics;
         return `  Plate ${pl.index}: ${m?.estimatedPrintTime ?? "?"}${
           m?.filamentUsedG !== undefined ? `, ${m.filamentUsedG.toFixed(1)} g` : ""
@@ -816,9 +839,12 @@ export async function executeV2Tool(
       }
       sessionState.lastModelParts = result.paths;
       if (result.paths.length > 0) sessionState.lastModelPath = result.paths[0];
-      const lines = result.sizes
-        .slice(0, 12)
-        .map((s, i) => `  ${i + 1}. ${s.x.toFixed(1)} x ${s.y.toFixed(1)} x ${s.z.toFixed(1)} mm`);
+      // Name each piece the way plan_job takes it, so "give piece 3 a different
+      // colour" is a call the model can actually make.
+      const lines = result.sizes.slice(0, 12).map((s, i) => {
+        const ref = result.paths[i] ? ` — ${workspaceRef(result.paths[i])}` : "";
+        return `  ${i + 1}. ${s.x.toFixed(1)} x ${s.y.toFixed(1)} x ${s.z.toFixed(1)} mm${ref}`;
+      });
       return (
         `"${result.name}" contains ${result.pieces} separate pieces:\n${lines.join("\n")}` +
         (result.sizes.length > 12 ? `\n  …and ${result.sizes.length - 12} more` : "") +

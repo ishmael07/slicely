@@ -150,11 +150,14 @@ test("an action's server-side file becomes a download token, never a raw path", 
   // browser and a disclosure of where files live.
   const root = tmpRoot();
   const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
-  const project = join(root, "plate-1.3mf");
-  writeFileSync(project, "PKfake");
-
+  // Written INSIDE the session, which is where tools.ts actually writes it
+  // (`sessionSlicesDir()`); adoptGcodeFile refuses to rename a file in from
+  // anywhere else. Late-bound because the session does not exist until boot.
+  let sessionDir = "";
   const stub: () => ChatAgent = () => ({
     async send(_message, emit) {
+      const project = join(sessionDir, "slices", "plate-1.3mf");
+      writeFileSync(project, "PKfake");
       emit({
         type: "action",
         label: "Open in PrusaSlicer",
@@ -174,6 +177,7 @@ test("an action's server-side file becomes a download token, never a raw path", 
   );
   try {
     const cookie = await connectKey(base);
+    sessionDir = store.get(cookie.split("=")[1].split(".")[0])!.dir;
     const resp = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json", cookie },
@@ -323,6 +327,15 @@ test("a whole chat transcript for an uploaded file carries no absolute server pa
       // `G-code no longer exists at …` reach a browser inside a 200's stream.
       emit({ type: "tool_end", tool: "slice_model", ok: false, summary: `Cannot read ${upload}` });
       emit({ type: "error", message: `boom at ${gcode}` });
+      // THE MODEL'S OWN PROSE. It is told file locations by the tool results, and
+      // whatever it is told it repeats — so a path here is a path in the chat
+      // bubble, and `recordTurn` writes the same sentence into chats.json, where
+      // it is replayed on every reopen of the conversation for as long as it
+      // exists. Emitted in one delta here because a single frame is the case a
+      // per-frame scrub can catch; the assembled reply is scrubbed as well, for
+      // the case it cannot (a path split across two deltas).
+      emit({ type: "thinking", text: `the file is at ${upload}` });
+      emit({ type: "text", text: `I sliced it — the G-code is at ${gcode} — have a look.` });
       emit({ type: "done" });
     },
     cancel() {
@@ -404,6 +417,30 @@ test("a whole chat transcript for an uploaded file carries no absolute server pa
     // failure body is (errors.ts's stripPaths), not left verbatim.
     assert.equal((byType("tool_end") as unknown as { summary: string }).summary, "Cannot read <file>");
     assert.equal((byType("error") as unknown as { message: string }).message, "boom at <file>");
+
+    // The model's own writing gets the same treatment, live and on disk.
+    assert.equal(
+      (byType("text") as unknown as { text: string }).text,
+      "I sliced it — the G-code is at <file> — have a look.",
+    );
+    assert.equal((byType("thinking") as unknown as { text: string }).text, "the file is at <file>");
+
+    // PERSISTED: the transcript is what a reopened conversation redraws, so a
+    // path saved here leaks once live and then on every reload forever.
+    const list = (await (await fetch(`${base}/api/chats`, { headers: { cookie } })).json()) as {
+      chats: Array<{ id: string }>;
+      activeId?: string;
+    };
+    assert.ok(list.activeId, "the turn must have been recorded against a chat");
+    const saved = await (
+      await fetch(`${base}/api/chats/${list.activeId}`, { headers: { cookie } })
+    ).text();
+    for (const needle of ["/Users", "/tmp", "/private", root, session.dir, session.id]) {
+      assert.ok(!saved.includes(needle), `the SAVED transcript leaks ${needle}:\n${saved}`);
+    }
+    const savedChat = JSON.parse(saved) as { turns: Array<{ role: string; text: string }> };
+    const reply = savedChat.turns.find((t) => t.role === "assistant");
+    assert.equal(reply?.text, "I sliced it — the G-code is at <file> — have a look.");
 
     // The relPath the `info` frame handed out has to be the one /api/preview
     // accepts back — otherwise the 3D viewer is broken by this very fix.

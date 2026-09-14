@@ -221,7 +221,16 @@ export function resolveSessionPath(session: SessionRecord, raw: unknown): string
   if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
   if (!isAbsolute(raw) && !isSafeWorkspaceRelPath(raw)) return undefined;
   const candidate = isAbsolute(raw) ? raw : join(session.dir, raw);
-  return isInsideDir(session.dir, candidate) ? resolve(candidate) : undefined;
+  if (!isInsideDir(session.dir, candidate)) return undefined;
+  const resolved = resolve(candidate);
+  // The subtree rule is asked of the RESOLVED path, not of the caller's
+  // spelling — otherwise it only ever bound the relative form. Absolutely
+  // spelled, `<session.dir>/secrets.json` is inside the session and passed
+  // containment, so the encrypted Anthropic key was reachable through
+  // GET /api/preview, POST /api/slice's `paths` and POST /api/jobs'
+  // `parts[].path` by anyone who could guess the sessions root. Both forms meet
+  // here, so this is where the rule belongs.
+  return isSafeWorkspaceRelPath(workspaceRelPath(session, resolved)) ? resolved : undefined;
 }
 
 /** A file inside `session`'s workspace as the client may see it: its name and
@@ -275,8 +284,20 @@ const DROPPED_PATH_KEYS = new Set(["gcodePath", "projectPath", "binaryPath"]);
  * `stripPaths` over every failure that leaves through an HTTP status; these are
  * the ones that leave inside a 200's stream instead, and they were not scrubbed
  * at all.
+ *
+ * `text` is the MODEL'S OWN prose (the `text` and `thinking` frames — the only
+ * two events in the union that carry that key). It is included as BEST EFFORT
+ * and nothing more: text arrives as streamed deltas, and a path split across
+ * two of them — `/data/sessi` + `ons/ab12/uploads/cube.stl` — matches no regex
+ * on either side. That is why it is fixed in two other places as well: the tool
+ * RESULTS the model reads now speak `uploads/cube.stl` rather than an absolute
+ * path (main/session-context.ts's `workspaceRef`), so there is normally no path
+ * in the prose to scrub; and the ASSEMBLED reply is scrubbed once, whole, before
+ * it is persisted (routes/chat.ts's `recordTurn`), where delta boundaries no
+ * longer exist. Per-delta scrubbing on its own would be security theatre; as the
+ * third of three, it is a cheap extra net.
  */
-const SCRUBBED_TEXT_KEYS = new Set(["summary", "message", "error"]);
+const SCRUBBED_TEXT_KEYS = new Set(["summary", "message", "error", "text"]);
 
 /**
  * Anything on its way to a browser, with every absolute server path removed.
@@ -988,6 +1009,27 @@ export async function adoptGcodeFile(
   session: SessionRecord,
   sourcePath: string,
 ): Promise<{ path: string; id: string }> {
+  // DEFENCE IN DEPTH. Every caller today hands over a path the SLICER just
+  // wrote (`<session>/slices/plate-1.gcode`), so this has never had a client
+  // string in it — but the function's whole job is to `rename()` whatever it is
+  // given, and a rename is a move OUT of wherever the source was. Refusing
+  // anything that is not already this session's own (or the legacy shared slices
+  // directory the desktop still writes to) keeps that an invariant rather than a
+  // property of the current call sites.
+  const source = resolve(sourcePath);
+  const legacySlicesDir = (() => {
+    try {
+      return getConfig().slicesDir;
+    } catch {
+      return undefined;
+    }
+  })();
+  const adoptable =
+    isInsideDir(session.dir, source) ||
+    (legacySlicesDir !== undefined && isInsideDir(legacySlicesDir, source));
+  if (!adoptable) {
+    throw new WireError(400, "That G-code isn't in your workspace.", "not_in_workspace");
+  }
   await mkdir(session.slicesDir, { recursive: true });
   const dest = join(session.slicesDir, basename(sourcePath));
 
@@ -1013,7 +1055,10 @@ export async function adoptGcodeFile(
     // The source vanished (or is on another device). Only hand back a token
     // if something is actually readable there — never register a dead path.
     if (!existsSync(sourcePath)) {
-      throw new Error(`G-code no longer exists at ${sourcePath}`);
+      // No path in the message: it reached the browser through the job SSE
+      // stream and the model's own prose, and "it's gone" is the whole of what
+      // anyone can act on.
+      throw new WireError(404, "That sliced G-code is no longer on disk.", "not_found");
     }
     const id = randomBytes(8).toString("hex");
     session.gcodeFiles.set(id, { path: sourcePath, label: basename(sourcePath) });

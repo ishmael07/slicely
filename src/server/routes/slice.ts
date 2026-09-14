@@ -9,6 +9,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { basename } from "node:path";
+import { existsSync } from "node:fs";
 import {
   getModelInfo,
   recommendSettings,
@@ -20,7 +21,7 @@ import {
   type RecommendInput,
 } from "../../main/prusaslicer";
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
-import { adoptGcodeFile, resolveSessionPath } from "../session";
+import { adoptGcodeFile, resolveSessionPath, workspaceRelPath } from "../session";
 import { sendError, WireError } from "../errors";
 import { loadPrintersApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
@@ -154,7 +155,16 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
       const { filePath: _modelPath, ...modelInfo } = info;
       session.lastActiveAt = Date.now();
       res.json({
-        info: { ...modelInfo, displayName: basename(info.filePath) },
+        // `relPath` is the SAME reference POST /api/upload hands out, and the
+        // same one GET /api/preview takes back — so a caller that sliced can
+        // drive the 3D viewer without a second round trip. `displayName` stays
+        // beside it: it is the basename a person reads, and dropping it would
+        // break any caller that already renders it.
+        info: {
+          ...modelInfo,
+          relPath: workspaceRelPath(session, info.filePath),
+          displayName: basename(info.filePath),
+        },
         rationale: rec.rationale,
         warnings: rec.warnings,
         plates,
@@ -191,6 +201,15 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
         res,
         new WireError(400, "That file isn't in your workspace. Upload or import it first.", "not_in_workspace"),
       );
+      return;
+    }
+    // "That file is gone" is a 404, not a 500. The path is proven to be inside
+    // this session by now, so saying so confirms nothing a caller did not
+    // already name — and the alternative was `previewMesh`'s own ENOENT falling
+    // through the generic funnel as "Something went wrong", which is the wrong
+    // sentence for a model the session deleted or never finished uploading.
+    if (!existsSync(path)) {
+      sendError(res, new WireError(404, "That file is no longer in your workspace.", "not_found"));
       return;
     }
     try {

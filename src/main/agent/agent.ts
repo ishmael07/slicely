@@ -6,6 +6,7 @@ import { getUserApiKey, NoApiKeyError } from "../userkey";
 import { getSettings, getPreferences, buildModelRequestParams } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
+import { stripPaths } from "../../server/errors";
 
 const SYSTEM_PROMPT = `You are Slicely, a friendly, concise assistant that helps people find free, open-source 3D-printable models online and slice them with PrusaSlicer on their Mac.
 
@@ -15,6 +16,8 @@ What you can do, via tools:
 - open_in_browser: ONLY for results marked "downloadable: false" (MakerWorld, and the meta-search engines). Reach for it last: if a search returned something you can import, import it.
 - check_printer_setup / set_printer: detect the user's PrusaSlicer printer config and set their printer when they have none. set_printer SAVES the choice permanently (and the user can also save a printer + slice defaults in the gear Settings panel), so once a printer is known you never ask again.
 - get_slicer_status / inspect_model / recommend_settings / slice_model / slice_and_open / open_in_slicer: drive PrusaSlicer.
+
+FILE PATHS ARE WORKSPACE-RELATIVE, ALWAYS. Every path a tool gives you looks like "uploads/cube.stl", "downloads/kit/part1.stl" or "slices/plate-1.gcode" — relative to the user's own workspace, and those are the only three folders that exist. Pass such a string back verbatim to any tool that takes a path, and use that same spelling if you name a file to the user. Never invent, reconstruct or guess a path, and never write one starting with "/": there is no absolute path you are entitled to, and a made-up one is refused.
 
 The user can ALSO upload their own CAD/mesh file (STL, 3MF, OBJ, AMF, STEP) by dragging it in or picking it. When they do, that file becomes the active model automatically — so inspect_model / recommend_settings / slice_model with NO path argument operate on it. Treat an uploaded file exactly like an imported one. STL/3MF/OBJ/AMF slice directly; STEP files should be opened in PrusaSlicer (open_in_slicer) since the GUI converts them — don't headlessly slice a STEP.
 
@@ -162,7 +165,14 @@ export class SlicelyAgent {
             toolResults.push({
               type: "tool_result",
               tool_use_id: tu.id,
-              content: `Error: ${msg}`,
+              // SCRUBBED for the MODEL, not just for the wire. A thrown error is
+              // the one tool result nobody writes by hand — PrusaSlicer's
+              // stderr, a driver's "no such file", Node's ENOENT — and each of
+              // them quotes an absolute path. The `tool_end` frame carrying the
+              // same text is scrubbed on its way out (routes/chat.ts), but the
+              // model reads THIS copy and then quotes it in its own prose, which
+              // is prose no field-level scrub can rewrite.
+              content: `Error: ${stripPaths(msg)}`,
               is_error: true,
             });
           }

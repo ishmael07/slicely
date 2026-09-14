@@ -280,6 +280,63 @@ export function isSafeWorkspaceRelPath(p: unknown): p is string {
   return segments.every((seg) => seg !== "" && seg !== "." && seg !== "..");
 }
 
+/**
+ * How a file inside the ambient session is NAMED to the model — and therefore,
+ * once the model quotes it in its reply, to the user's browser.
+ *
+ * The rule "absolute filesystem paths never reach a client" was enforced on the
+ * wire (routes/chat.ts runs every agent frame through `toClientPaths`), but the
+ * model's own prose is not a field anyone can rewrite: a tool RESULT that said
+ * "downloaded to /data/sessions/ab12/downloads/cube.stl" got echoed into the
+ * chat verbatim, deployment layout, session id and all. So the tool results
+ * speak the same workspace-relative form the wire does, and this is the one
+ * place that spelling is decided.
+ *
+ * The answer is deliberately ROUND-TRIPPABLE: what comes out of here is exactly
+ * what `resolveInsideSessionWorkspace` (and the server's `resolveSessionPath`)
+ * accept back, so the model can hand a path it was just told straight to the
+ * next tool — `import_from_url` → `plan_job` → `run_job` without ever seeing an
+ * absolute path.
+ *
+ *   • inside `uploads/`, `downloads/` or `slices/` → "uploads/cube.stl".
+ *   • DESKTOP, anywhere else the user is allowed (their home folder, an SD
+ *     card) → the path unchanged. There is no relative spelling for a file
+ *     outside the session directory, the machine belongs to the person reading
+ *     the reply, and "bracket.stl" would be a name no tool could resolve again.
+ *   • HOSTED, anywhere else (`scratch/`, the session's own top level) → the
+ *     basename. Nothing is ever handed out from there, so this is the
+ *     fail-quiet branch rather than a supported shape.
+ */
+export function workspaceRef(absolute: string): string {
+  if (typeof absolute !== "string" || absolute.length === 0) return "";
+  const dir = currentSession().dir;
+  const relIn = (root: string, target: string): string | undefined => {
+    const rel = relative(root, target);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+    return rel.split(/[/\\]/).join("/");
+  };
+  // Asked twice, because the two strings can be different spellings of the same
+  // place: `assertWorkspacePath` hands the tools the REAL path (symlinks
+  // resolved), while `session.dir` is whatever SLICELY_WORKDIR said — and on
+  // macOS `/var` is a symlink to `/private/var`, so a plain `relative()` between
+  // them yields `../../…`. Left at one comparison, every reference on a
+  // deployment whose root sits behind a link would have degraded to a basename.
+  // The cheap comparison first; the filesystem only when it does not agree.
+  const inside = relIn(dir, absolute) ?? relIn(realPath(dir), realPath(absolute));
+  if (inside !== undefined) {
+    // Inside Slicely's own directory. A subtree we actually hand out gets its
+    // relative spelling; anything else gets its basename and nothing more —
+    // `secrets.json` and `master.key` live at that top level, and naming them is
+    // the disclosure this function exists to prevent, desktop or not.
+    return isSafeWorkspaceRelPath(inside) ? inside : basename(absolute);
+  }
+  // Outside it. On the desktop that is one of the USER'S OWN files (their home
+  // folder, an SD card): the path is the only name that resolves again, and the
+  // machine belongs to the person reading the reply. Hosted, no such file is
+  // reachable at all, so the basename is the fail-quiet answer.
+  return isDesktop() ? absolute : basename(absolute);
+}
+
 export function resolveInsideSessionWorkspace(p: string): string | undefined {
   if (typeof p !== "string" || p.trim().length === 0) return undefined;
   // A RELATIVE path means "inside my workspace", never "inside whatever
@@ -301,7 +358,33 @@ export function resolveInsideSessionWorkspace(p: string): string | undefined {
   const absolute = isAbsolute(p) ? p : join(currentSession().dir, p);
   const target = realPath(absolute);
   const desktop = isDesktop();
-  for (const root of workspaceRoots()) {
+  const roots = workspaceRoots();
+  if (roots.length === 0) return undefined;
+
+  // ── The subtree rule applies to an ABSOLUTE path too ──────────────────────
+  //
+  // `isSafeWorkspaceRelPath` above confines a RELATIVE reference to
+  // uploads/downloads/slices. Spelled absolutely, the very same file skipped it
+  // and only had to clear containment — and `<session>/secrets.json` (the
+  // encrypted Anthropic key), `<session>/printer-secrets.json`, and on the
+  // desktop `<workdir>/master.key` are all inside the session directory. So the
+  // rule is applied to the RESOLVED path instead of to the caller's spelling,
+  // which is the only place both forms meet.
+  //
+  // It also has to be FINAL rather than one root's opinion: the desktop's roots
+  // include `$HOME`, and the workdir (`~/Library/Application Support/Slicely`)
+  // sits inside it — so merely skipping to the next root would have let the home
+  // root re-admit the file the session root had just refused. Being inside
+  // Slicely's own directory is never a licence; it is the stricter rule.
+  const realSessionDir = realPath(currentSession().dir);
+  if (isInsideDir(realSessionDir, target)) {
+    const rel = relative(realSessionDir, target);
+    if (!isSafeWorkspaceRelPath(rel)) return undefined;
+    if (desktop && hasHiddenSegment(rel)) return undefined;
+    return target;
+  }
+
+  for (const root of roots) {
     const realRoot = realPath(root);
     if (!isInsideDir(realRoot, target)) continue;
     // The user's own machine is where the hidden-folder rule earns its keep:

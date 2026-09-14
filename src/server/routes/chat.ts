@@ -14,7 +14,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
 import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
-import { sendError, toWire } from "../errors";
+import { sendError, stripPaths, toWire } from "../errors";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
 import { adoptGcodeFile, toClientPaths, type ChatAgent, type SessionRecord } from "../session";
@@ -190,7 +190,14 @@ export function createChatRouter(
         emit(event);
       };
       await agent.send(message, emitAndRecord);
-      recordTurn(session, agent, message, replyText);
+      // The reply is SCRUBBED WHOLE, here, where the stream's delta boundaries
+      // no longer exist. `writeSse` scrubs each `text` frame on its way out, but
+      // a path split across two deltas ("/data/sessi" + "ons/ab12/uploads/…")
+      // matches nothing on either side — and `chats.json` is replayed verbatim
+      // on every reopen of the conversation, so a path saved here leaks once
+      // live and then for good. The assembled string is the only place the whole
+      // path is guaranteed to be contiguous.
+      recordTurn(session, agent, message, stripPaths(replyText));
       // Pull back whatever the agent imported/downloaded/sliced this turn, so
       // a later turn — or a REST call like /api/slice — keeps working from
       // this session's file.

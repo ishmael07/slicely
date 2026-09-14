@@ -40,6 +40,8 @@ import {
 import { getPreferences, printerGeometry, updatePreferences } from "../settings";
 import { sessionState } from "./state";
 import { colourRequest, type ColourRequest } from "./colourRequest";
+import { workspaceRef } from "../session-context";
+import { stripPaths } from "../../server/errors";
 import { join } from "node:path";
 import {
   V2_TOOLS,
@@ -152,7 +154,8 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
   path: {
     type: "string",
     description:
-      "Absolute path to the model file. Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
+      "Workspace path to the model file, as a tool result gave it to you (\"uploads/cube.stl\", \"downloads/kit/part1.stl\", \"slices/plate-1.gcode\"). " +
+      "Omit to use the active (imported/uploaded) model (and to auto-include its parts on one plate).",
   },
   goal: {
     type: "string",
@@ -369,7 +372,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
         path: {
           type: "string",
           description:
-            "Absolute path to a downloaded model file. Omit to use the most recently imported model.",
+            "Workspace path to a model file, as a tool result gave it to you (e.g. \"downloads/cube.stl\"). Omit to use the most recently imported model.",
         },
       },
     },
@@ -388,7 +391,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
         path: {
           type: "string",
           description:
-            "Absolute path to a model file. Omit to use the active (imported/uploaded) model.",
+            "Workspace path to a model file, as a tool result gave it to you (e.g. \"uploads/cube.stl\"). Omit to use the active (imported/uploaded) model.",
         },
         goal: {
           type: "string",
@@ -458,7 +461,8 @@ const V1_TOOLS: Anthropic.Tool[] = [
       properties: {
         path: {
           type: "string",
-          description: "Absolute path to the model. Omit to use the most recently imported model.",
+          description:
+            'Workspace path to the model, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the most recently imported model.',
         },
         layerHeightMm: { type: "number", description: "Layer height in mm (e.g. 0.2)." },
         fillDensityPct: { type: "number", description: "Infill density percent 0–100." },
@@ -575,7 +579,9 @@ export async function executeTool(
         (count > 1
           ? ` plus ${count - 1} more part(s) — ${count} parts total. They'll be arranged onto one plate when sliced.`
           : ".") +
-        ` It is now the active model for inspect/slice.` +
+        // The workspace path, so a later plan_job/inspect_model can name this
+        // file explicitly instead of relying on it still being "active".
+        ` It is now the active model for inspect/slice; its workspace path is ${workspaceRef(result.localPath)}.` +
         colourNote
       );
     }
@@ -653,7 +659,10 @@ export async function executeTool(
       const info = await getModelInfo(path);
       emit({ type: "info", info });
       return (
-        `Model "${path}":\n` +
+        // The WORKSPACE reference, not the absolute one: the model quotes this
+        // line back to the user, and it is also the string it will pass to the
+        // next tool. See workspaceRef.
+        `Model "${workspaceRef(path)}":\n` +
         `  dimensions: ${info.sizeX.toFixed(1)} × ${info.sizeY.toFixed(1)} × ${info.sizeZ.toFixed(
           1,
         )} mm\n` +
@@ -718,7 +727,9 @@ export async function executeTool(
               ? ` Opened the finished plate 1 of ${slice.job.plates.length} in PrusaSlicer's G-code viewer — already sliced, no need to press Slice. The other plates are sliced too; open each from its panel to review them one at a time.`
               : ` Opened the finished slice in PrusaSlicer's G-code viewer — review the toolpaths and export the G-code, no Slice click needed.`;
         } catch (err) {
-          openNote = ` (Couldn't open PrusaSlicer automatically: ${(err as Error).message})`;
+          // The GUI launcher quotes the file it failed on; scrubbed because
+          // this string goes to the model, which quotes it to the user.
+          openNote = ` (Couldn't open PrusaSlicer automatically: ${stripPaths((err as Error).message)})`;
         }
       } else {
         openNote = "";
@@ -859,7 +870,7 @@ export async function executeTool(
       const lead =
         n > 1
           ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied}.`
-          : `Opened ${primary} in PrusaSlicer${applied}.`;
+          : `Opened ${workspaceRef(primary)} in PrusaSlicer${applied}.`;
       const colourNote = colourChanges.length
         ? ` It changes filament at ${colourChanges
             .map((c) => `${c.atZ} mm (${c.colourHex.toUpperCase()})`)
@@ -1099,7 +1110,7 @@ async function runSlice(
   // Steer the caller to open_in_slicer instead of failing deep in PrusaSlicer.
   if (!SLICEABLE_PART_EXTS.has(extLower(allParts[0]))) {
     throw new Error(
-      `"${allParts[0]}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
+      `"${workspaceRef(allParts[0])}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
     );
   }
 
