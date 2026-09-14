@@ -174,18 +174,16 @@ function readState(provider: ProviderId): KeyState {
  * again, which is a better outcome than every request in the session throwing.
  *
  * Falls back to the OPERATOR'S OWN key for that provider (`ANTHROPIC_API_KEY` /
- * `OPENAI_API_KEY`) when none is stored — but only where that cannot quietly
- * bill one person for another's chat:
+ * `OPENAI_API_KEY`) when none is stored — but only in DESKTOP MODE, where the
+ * operator and the user are the same human on their own machine.
  *
- *   • desktop mode, where the operator and the user are the same human, and
- *   • a hosted server whose operator set `SLICELY_ALLOW_OPERATOR_KEY=1`, an
- *     explicit, documented decision to pay for every visitor's chat.
- *
- * Anywhere else, no stored key means no key. A hosted deployment that merely
- * happens to have one of those variables in its environment — for a script, a
- * sibling service, a copied .env — must not start spending it on strangers.
- * That is what makes the standard variable names safe to read here: the name is
- * not the permission, the flag is.
+ * A HOSTED SERVER NEVER FALLS BACK HERE. A deployment that merely happens to
+ * have one of those variables in its environment — for a script, a sibling
+ * service, a copied .env — must not start spending it on strangers. The owner's
+ * key IS spendable in hosted mode, but only through a signed-in account with a
+ * metered balance: see `agent/funding.ts`, which is where that decision lives
+ * now. `SLICELY_ALLOW_OPERATOR_KEY`, which used to open this door for everyone
+ * at once, is gone.
  */
 export function getUserApiKey(provider: ProviderId = "anthropic"): string | undefined {
   return resolveKey(provider).key;
@@ -216,10 +214,23 @@ function resolveKey(provider: ProviderId): { key?: string; source: KeySource } {
   return operator ? { key: operator, source: "operator" } : { source: "none" };
 }
 
-/** True when this deployment has opted into spending the operator's own key. */
+/**
+ * True when this deployment may spend the operator's own key here — which now
+ * means DESKTOP, and nothing else.
+ *
+ * `SLICELY_ALLOW_OPERATOR_KEY` is retired. It was the one door through which a
+ * stranger could spend the owner's key, with no per-user limit, no accounting
+ * and no way to close it again short of a redeploy. The safe version of what it
+ * did is the free tier: in hosted mode the owner's keys are reachable only
+ * through a signed-in, metered account with a balance — see
+ * `agent/funding.ts`, which is the only other place in `src/main` that reads
+ * `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+ *
+ * Desktop needs no flag and never did: the operator and the user are the same
+ * human, on their own machine, paying their own bill.
+ */
 function operatorKeyAllowed(): boolean {
-  if (isDesktop()) return true;
-  return process.env.SLICELY_ALLOW_OPERATOR_KEY?.trim() === "1";
+  return isDesktop();
 }
 
 /** The operator's key for one provider, if configured AND allowed to be used.

@@ -15,19 +15,34 @@ function envStr(name: string, fallback = ""): string {
   return v && v.trim().length > 0 ? v.trim() : fallback;
 }
 
-function envInt(name: string, fallback: number): number {
+/**
+ * An integer from the environment, or `fallback`.
+ *
+ * `min` DEFAULTS TO 1 BECAUSE ZERO IS USUALLY A BROKEN APP: a slicer
+ * concurrency, an output-token ceiling or a history depth of nothing is a typo,
+ * and falling back to the default is kinder than starting a server that cannot
+ * do anything. But for the four free-tier caps zero is a POLICY — "grant
+ * nothing", "spend nothing today", "no new accounts from one address", "no free
+ * chats" — and it is the only kill switch the owner has that does not also take
+ * sign-in away with it. Those four pass `min: 0`. A negative is still nonsense
+ * everywhere and still falls back.
+ */
+function envInt(name: string, fallback: number, min = 1): number {
   const n = Number.parseInt(envStr(name), 10);
-  return Number.isFinite(n) && n >= 1 ? n : fallback;
+  return Number.isFinite(n) && n >= min ? n : fallback;
 }
 
 /**
  * Owner-supplied, environment-only configuration.
  *
- * Deliberately ABSENT: any Anthropic credential. AI access is bring-your-own,
- * per session (see userkey.ts), so chat bills the user who pasted the key
- * rather than whoever deployed the server. `ANTHROPIC_API_KEY` is read in
- * exactly one place — userkey.ts's operator fallback, gated on desktop mode or
- * `SLICELY_ALLOW_OPERATOR_KEY=1` — and never becomes part of this config.
+ * Deliberately ABSENT: any Anthropic or OpenAI credential. AI access is
+ * bring-your-own, per session (see userkey.ts), so chat bills the user who
+ * pasted the key rather than whoever deployed the server. The owner's own
+ * `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are read in exactly two places —
+ * userkey.ts's desktop-only fallback, and agent/funding.ts, where a signed-in
+ * account with a metered balance is what makes them spendable — and neither
+ * ever becomes part of this config. The numbers below BOUND that spending; they
+ * are not the credential.
  */
 export interface SlicelyConfig {
   thingiverseToken: string;
@@ -42,6 +57,35 @@ export interface SlicelyConfig {
    *  Two is the shipped default: enough to keep a second visitor from waiting
    *  behind a long slice, few enough that a 2-core host still answers HTTP. */
   maxSlices: number;
+
+  // ── The free tier's bounds (hosted mode only; see main/accounts/) ──────────
+  // Every one of these is a CEILING on what a stranger can cost the owner. They
+  // are whole cents / whole counts on purpose, so the .env reads like money and
+  // the conversion to µ¢ happens exactly once, at the edge (`centsToMicros`).
+
+  /** `SLICELY_FREE_CREDIT_CENTS` — the one-time grant per person, in cents. */
+  freeCreditCents: number;
+  /** `SLICELY_FREE_MODEL` — overrides the free-tier model choice. Empty means
+   *  "pick from whichever owner key exists" (see agent/funding.ts). */
+  freeModel: string;
+  /** `SLICELY_FREE_MAX_OUTPUT_TOKENS` — per-call output ceiling on free credit,
+   *  well under the provider's own, so one runaway answer cannot eat a grant. */
+  freeMaxOutputTokens: number;
+  /** `SLICELY_FREE_CHATS_PER_DAY` — turns one account may start per UTC day. */
+  freeChatsPerDay: number;
+  /** `SLICELY_SIGNUPS_PER_IP_PER_DAY` — new accounts one hashed address may
+   *  create per UTC day, so a grant cannot be farmed from one machine. */
+  signupsPerIpPerDay: number;
+  /** `SLICELY_DAILY_SPEND_CAP_CENTS` — the global kill switch: free credit
+   *  across ALL users stops for the day once this much has been spent. */
+  dailySpendCapCents: number;
+  /** `SLICELY_MAX_HISTORY_TURNS` — how many turns of conversation are resent as
+   *  input. Applies to paid and free turns alike; it is a pure win. */
+  maxHistoryTurns: number;
+  /** `SLICELY_PUBLIC_URL` — this app's own origin, e.g.
+   *  `https://app.slicely.example`. Required for OAuth: redirect URIs are built
+   *  from it and never from a request's `Host` header. */
+  publicUrl: string;
 }
 
 let cached: SlicelyConfig | null = null;
@@ -73,6 +117,14 @@ export function getConfig(): SlicelyConfig {
     prusaSlicerPath: envStr("PRUSASLICER_PATH", DEFAULT_PRUSA_MAC),
     prusaConfigIni: envStr("PRUSASLICER_CONFIG_INI"),
     maxSlices: envInt("SLICELY_MAX_SLICES", 2),
+    freeCreditCents: envInt("SLICELY_FREE_CREDIT_CENTS", 50, 0),   // 0 is a real value: the kill switch
+    freeModel: envStr("SLICELY_FREE_MODEL"),
+    freeMaxOutputTokens: envInt("SLICELY_FREE_MAX_OUTPUT_TOKENS", 4000),
+    freeChatsPerDay: envInt("SLICELY_FREE_CHATS_PER_DAY", 40, 0),   // 0 is a real value: the kill switch
+    signupsPerIpPerDay: envInt("SLICELY_SIGNUPS_PER_IP_PER_DAY", 3, 0),   // 0 is a real value: the kill switch
+    dailySpendCapCents: envInt("SLICELY_DAILY_SPEND_CAP_CENTS", 500, 0),   // 0 is a real value: the kill switch
+    maxHistoryTurns: envInt("SLICELY_MAX_HISTORY_TURNS", 12),
+    publicUrl: envStr("SLICELY_PUBLIC_URL"),
     workdir,
     downloadsDir,
     slicesDir,
