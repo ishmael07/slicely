@@ -52,6 +52,9 @@ test("availability() is always fully open — no auth", () => {
   const a = nih3dProvider.availability();
   assert.equal(a.searchable, true);
   assert.equal(a.downloadable, true);
+  assert.equal(a.status, "ready");
+  assert.equal(a.note, "Search and download");
+  assert.equal(a.operatorHint, undefined);
   assert.equal(a.blockedReason, undefined);
 });
 

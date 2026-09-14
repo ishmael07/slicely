@@ -11,6 +11,11 @@ test("availability() works even without a real key (falls back to DEMO_KEY) but 
   const a = smithsonianProvider.availability();
   assert.equal(a.searchable, true);
   assert.equal(a.downloadable, true);
+  assert.equal(a.status, "limited");
+  assert.equal(a.note, "Limited on this server");
+  // The key's name is the operator's business, never the visitor's.
+  assert.match(a.operatorHint ?? "", /DEMO_KEY/);
+  assert.doesNotMatch(a.note, /DEMO_KEY|API_KEY/);
   assert.match(a.blockedReason ?? "", /DEMO_KEY/);
 });
 

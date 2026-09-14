@@ -18,6 +18,7 @@
 //     linking to `/q/.../<id>/`) are UNVERIFIED — inferred from Yeggi's
 //     general page conventions since a real results page was never reached.
 import type { SourceAvailability, SourcedModel, SourcePlugin } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchWithUA , scrapersEnabled } from "../net";
 import { isBotChallenge } from "./scrape-common";
 import * as cheerio from "cheerio";
@@ -30,17 +31,19 @@ export const yeggiProvider: SourcePlugin = {
   canDownload: false,
 
   availability(): SourceAvailability {
-    return {
+    const on = scrapersEnabled();
+    return sourceState({
       id: "yeggi",
       label: "Yeggi",
       // Off unless SLICELY_ENABLE_SCRAPERS is set: this source is
       // bot-blocked in practice and only adds latency. See net.ts.
-      searchable: scrapersEnabled(),
+      status: on ? "search_only" : "off",
+      searchable: on,
       downloadable: false,
-      blockedReason: scrapersEnabled()
+      operatorHint: on
         ? "Best-effort scrape — Yeggi's own bot-check may block automated requests even though its robots.txt allows crawling."
         : "Off by default: Yeggi's bot-check blocks automated requests, and waiting for it added ~8s to every search. Set SLICELY_ENABLE_SCRAPERS=1 to try it.",
-    };
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

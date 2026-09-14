@@ -36,6 +36,22 @@ test("availability() reflects whether THINGIVERSE_APP_TOKEN is configured", (t) 
   assert.equal(thingiverseProvider.availability().downloadable, true);
 });
 
+test("availability() keeps the token instruction out of the note and in the operator hint", (t) => {
+  t.mock.method(config, "getConfig", () => fakeConfig(""));
+  const off = thingiverseProvider.availability();
+  assert.equal(off.status, "off");
+  assert.equal(off.note, "Off on this server");
+  assert.match(off.operatorHint ?? "", /THINGIVERSE_APP_TOKEN/);
+  assert.equal(off.setupUrl, "https://www.thingiverse.com/developers");
+
+  t.mock.method(config, "getConfig", () => fakeConfig("real-token"));
+  const on = thingiverseProvider.availability();
+  assert.equal(on.status, "ready");
+  assert.equal(on.note, "Search and download");
+  assert.equal(on.operatorHint, undefined);
+  assert.equal(on.setupUrl, undefined);
+});
+
 test("search() maps a realistic Thingiverse search payload to SourcedModel", async (t) => {
   t.mock.method(config, "getConfig", () => fakeConfig("test-token"));
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {

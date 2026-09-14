@@ -46,6 +46,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchWithUA } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -121,7 +122,13 @@ export const nih3dProvider: SourcePlugin = {
   canDownload: true,
 
   availability(): SourceAvailability {
-    return { id: "nih3d", label: "NIH 3D Print Exchange", searchable: true, downloadable: true };
+    return sourceState({
+      id: "nih3d",
+      label: "NIH 3D Print Exchange",
+      status: "ready",
+      searchable: true,
+      downloadable: true,
+    });
   },
 
   async search(query: string, _limit: number): Promise<SourcedModel[]> {

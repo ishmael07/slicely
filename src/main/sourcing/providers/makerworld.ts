@@ -10,6 +10,7 @@
 //     license, likeCount, downloadCount, printCount, createTime }
 //   • Web URL = https://makerworld.com/en/models/{id}
 import type { SourceAvailability, SourcedModel, SourcePlugin } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchWithUA, clamp } from "../net";
 
 const SEARCH_URL = "https://makerworld.com/api/v1/search-service/select/design";
@@ -34,13 +35,16 @@ export const makerworldProvider: SourcePlugin = {
   canDownload: false,
 
   availability(): SourceAvailability {
-    return {
+    return sourceState({
       id: "makerworld",
       label: "MakerWorld",
+      status: "search_only",
       searchable: true,
       downloadable: false,
+      // Nothing an operator can configure — Bambu gates downloads behind a
+      // personal login — so this stays a diagnostic sentence, not a hint.
       blockedReason: "Downloads require a Bambu account login — open in browser.",
-    };
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

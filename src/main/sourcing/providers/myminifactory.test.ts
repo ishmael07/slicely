@@ -34,6 +34,8 @@ test("availability() with only an API key: searchable, but NOT downloadable (per
     const a = myminifactoryProvider.availability();
     assert.equal(a.searchable, true);
     assert.equal(a.downloadable, false);
+    assert.equal(a.status, "search_only");
+    assert.match(a.operatorHint ?? "", /reduced preview mesh/);
     assert.match(a.blockedReason ?? "", /reduced preview mesh/);
   });
 });

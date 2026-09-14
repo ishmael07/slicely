@@ -7,10 +7,17 @@
 // than an optimistic local guess.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
-import type { SourceAvailability } from "../shared/sourcing";
+import type { SourceAvailability, SourceStatus } from "../shared/sourcing";
 import { del, errorMessage, getJson, patchJson, resetSession } from "./api.js";
-import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
-import { configLoaded, providerLabel, providersWithKeys, renderAboutSection, renderAiSection } from "./onboarding.js";
+import { byId, confirmDialog, errorCard, externalLink, make, menu, skeleton, toast } from "./ui.js";
+import {
+  config,
+  configLoaded,
+  providerLabel,
+  providersWithKeys,
+  renderAboutSection,
+  renderAiSection,
+} from "./onboarding.js";
 
 export interface SettingsDeps {
   /** Report a failed change where the user will see it. */
@@ -325,37 +332,102 @@ export async function loadSources(): Promise<void> {
   }
 }
 
+/** Dot colour per state. A source that is simply off on this server is not an
+ *  error, so it gets the neutral dot rather than the red one. */
+const STATUS_DOT: Record<SourceStatus, string> = {
+  ready: "ok",
+  limited: "warn",
+  search_only: "warn",
+  off: "",
+};
+
+/** The standard sentence for each state, so a server too old to send `note`
+ *  still renders plain words instead of nothing. */
+const STATUS_NOTE: Record<SourceStatus, string> = {
+  ready: "Search and download",
+  limited: "Limited on this server",
+  search_only: "Search only — downloads open on their site",
+  off: "Off on this server",
+};
+
+/** What the server said, defaulted for a server that predates `status`. */
+function statusOf(s: SourceAvailability): SourceStatus {
+  if (s.status) return s.status;
+  if (!s.searchable) return "off";
+  return s.downloadable ? "ready" : "search_only";
+}
+
+/**
+ * Settings → Model sources.
+ *
+ * ONE LINE PER SOURCE, AND NOT A WORD ABOUT .env. What a visitor needs is
+ * whether a source works, so each row is a name, a dot and one short sentence.
+ * The env-var instructions the server also sends are for whoever runs the
+ * server, and only in desktop mode is that the person looking at the screen —
+ * so `operatorHint` is rendered there and nowhere else.
+ *
+ * Sources that are off are not errors and not actionable, so they go under one
+ * collapsed line instead of six dead rows between the live ones.
+ */
 function renderSources(sources: SourceAvailability[]): void {
   sourcesListEl.replaceChildren();
   if (sources.length === 0) {
     sourcesListEl.appendChild(make("p", "sheet-hint", "No sources reported."));
     return;
   }
-  for (const s of sources) {
-    const row = make("div", "source-row");
-    const cls = s.searchable && s.downloadable ? "ok" : s.searchable ? "warn" : "off";
-    row.appendChild(make("span", `dot ${cls}`));
-    const info = make("div", "info");
-    const name = make("div", "name");
-    name.appendChild(make("span", "", s.label));
-    if (s.searchable) name.appendChild(make("span", "cap", "search"));
-    if (s.downloadable) name.appendChild(make("span", "cap", "download"));
-    info.appendChild(name);
-    if (s.blockedReason) {
-      const reason = make("div", "reason");
-      reason.appendChild(document.createTextNode(`${s.blockedReason} `));
-      if (s.setupUrl) {
-        const link = make("a", "", "Get one →");
-        link.href = s.setupUrl;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        reason.appendChild(link);
-      }
-      info.appendChild(reason);
-    }
-    row.appendChild(info);
-    sourcesListEl.appendChild(row);
+  const working = sources.filter((s) => statusOf(s) !== "off");
+  const off = sources.filter((s) => statusOf(s) === "off");
+
+  if (working.length > 0) {
+    const card = make("div", "source-card");
+    for (const s of working) card.appendChild(sourceRow(s));
+    sourcesListEl.appendChild(card);
   }
+  if (off.length === 0) return;
+
+  const offCard = make("div", "source-card off hidden");
+  for (const s of off) offCard.appendChild(sourceRow(s));
+
+  const toggle = make("button", "source-more");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.appendChild(
+    make(
+      "span",
+      "",
+      off.length === 1 ? "1 source is off on this server" : `${off.length} sources are off on this server`,
+    ),
+  );
+  toggle.appendChild(make("span", "chev", "›"));
+  toggle.addEventListener("click", () => {
+    const collapsed = offCard.classList.toggle("hidden");
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  });
+  sourcesListEl.append(toggle, offCard);
+}
+
+function sourceRow(s: SourceAvailability): HTMLElement {
+  const status = statusOf(s);
+  const row = make("div", "source-row");
+  row.appendChild(make("span", `dot ${STATUS_DOT[status]}`.trim()));
+  const info = make("div", "info");
+  info.appendChild(make("div", "name", s.label));
+  info.appendChild(make("div", "note", s.note || STATUS_NOTE[status]));
+
+  // Desktop only: on a machine the user owns, the operator IS the user, so the
+  // thing they'd have to change is worth saying. On a shared server it is
+  // somebody else's .env and nothing the reader can act on.
+  if (config().mode === "desktop" && s.operatorHint) {
+    const hint = make("div", "op-hint");
+    hint.appendChild(document.createTextNode(s.operatorHint));
+    if (s.setupUrl) {
+      hint.appendChild(document.createTextNode(" "));
+      hint.appendChild(externalLink(s.setupUrl, "Get one"));
+    }
+    info.appendChild(hint);
+  }
+  row.appendChild(info);
+  return row;
 }
 
 // ── AI / Data / About ────────────────────────────────────────────────────────

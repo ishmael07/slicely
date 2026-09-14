@@ -54,6 +54,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchJson, fetchWithUA, safeText, clamp } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -106,16 +107,17 @@ export const githubProvider: SourcePlugin = {
 
   availability(): SourceAvailability {
     const has = githubToken().length > 0;
-    return {
+    return sourceState({
       id: "github",
       label: "GitHub",
+      status: has ? "ready" : "off",
       searchable: has,
       downloadable: has,
-      blockedReason: has
+      operatorHint: has
         ? undefined
         : "GitHub's search API requires a token even for public repos. Add GITHUB_TOKEN to your .env.",
       setupUrl: has ? undefined : "https://github.com/settings/tokens",
-    };
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

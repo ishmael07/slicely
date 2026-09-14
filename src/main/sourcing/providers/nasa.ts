@@ -34,6 +34,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchJson } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -94,7 +95,13 @@ export const nasaProvider: SourcePlugin = {
   canDownload: true,
 
   availability(): SourceAvailability {
-    return { id: "nasa", label: "NASA 3D Resources", searchable: true, downloadable: true };
+    return sourceState({
+      id: "nasa",
+      label: "NASA 3D Resources",
+      status: "ready",
+      searchable: true,
+      downloadable: true,
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

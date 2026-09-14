@@ -2,10 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makerworldProvider } from "./makerworld";
 
-test("availability() reports search-only with a login-required blockedReason", () => {
+test("availability() reports search-only in plain words, with the login detail kept for diagnostics", () => {
   const a = makerworldProvider.availability();
   assert.equal(a.searchable, true);
   assert.equal(a.downloadable, false);
+  assert.equal(a.status, "search_only");
+  assert.equal(a.note, "Search only — downloads open on their site");
+  // Nothing an operator can configure, so no hint — but the fuller sentence
+  // still reaches the agent and the resolve/download error paths.
+  assert.equal(a.operatorHint, undefined);
   assert.match(a.blockedReason ?? "", /Bambu account/);
 });
 

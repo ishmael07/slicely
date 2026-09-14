@@ -118,16 +118,84 @@ export interface SourcedFile {
   preferred?: boolean;
 }
 
-/** Why a source is unusable right now — surfaced so the user can fix it. */
+/**
+ * What a source can do right now, in four words the UI can render as a dot.
+ *
+ *   ready        — search and download, nothing to say
+ *   limited      — works, but on a shared credential or a reduced quota
+ *   search_only  — findable here, but the file comes from the source's own site
+ *   off          — not usable on this server at all
+ */
+export type SourceStatus = "ready" | "limited" | "search_only" | "off";
+
+/**
+ * What a source can do right now.
+ *
+ * THREE AUDIENCES, THREE FIELDS. `note` is for the person using Slicely — one
+ * short sentence in plain words, never an environment variable, because a
+ * hosted visitor cannot edit the server's .env and does not care what it is
+ * called. `operatorHint` is for whoever runs the server, and the UI shows it
+ * only in desktop mode, where those two people are the same person.
+ * `blockedReason` is the older, fuller sentence kept for the agent's own
+ * tool output and for download/resolve error messages.
+ */
 export interface SourceAvailability {
   id: SourceId;
   label: string;
   searchable: boolean;
   downloadable: boolean;
-  /** Present when unavailable: what the user must do, e.g. "Add an API key". */
-  blockedReason?: string;
-  /** Where to get the credential, when one is needed. */
+  /** Coarse state, for the status dot and for ordering the list. */
+  status: SourceStatus;
+  /** User-facing, at most one sentence: "Search and download", "Off on this
+   *  server". No environment variable names, no setup instructions. */
+  note: string;
+  /** The operator's actual instruction — env vars and flags. Desktop UI only. */
+  operatorHint?: string;
+  /** Where to get the credential, when one is needed. Pairs with operatorHint. */
   setupUrl?: string;
+  /** Legacy/diagnostic: the fullest explanation, used in server-side error
+   *  messages and the agent's tool output. Defaults to `operatorHint`. */
+  blockedReason?: string;
+}
+
+/** The user-facing sentence for each state — one place, so every source says
+ *  the same thing the same way. */
+export const SOURCE_STATUS_NOTE: Record<SourceStatus, string> = {
+  ready: "Search and download",
+  limited: "Limited on this server",
+  search_only: "Search only — downloads open on their site",
+  off: "Off on this server",
+};
+
+/**
+ * Build a `SourceAvailability`, filling in the standard `note` for the status
+ * and back-filling `blockedReason` from `operatorHint` so existing callers
+ * keep the sentence they had.
+ */
+export function sourceState(a: {
+  id: SourceId;
+  label: string;
+  status: SourceStatus;
+  searchable: boolean;
+  downloadable: boolean;
+  note?: string;
+  operatorHint?: string;
+  setupUrl?: string;
+  blockedReason?: string;
+}): SourceAvailability {
+  const out: SourceAvailability = {
+    id: a.id,
+    label: a.label,
+    searchable: a.searchable,
+    downloadable: a.downloadable,
+    status: a.status,
+    note: a.note ?? SOURCE_STATUS_NOTE[a.status],
+  };
+  if (a.operatorHint) out.operatorHint = a.operatorHint;
+  if (a.setupUrl) out.setupUrl = a.setupUrl;
+  const blocked = a.blockedReason ?? a.operatorHint;
+  if (blocked) out.blockedReason = blocked;
+  return out;
 }
 
 /** A source Slicely can search. */

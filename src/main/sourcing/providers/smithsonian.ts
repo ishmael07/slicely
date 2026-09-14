@@ -34,6 +34,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchJson } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -158,16 +159,18 @@ export const smithsonianProvider: SourcePlugin = {
   canDownload: true,
 
   availability(): SourceAvailability {
-    return {
+    const real = hasRealKey();
+    return sourceState({
       id: "smithsonian",
       label: "Smithsonian Open Access",
+      status: real ? "ready" : "limited",
       searchable: true, // works even with the public DEMO_KEY, just rate-limited
       downloadable: true,
-      blockedReason: hasRealKey()
+      operatorHint: real
         ? undefined
         : "Using the shared DEMO_KEY (low rate limit) — add a free SMITHSONIAN_API_KEY for reliable use.",
-      setupUrl: hasRealKey() ? undefined : "https://api.data.gov/signup/",
-    };
+      setupUrl: real ? undefined : "https://api.data.gov/signup/",
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

@@ -42,6 +42,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchWithUA, safeText, clamp } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -174,7 +175,13 @@ export const printablesProvider: SourcePlugin = {
     // Search AND the common download path are both unauthenticated — see the
     // header comment. The optional PRINTABLES_TOKEN only ever helps with a
     // paid/gated edge case, so it's never a hard requirement.
-    return { id: "printables", label: "Printables", searchable: true, downloadable: true };
+    return sourceState({
+      id: "printables",
+      label: "Printables",
+      status: "ready",
+      searchable: true,
+      downloadable: true,
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

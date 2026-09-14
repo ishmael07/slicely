@@ -1427,49 +1427,94 @@ details.thinking summary::-webkit-details-marker {
   color: var(--err);
 }
 
-/* ── Model sources panel ──────────────────────────────────────────────────── */
+/* ── Model sources panel ──────────────────────────────────────────────────────
+   One card of rows, laid out like Settings → AI above it: a name on the first
+   line, one plain sentence under it, hairlines between. Sources that are off
+   sit in a second card behind a single collapsed line. */
+.sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.source-card {
+  display: flex;
+  flex-direction: column;
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  overflow: hidden;
+}
+/* Dimmer, because these are not actionable — but only until someone opens the
+   group on purpose, so not so dim that the desktop hint inside can't be read. */
+.source-card.off .source-row {
+  opacity: 0.75;
+}
 .source-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 8px 9px;
-  border-radius: var(--radius-xs);
-  background: var(--panel-2);
-  border: 0.5px solid var(--border);
+  gap: var(--sp-1);
+  min-height: 48px;
+  padding: var(--sp-1) var(--sp-2);
+}
+.source-row + .source-row {
+  border-top: 0.5px solid var(--border);
 }
 .source-row .dot {
-  margin-top: 3px;
+  margin-top: 7px;
   flex: 0 0 auto;
 }
 .source-row .info {
   min-width: 0;
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .source-row .name {
-  font-size: var(--fs-sm);
-  font-weight: 650;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.source-row .cap {
-  font-size: var(--fs-sm);
+  font-size: var(--fs);
   font-weight: 600;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--text);
 }
-.source-row .reason {
+.source-row .note {
   font-size: var(--fs-sm);
   color: var(--text-dim);
-  margin-top: 2px;
   line-height: 1.4;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
-.source-row a {
+/* Desktop only: the operator's own instruction, quieter than the note it sits
+   under — dimmer, never smaller. */
+.source-row .op-hint {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  color: var(--text-faint);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.source-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: 10px var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0.5px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.source-more:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.source-more .chev {
+  color: var(--text-faint);
+  transition: transform 0.18s var(--ease);
+}
+.source-more[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
 }
 
 /* ── Search results — sources outcome note (per-source ok/count/error) ──── */

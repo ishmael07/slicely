@@ -41,6 +41,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { fetchJson, clamp } from "../net";
 import { extOf, isMeshExt } from "../fsutil";
 
@@ -116,18 +117,20 @@ export const myminifactoryProvider: SourcePlugin = {
 
   availability(): SourceAvailability {
     const has = hasAnyCredential();
-    return {
+    const full = canRealDownload();
+    return sourceState({
       id: "myminifactory",
       label: "MyMiniFactory",
+      status: !has ? "off" : full ? "ready" : "search_only",
       searchable: has,
-      downloadable: canRealDownload(),
-      blockedReason: has
-        ? canRealDownload()
+      downloadable: full,
+      operatorHint: has
+        ? full
           ? undefined
           : "Search works with an API key, but real downloads need MYMINIFACTORY_ACCESS_TOKEN (an OAuth user token) — a bare API key only exposes a reduced preview mesh."
         : "Add a free MYMINIFACTORY_API_KEY to your .env.",
       setupUrl: has ? undefined : "https://www.myminifactory.com/api-doc/index.html",
-    };
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

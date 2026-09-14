@@ -30,6 +30,26 @@ test("sourceAvailability reports one entry per registered provider, each with th
   assert.ok(all.some((a) => a.id === "nih3d"));
 });
 
+// The Settings sheet renders `note` verbatim to whoever is looking, and on a
+// hosted server that person cannot edit a .env and has no idea what one is.
+// Anything shaped like an environment variable, a shell flag or a UI arrow
+// belongs in `operatorHint`, which only desktop shows.
+test("every source's user-facing note is one plain sentence with no env vars, flags or arrows", () => {
+  for (const a of sourceAvailability()) {
+    assert.ok(["ready", "limited", "search_only", "off"].includes(a.status), `${a.id}: ${a.status}`);
+    assert.equal(typeof a.note, "string");
+    assert.ok(a.note.length > 0 && a.note.length <= 60, `${a.id}'s note is not short: "${a.note}"`);
+    assert.doesNotMatch(a.note, /[A-Z]{2,}_[A-Z_]+/, `${a.id}'s note names an env var`);
+    assert.doesNotMatch(a.note, /\.env|→|Get one/, `${a.id}'s note leaks setup instructions`);
+    // One sentence: no full stop followed by more words.
+    assert.doesNotMatch(a.note, /\.\s+\S/, `${a.id}'s note is more than one sentence`);
+    // A hint, when there is one, is where the actual instruction lives.
+    if (a.operatorHint !== undefined) assert.ok(a.operatorHint.length > 0, a.id);
+    // A setup URL is only meaningful next to the hint that explains it.
+    if (a.setupUrl !== undefined) assert.ok(a.operatorHint, `${a.id} has a setupUrl but no operatorHint`);
+  }
+});
+
 test("resolveUrl on the façade passes straight through to the resolver (SSRF guard fires with no network access)", async () => {
   const result = await resolveUrl("http://127.0.0.1/secret.stl");
   assert.equal(result.kind, "unsupported");

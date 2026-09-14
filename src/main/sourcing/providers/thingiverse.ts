@@ -19,6 +19,7 @@ import type {
   SourcedModel,
   SourcePlugin,
 } from "../../../shared/sourcing";
+import { sourceState } from "../../../shared/sourcing";
 import { getConfig } from "../../config";
 import { fetchWithUA, safeText, clamp, USER_AGENT } from "../net";
 import { extOf, isArchiveExt, isMeshExt } from "../fsutil";
@@ -76,14 +77,15 @@ export const thingiverseProvider: SourcePlugin = {
 
   availability(): SourceAvailability {
     const has = token().trim().length > 0;
-    return {
+    return sourceState({
       id: "thingiverse",
       label: "Thingiverse",
+      status: has ? "ready" : "off",
       searchable: has,
       downloadable: has,
-      blockedReason: has ? undefined : "Add a free THINGIVERSE_APP_TOKEN to your .env.",
+      operatorHint: has ? undefined : "Add a free THINGIVERSE_APP_TOKEN to your .env.",
       setupUrl: has ? undefined : "https://www.thingiverse.com/developers",
-    };
+    });
   },
 
   async search(query: string, limit: number): Promise<SourcedModel[]> {

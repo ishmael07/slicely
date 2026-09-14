@@ -29,10 +29,18 @@ test("bot-blocked engines are off unless explicitly enabled", () => {
     for (const p of SCRAPERS) {
       const a = p.availability();
       assert.equal(a.searchable, false, `${p.id} should be off by default`);
+      assert.equal(a.status, "off", `${p.id} should report the off status`);
+      // How to turn it back on is the operator's line, not the visitor's.
+      assert.match(
+        a.operatorHint ?? "",
+        /SLICELY_ENABLE_SCRAPERS/,
+        `${p.id} should say how to turn it back on`,
+      );
+      assert.doesNotMatch(a.note, /SLICELY_ENABLE_SCRAPERS/, `${p.id}'s note is user-facing`);
       assert.match(
         a.blockedReason ?? "",
         /SLICELY_ENABLE_SCRAPERS/,
-        `${p.id} should say how to turn it back on`,
+        `${p.id} should keep the fuller sentence for diagnostics`,
       );
     }
   });
