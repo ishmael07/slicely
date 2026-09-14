@@ -54,9 +54,17 @@ ENV HOME=/home/slicely
 # The `--help` at the end of this RUN is a canary, not the real check: it proves
 # the extraction produced a runnable binary inside the same layer that produced
 # it, as root. The check that matters runs as `slicely` further down.
-RUN set -eux; url=$(curl -fsSL "https://api.github.com/repos/prusa3d/PrusaSlicer/releases/tags/version_${PRUSASLICER_VERSION}" \
+#
+# Both curls retry. A ~300MB release asset fetched once, with no retry, makes
+# every build hostage to one bad minute at GitHub's edge — which is not
+# hypothetical: this line failed a build with `curl: (22) The requested URL
+# returned error: 504`, a 504 being exactly the transient class curl will retry
+# for the asking. `--retry-all-errors` covers the connection resets a plain
+# `--retry` won't.
+RUN set -eux; RETRY="--retry 5 --retry-delay 3 --retry-all-errors"; \
+    url=$(curl -fsSL $RETRY "https://api.github.com/repos/prusa3d/PrusaSlicer/releases/tags/version_${PRUSASLICER_VERSION}" \
       | grep browser_download_url | grep 'linux-x64.*GTK3' | grep -v 'bgcode\|older' | head -1 | cut -d '"' -f 4); \
-    curl -fsSL -o /tmp/ps.AppImage "$url"; chmod +x /tmp/ps.AppImage; \
+    curl -fsSL $RETRY -o /tmp/ps.AppImage "$url"; chmod +x /tmp/ps.AppImage; \
     cd /tmp && ./ps.AppImage --appimage-extract >/dev/null && mv squashfs-root /opt/prusaslicer && rm /tmp/ps.AppImage; \
     printf '#!/bin/sh\nexec xvfb-run -a /opt/prusaslicer/AppRun "$@"\n' > /opt/prusaslicer/slicer.sh; \
     chmod +x /opt/prusaslicer/slicer.sh; \
