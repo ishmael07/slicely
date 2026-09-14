@@ -45,20 +45,16 @@ jobs:
       - name: npm run build
         run: npm run build
 
-      # `node --test dist`, not `npm run test:only`, and the difference is a
-      # portability bug in package.json rather than a preference:
-      # `test:only` is `node --test "dist/**/*.test.js"`, and Node 20 — the
-      # major BOTH Dockerfile stages run — has no glob support in the test
-      # runner's positional arguments (it arrived in Node 21). On Node 20 the
-      # pattern is taken literally and the run dies with
-      # `Could not find '…/dist/**/*.test.js'` before a single test executes.
-      # Handing the runner the directory instead selects exactly the same files
-      # (it recurses for `*.test.js`) and works on 20 and 22 alike — which is
-      # the one-line fix package.json wants. Until that lands, CI spells it out
-      # here rather than typechecking and building against the production major
-      # while testing against a different one.
-      - name: Unit tests (node --test dist)
-        run: node --test dist
+      # `test:only` (not `test`) because `test` re-runs the build we just did.
+      # package.json hands the test runner an explicit file list from `find`
+      # rather than a `dist/**/*.test.js` glob, and that is not fussiness: no
+      # single spelling works on both Node majors in play. Node 20 (this job,
+      # and both Dockerfile stages) cannot glob a positional argument at all —
+      # globs arrived in Node 21 — while Node 22 no longer expands a bare
+      # directory, so `node --test dist` passes on 20 and tries to execute the
+      # directory as a test file on 22. A list of paths is understood by both.
+      - name: npm run test:only
+        run: npm run test:only
 
   docker:
     name: image + container smoke

@@ -14,8 +14,8 @@
     "dev": "npm run build && electron dist/main/main.js",
     "dist:mac": "npm run build && electron-builder --mac --config scripts/electron-builder.config.cjs",
     "release:mac": "npm run build && electron-builder --mac --config scripts/electron-builder.config.cjs --publish always",
-    "test": "npm run build && node --test \"dist/**/*.test.js\"",
-    "test:only": "node --test \"dist/**/*.test.js\"",
+    "test": "npm run build && npm run test:only",
+    "test:only": "node --test $(find dist -name '*.test.js')",
     "serve": "npm run build && node dist/server/index.js"
   },
   "dependencies": {

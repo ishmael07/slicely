@@ -5,10 +5,31 @@
 // different parts, and collapsing them silently lost a colour.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { planColours } from "./colour";
 import { tinyPartsNote } from "./planner";
+import { getConfig } from "../config";
 import type { JobPart } from "../../shared/jobs";
 import type { FilamentSlot } from "../../shared/printers";
+
+/**
+ * Two of the tests below are planner tests only by filename: they drive the REAL
+ * `planJob`, which calls `getModelInfo`, which calls PrusaSlicer. Without the
+ * binary they did not skip — they FAILED, with
+ * `PrusaSlicer not found at "/Applications/PrusaSlicer.app/…"`, on every machine
+ * that hasn't installed it. That is every Linux CI runner and every contributor
+ * who hasn't got round to the 300MB download, and a suite that cannot go green
+ * on a clean checkout stops being a signal.
+ *
+ * So: skipped where there is no binary, named as such in the runner's output.
+ * Nothing is lost in CI, whose container image has PrusaSlicer in it and where
+ * these two therefore still run. `getConfig().prusaSlicerPath` is the same
+ * resolution the code under test uses — PRUSASLICER_PATH if set, the macOS
+ * default otherwise — so the guard can never disagree with the thing it guards.
+ */
+const noSlicer: false | string = existsSync(getConfig().prusaSlicerPath)
+  ? false
+  : "needs PrusaSlicer installed (set PRUSASLICER_PATH)";
 
 function part(path: string, colourHex?: string): JobPart {
   return { path, name: path.split("/").pop() ?? path, copies: 1, sizeX: 20, sizeY: 20, sizeZ: 20, colourHex };
@@ -150,7 +171,7 @@ test("a single-colour job is never split, whatever the setting", () => {
 // UI shows a spinner that never changes, which is indistinguishable from a
 // hang — which is exactly how it was reported.
 
-test("planning reports each stage, and each part as it is worked on", async () => {
+test("planning reports each stage, and each part as it is worked on", { skip: noSlicer }, async () => {
   const { planJob } = await import("./index");
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -193,7 +214,7 @@ test("planning reports each stage, and each part as it is worked on", async () =
   assert.ok(orderOf("colouring") < orderOf("packing"));
 });
 
-test("a scale factor changes the dimensions every later decision uses", async () => {
+test("a scale factor changes the dimensions every later decision uses", { skip: noSlicer }, async () => {
   const { planJob } = await import("./index");
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
