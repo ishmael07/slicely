@@ -8,12 +8,14 @@
 // keys can switch model mid-session and the next turn simply goes elsewhere.
 import { createHash } from "node:crypto";
 import { getUserApiKey, NoApiKeyError } from "../userkey";
+import { costMicros, type TurnUsage } from "../pricing";
 import { currentSessionId } from "../session-context";
 import { getSettings, getPreferences } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
 import { SYSTEM_PROMPT } from "./prompt";
 import { capHistory } from "./history";
+import { logTurnCost } from "./cost-log";
 import { stripPaths, toWire } from "../../server/errors";
 import { fromAnthropicHistory } from "./provider-anthropic";
 import {
@@ -302,6 +304,7 @@ export class SlicelyAgent {
           },
         );
         const { assistant, toolCalls } = turn;
+        reportCost(model, turn.usage, i);
 
         // Record the assistant turn (text + reasoning + any tool calls).
         // NEVER EMPTY: `content: []` is a 400 on both providers, so a turn that
@@ -394,6 +397,35 @@ export class SlicelyAgent {
       this.closeTurn();
       emit({ type: "done" });
     }
+  }
+}
+
+/**
+ * Log what one provider call cost, whoever is paying.
+ *
+ * BOTH FUNDING SOURCES, because the paid path's cost is exactly as interesting to
+ * the owner as the free one — it is how a runaway tool loop gets noticed at all.
+ *
+ * A call the provider reported NO usage for is logged as an anomaly rather than
+ * priced: charging a number we invented is the one failure mode worth refusing
+ * outright. An unpriced model is the same case — `costMicros` throws for a model
+ * with no row in the price table, and a missing price must not be able to fail
+ * a turn the user has already been given.
+ *
+ * `source` is hard-coded to "user" here and stays that way until the accounts lane
+ * lands the funding resolver, which is what knows whether the owner's free credit
+ * paid for this call.
+ */
+function reportCost(model: string, usage: TurnUsage | undefined, iteration: number): void {
+  if (!usage) {
+    process.stderr.write(`[cost] model=${model} it=${iteration} usage=none (not charged)\n`);
+    return;
+  }
+  try {
+    logTurnCost({ model, usage, micros: costMicros(model, usage), source: "user", iteration });
+  } catch {
+    // An unpriced model. Say so once, loudly enough to grep, and carry on.
+    process.stderr.write(`[cost] model=${model} it=${iteration} usage=unpriced (not charged)\n`);
   }
 }
 
