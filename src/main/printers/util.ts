@@ -4,7 +4,7 @@
 // Electron main process and the headless web server, so nothing here may
 // import "electron".
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { isHosted } from "../mode";
@@ -134,8 +134,21 @@ export function safeJobName(name: string | undefined, fallback: string): string 
  *  disk images, and (the point of this rule) SD cards. It is the ONE place
  *  outside `$HOME` a person can plausibly mean by "save my prints here": the
  *  transport's own label is "Folder / SD card", and a card reader mounts
- *  exactly here, never under a user's home. */
-const VOLUMES_ROOT = `${sep}Volumes`;
+ *  exactly here, never under a user's home.
+ *
+ *  `/Volumes/Macintosh HD` is itself a symlink to `/` on every real Mac — a
+ *  fact this module's containment check must survive — which is exactly why
+ *  tests need a fake root of their own rather than pointing at the real one.
+ *  A `let` (not `const`) so `setVolumesRootForTests` below can swap it. */
+let VOLUMES_ROOT = `${sep}Volumes`;
+
+/** Tests only: point the /Volumes containment check at a fake root (e.g. a
+ *  temp dir standing in for the real, unwritable-in-CI /Volumes) so symlink
+ *  and traversal scenarios can be built without touching real hardware. Pass
+ *  `undefined` to restore the real `/Volumes`. */
+export function setVolumesRootForTests(root: string | undefined): void {
+  VOLUMES_ROOT = root ?? `${sep}Volumes`;
+}
 
 /**
  * Assert that `dir` is somewhere a person could plausibly have chosen to save a
@@ -193,13 +206,28 @@ export function assertAllowedOutputDir(dir: string): string {
   }
 
   if (insideVolumes) {
-    let isDir = false;
+    // The unresolved-string check above (`insideVolumes`) is not enough:
+    // `/Volumes/Macintosh HD` IS a path under /Volumes, but on every real Mac
+    // it's a symlink to `/` — so the path a person typed can be contained
+    // while the file it actually names is not. Resolve every symlink with
+    // realpathSync and re-check containment on THAT, or a mount that's just a
+    // symlink elsewhere on the boot disk (or off it) sails straight through.
+    let resolved: string;
     try {
-      isDir = statSync(target).isDirectory();
+      resolved = realpathSync(target);
     } catch {
-      isDir = false;
+      throw new WireError(403, "That drive isn't connected. Plug it in and try again.", "not_in_workspace");
     }
-    if (!isDir) {
+    const resolvedInsideVolumes = resolved === VOLUMES_ROOT || resolved.startsWith(`${VOLUMES_ROOT}${sep}`);
+    let isDir = false;
+    if (resolvedInsideVolumes) {
+      try {
+        isDir = statSync(resolved).isDirectory();
+      } catch {
+        isDir = false;
+      }
+    }
+    if (!resolvedInsideVolumes || !isDir) {
       throw new WireError(403, "That drive isn't connected. Plug it in and try again.", "not_in_workspace");
     }
   }

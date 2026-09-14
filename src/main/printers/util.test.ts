@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { normalizeColourHex, describeError, safeJobName, assertAllowedOutputDir } from "./util";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, sep } from "node:path";
+import {
+  normalizeColourHex,
+  describeError,
+  safeJobName,
+  assertAllowedOutputDir,
+  setVolumesRootForTests,
+} from "./util";
 import { WireError } from "../../server/errors";
 
 /** Run `fn` with SLICELY_MODE forced, restoring it afterwards — mode.ts reads
@@ -163,19 +169,93 @@ test("assertAllowedOutputDir rejects a /Volumes path with nothing mounted there"
   });
 });
 
-test("assertAllowedOutputDir accepts a real directory under /Volumes", () => {
-  // The check only asks "does this resolve to a directory that exists right
-  // now" (see the function's doc comment, point 4) — it does not, and cannot
-  // without touching real hardware, verify that the entry is REMOVABLE media
-  // rather than some other mount. Every Mac has at least one entry here (its
-  // own boot disk), so this exercises the exact same code path a real SD card
-  // would, without requiring one to be plugged in. If the check is ever
-  // changed to call realpathSync and re-validate the target, this test (which
-  // does not) will need to change with it.
+// A fake /Volumes root, standing in for the real one so these tests never
+// depend on what's actually mounted (and never need write access to the real
+// /Volumes, which an ordinary user doesn't have). realpathSync'd up front so
+// the root itself is already fully resolved — tmpdir() sits behind macOS's own
+// symlinks (/var -> /private/var), and if VOLUMES_ROOT weren't resolved first,
+// realpathSync(target) inside assertAllowedOutputDir would resolve THOSE too
+// and no longer appear to start with the unresolved root, breaking even the
+// "plain real subdirectory" case.
+function withFakeVolumesRoot(fn: (root: string) => void): void {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "slicely-fake-volumes-")));
+  setVolumesRootForTests(root);
+  try {
+    fn(root);
+  } finally {
+    setVolumesRootForTests(undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("assertAllowedOutputDir accepts a real directory under a /Volumes-like root", () => {
+  withFakeVolumesRoot((root) => {
+    const target = join(root, "SDCARD");
+    mkdirSync(target);
+    inMode("desktop", () => {
+      assert.equal(assertAllowedOutputDir(target), target);
+    });
+  });
+});
+
+test("assertAllowedOutputDir rejects a symlink under the volumes root that points outside it", () => {
+  withFakeVolumesRoot((root) => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "slicely-outside-volumes-")));
+    try {
+      const escape = join(root, "escape");
+      symlinkSync(outside, escape);
+      inMode("desktop", () => {
+        assert.throws(
+          () => assertAllowedOutputDir(escape),
+          (err: unknown) => {
+            assert.ok(err instanceof WireError);
+            assert.equal(err.status, 403);
+            assert.equal(err.code, "not_in_workspace");
+            return true;
+          },
+          "a symlink whose target resolves outside the volumes root must be refused even though the typed path is 'under' it",
+        );
+      });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("assertAllowedOutputDir rejects a traversal under the volumes root that resolves outside it", () => {
+  withFakeVolumesRoot((root) => {
+    inMode("desktop", () => {
+      assert.throws(
+        () => assertAllowedOutputDir(`${root}${sep}x${sep}..${sep}..${sep}etc`),
+        (err: unknown) => {
+          assert.ok(err instanceof WireError);
+          assert.equal(err.code, "not_in_workspace");
+          return true;
+        },
+      );
+    });
+  });
+});
+
+test("assertAllowedOutputDir rejects /Volumes/Macintosh HD — a symlink to the boot disk on every real Mac", () => {
+  // This is the actual bug: the unresolved string "/Volumes/Macintosh HD" is
+  // "under /Volumes", but the entry is a symlink to "/", so accepting it lets
+  // the folder printer write anywhere on the boot disk. Guarded by existsSync
+  // because a machine could have renamed or removed this exact volume — the
+  // portable version of this same scenario is the fake-root symlink test
+  // above, which runs unconditionally.
+  const bootDisk = join("/Volumes", "Macintosh HD");
+  if (!existsSync(bootDisk)) return;
   inMode("desktop", () => {
-    const mounted = readdirSync("/Volumes").filter((name) => !name.startsWith("."));
-    assert.ok(mounted.length > 0, "expected at least the boot disk under /Volumes");
-    const target = join("/Volumes", mounted[0]);
-    assert.equal(assertAllowedOutputDir(target), target);
+    assert.throws(
+      () => assertAllowedOutputDir(bootDisk),
+      (err: unknown) => {
+        assert.ok(err instanceof WireError);
+        assert.equal(err.status, 403);
+        assert.equal(err.code, "not_in_workspace");
+        return true;
+      },
+      "/Volumes/Macintosh HD resolves to / and must be refused",
+    );
   });
 });
