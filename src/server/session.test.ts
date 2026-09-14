@@ -586,6 +586,7 @@ test("delete-my-data removes EVERY per-session file, in every shape its writers 
     write("jobs.json"); //             main/jobs/store.ts — the print queue
     write("printers.json"); //         main/printers/registry.ts — printer connections
     write("printer-secrets.json"); //  main/printers/registry.ts — their credentials
+    write("account.json"); //          server/session.ts — which account signed in here
     // ── And the interrupted atomic write of each, in both writer shapes ────
     write("jobs.json.tmp-3f2a91bc"); //                  main/jobs/store.ts
     write("chats.json.tmp"); //                          server/chats.ts

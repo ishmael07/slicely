@@ -30,7 +30,9 @@
 // single-process deployment; a multi-instance deployment would need a shared
 // store (Redis, a database, sticky sessions) — out of scope for P1.
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
@@ -187,6 +189,80 @@ export interface SessionRecord {
   /** Id of the conversation being added to. Chats live on disk (see chats.ts);
    *  this is just which one new turns belong to. */
   activeChatId?: string;
+  /** The account this browser has signed in as, when it has (hosted only).
+   *  Mirrored to `<session>/account.json` so a restart does not sign everybody
+   *  out — see `bindAccountToSession` and `SessionStore.lookup`. */
+  accountId?: string;
+}
+
+/** `<session>/account.json`'s shape. Versioned so a future change can migrate;
+ *  it holds an account id and nothing else, because everything else about the
+ *  person lives in `<workdir>/accounts/` where the meter can reach it. */
+interface AccountBindingFile {
+  version: 1;
+  accountId: string;
+}
+
+const ACCOUNT_FILE = "account.json";
+
+/** An account id as this codebase mints them — 16 random bytes in hex. Checked
+ *  on the way in AND on the way out: a hand-edited `account.json` must not be
+ *  able to point a session at a path (`../../`) rather than an account. */
+function isAccountId(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+}
+
+/**
+ * Remember that this browser is signed in as `accountId` — in memory and on
+ * disk, together.
+ *
+ * ON DISK AS WELL, because the session table is an in-memory Map: without the
+ * file, every deploy would sign every visitor out, and since the balance is
+ * keyed on the account (not the session) they would come back to a workspace
+ * that had forgotten who was paying for it. The file is 0600 and written
+ * atomically, the same as every other secret-adjacent file in a session
+ * directory.
+ */
+export function bindAccountToSession(session: SessionRecord, accountId: string): void {
+  session.accountId = accountId;
+  const body: AccountBindingFile = { version: 1, accountId };
+  const path = join(session.dir, ACCOUNT_FILE);
+  const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
+  try {
+    mkdirSync(session.dir, { recursive: true });
+    writeFileSync(tmp, JSON.stringify(body, null, 2), { mode: 0o600 });
+    try {
+      // writeFileSync's `mode` only applies when it CREATES the file.
+      chmodSync(tmp, 0o600);
+    } catch {
+      /* best-effort on platforms without POSIX permission bits */
+    }
+    renameSync(tmp, path);
+  } catch {
+    // The in-memory binding still stands for this process, so the visitor is
+    // signed in now and merely signed out by the next restart.
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** Sign out: drop the binding from memory and from disk. The workspace, the
+ *  chats and any stored BYO key all stay — signing out is not deleting. */
+export function unbindAccountFromSession(session: SessionRecord): void {
+  delete session.accountId;
+  rmSync(join(session.dir, ACCOUNT_FILE), { force: true });
+}
+
+/** The account bound to the session rooted at `dir`, if any. A missing,
+ *  unreadable or malformed file reads as "signed out" rather than throwing —
+ *  the worst outcome of that is one sign-in, and the alternative is a session
+ *  directory that 500s every request. */
+export function readSessionAccountId(dir: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, ACCOUNT_FILE), "utf8")) as Partial<AccountBindingFile>;
+    return isAccountId(parsed?.accountId) ? parsed.accountId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** True when `target` resolves to a path inside (or equal to) `root`. Used
@@ -562,9 +638,51 @@ export class SessionStore {
   private lookup(req: Request): SessionRecord | undefined {
     const raw = parseCookies(req.headers.cookie)[cookieName()];
     const id = raw ? verify(raw, this.secret) : undefined;
-    const session = id ? this.sessions.get(id) : undefined;
+    if (!id) return undefined;
+    const session = this.sessions.get(id) ?? this.rehydrate(id);
     if (session) session.lastActiveAt = Date.now();
     return session;
+  }
+
+  /**
+   * Adopt a session whose directory is still on disk but whose record this
+   * process has never seen — i.e. one from before a restart.
+   *
+   * WHY THIS IS SAFE. The HMAC is still the sole proof of ownership: `verify`
+   * has already run, and nothing below could be reached with a cookie this
+   * server did not sign. The directory check is a CONTAINMENT guard, not an
+   * authorisation one — it answers "is there a workspace here to adopt?", and
+   * the 32-hex test answers "could this id name anything but a direct child of
+   * the sessions root?" (`sign()` cannot produce an id with a `..` in it, but a
+   * guard that depends on that is a guard that breaks when the id format
+   * changes). Do not read either check as the thing keeping strangers out.
+   *
+   * WHY IT IS WORTH HAVING. Without it a deploy silently hands every visitor a
+   * fresh empty workspace: their uploads, their stored BYO key, their chats and
+   * their account binding are all still on disk, and all unreachable. That was
+   * already true before accounts; accounts make it visible, because the person
+   * would also appear to be signed out while their credit sat on an account they
+   * could no longer be seen to own.
+   *
+   * NOT ON THE DESKTOP: `desktopSession()` already answers every request there,
+   * from one record whose id is not a hex string anyway.
+   */
+  private rehydrate(id: string): SessionRecord | undefined {
+    if (isDesktop()) return undefined;
+    if (!/^[0-9a-f]{32}$/.test(id)) return undefined;
+    const dir = join(this.root, id);
+    try {
+      if (!statSync(dir).isDirectory()) return undefined;
+    } catch {
+      // No directory: the session was swept, or the disk is new. Minting a fresh
+      // one is the right answer, and `materialize` must NOT run — it would
+      // create a directory named after a session nobody has any state in.
+      return undefined;
+    }
+    const record = this.materialize(id, dir);
+    const accountId = readSessionAccountId(dir);
+    if (accountId) record.accountId = accountId;
+    return record;
   }
 
   count(): number {
@@ -805,6 +923,7 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
  * | `jobs.json`             | main/jobs/store.ts          | **goes** — a readable index of every model, plate and output |
  * | `printer-secrets.json`  | main/printers/registry.ts   | **goes** — encrypted printer credentials, which site/privacy.html promises to delete by name |
  * | `printers.json`         | main/printers/registry.ts   | **goes** — the printer *connections* (names, hostnames, IPs on the user's LAN). Both the Settings copy and privacy.html promise "printer connections", and HOSTED already deletes them with the whole directory; leaving them on the desktop made the same button mean two different things, and left a printer list whose credentials had just been deleted out from under it. registry.ts starts from an empty store when the file is missing, so the app keeps working. |
+ * | `account.json`          | this file                   | **goes** — which account this browser is signed in as. The account itself (and its credit) lives in `<workdir>/accounts/` and is NOT deleted: signing back in finds the same balance, which is the point of keying the grant on an email rather than on a session. Deleting the binding is deleting the link between this workspace and a person, which is what a visitor is asking for. |
  * | `chats`                 | nothing (a historical name) | **goes** — kept on the list because an old install may have one |
  * | `settings.json`         | main/settings.ts            | stays — slicing preferences, promised by neither copy line, and the app's own defaults |
  * | `master.key`            | main/keyvault.ts            | stays — it protects nothing once the two secrets files are gone, and deleting it would re-key the install for no gain |
@@ -829,6 +948,7 @@ const PERSONAL_FILES = [
   "jobs.json",
   "printer-secrets.json",
   "printers.json",
+  ACCOUNT_FILE,
 ];
 
 /** The other half of the census above: what a completed "delete my data" is
@@ -938,12 +1058,39 @@ const MINTING_ROUTES = new Set([
   "POST /api/session",
 ]);
 
-/** True when `req` is one of the two calls that may create a workspace. HEAD is
- *  treated as GET, the way every other handler in this server does. */
+/**
+ * The sign-in routes, which may mint for the same reason `/api/config` may.
+ *
+ * A visitor can arrive on a sign-in link — from a phone, from a mail, from
+ * another tab — before anything has minted them a session, and answering that
+ * with "reload Slicely" would make signing in fail exactly for the people most
+ * likely to be new. They are PATTERNS rather than set entries because the
+ * provider is a route parameter; `/auth/google/bogus` still matches nothing and
+ * is refused, so this widens the gate by two routes, not by a prefix.
+ */
+const MINTING_PATTERNS = [/^GET \/auth\/[a-z]+\/(start|callback)$/];
+
+/**
+ * True when `req` is one of the calls that may create a workspace.
+ *
+ * Asked of BOTH spellings of the path — the one this middleware's mount point
+ * leaves in `req.path` and the whole one in `req.originalUrl` — for the reason
+ * given on `MINTING_ROUTES`: a security gate must not depend on which of them it
+ * happens to see. `/api` mounts the middleware on its router (so `req.path` is
+ * `/config`) while `/auth` shares the same instance at a different mount, and
+ * neither of them should have to know that.
+ *
+ * HEAD is treated as GET, the way every other handler in this server does.
+ */
 function mayMintSession(req: Request): boolean {
-  const path = req.path.length > 1 ? req.path.replace(/\/+$/, "") : req.path;
   const method = req.method === "HEAD" ? "GET" : req.method;
-  return MINTING_ROUTES.has(`${method} ${path}`);
+  for (const raw of [req.path, req.originalUrl.split("?")[0]]) {
+    const path = raw.length > 1 ? raw.replace(/\/+$/, "") : raw;
+    const candidate = `${method} ${path}`;
+    if (MINTING_ROUTES.has(candidate)) return true;
+    if (MINTING_PATTERNS.some((re) => re.test(candidate))) return true;
+  }
+  return false;
 }
 
 /**
