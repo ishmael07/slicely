@@ -33,8 +33,14 @@ How to cut and ship a Slicely `.dmg`. Web/Docker deploys are a separate thing �
 
    The build is **Apple silicon only** right now (`arm64`) — no Intel DMG. Going universal
    is a one-line change (`build.mac.target[0].arch` → `["universal"]` in
-   `scripts/electron-builder.config.cjs`) now that both Electron zips are cached locally;
-   it just hasn't been done yet.
+   `package.json`) now that both Electron zips are cached locally; it just hasn't been
+   done yet.
+
+   Always build through `npm run dist:mac` or `npm run release:mac`, never by calling
+   `electron-builder` directly: only the npm scripts pass `scripts/electron-builder.config.cjs`,
+   which is where the ad-hoc identity and the hardened-runtime switch live. A bare
+   `electron-builder --mac` would try to sign with whatever certificate it finds and turn the
+   hardened runtime on, which produces an app that may not launch.
 
    The build is also **unsigned and ad-hoc** (no Apple Developer ID, not notarized).
    Signing and notarization turn on automatically — no code change — once `APPLE_ID`,
