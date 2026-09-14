@@ -16,12 +16,18 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  /** `Retry-After`, in seconds, when the server sent one (it does on both 429
+   *  paths — the per-session tier limiter and the per-IP session-mint cap). The
+   *  two differ by two orders of magnitude, which is the whole reason this is
+   *  carried: see `rateLimitedCopy`. */
+  readonly retryAfterSec?: number;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, retryAfterSec?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryAfterSec = retryAfterSec;
   }
 }
 
@@ -34,8 +40,25 @@ async function readBody(resp: Response): Promise<Record<string, unknown>> {
   return (await resp.json().catch(() => ({}))) as Record<string, unknown>;
 }
 
+/** `Retry-After` as a number of seconds, when the header is present and is the
+ *  delta-seconds form the server sends. No CORS work is needed to read it: the
+ *  client is same-origin with the server by construction (corsGuard refuses
+ *  anything else outright), and `Access-Control-Expose-Headers` only ever
+ *  governs a cross-origin response. */
+function retryAfterSeconds(resp: Response): number | undefined {
+  const raw = resp.headers.get("Retry-After");
+  if (!raw) return undefined;
+  const secs = Number(raw.trim());
+  return Number.isFinite(secs) && secs >= 0 ? secs : undefined;
+}
+
 function fail(url: string, resp: Response, body: WireError): never {
-  throw new ApiError(body.error ?? `${url} failed (${resp.status})`, resp.status, body.code);
+  throw new ApiError(
+    body.error ?? `${url} failed (${resp.status})`,
+    resp.status,
+    body.code,
+    retryAfterSeconds(resp),
+  );
 }
 
 // ── code-driven copy ─────────────────────────────────────────────────────────
@@ -47,11 +70,36 @@ function fail(url: string, resp: Response, body: WireError): never {
 // author the sentence here once and let every caller show the same short,
 // calm line no matter which endpoint failed or how the server phrased it.
 // Anything without a mapped code falls back to the server's own message.
+/**
+ * "Slow down" reads one way for a burst and another way for a lockout.
+ *
+ * There are two 429s, and they are not the same event. The per-session TIER
+ * limiter (60 burst / 5 per second on `api`) refills in a second or two — a
+ * user who clicked too fast, and "a few seconds" is exactly right. The per-IP
+ * SESSION-MINT cap (20 an hour) refills in about three MINUTES, and it is the
+ * one a first-time visitor hits: telling them to try again in a few seconds
+ * sends them into a reload loop that can never succeed and reads as a broken
+ * site rather than a limit.
+ *
+ * So the sentence follows the server's own `Retry-After` rather than guessing.
+ * Over a minute, it says how many minutes; under, it keeps the short line —
+ * "try again in about 1 minute" would be a worse way to say "a few seconds".
+ */
+const RATE_LIMITED_SHORT = "Slow down a little — try again in a few seconds";
+
+export function rateLimitedCopy(retryAfterSec?: number): string {
+  if (retryAfterSec === undefined || !Number.isFinite(retryAfterSec) || retryAfterSec <= 60) {
+    return RATE_LIMITED_SHORT;
+  }
+  const minutes = Math.max(1, Math.round(retryAfterSec / 60));
+  return `Slow down a little — try again in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
 const CODE_COPY: Record<string, string> = {
   no_key: "Connect your Anthropic API key to chat.",
   key_rejected: "Your Anthropic key was rejected — update it in Settings.",
   key_invalid_format: "That doesn't look like a valid Anthropic API key.",
-  rate_limited: "Slow down a little — try again in a few seconds",
+  rate_limited: RATE_LIMITED_SHORT,
   // The page asked for something before it had a session (or after the server
   // forgot it). api.ts boots again and retries once by itself, so this line is
   // only reached if that second attempt failed too.
@@ -76,8 +124,14 @@ const CODE_COPY: Record<string, string> = {
   host_blocked: "That printer's address isn't allowed.",
 };
 
-/** The product's copy for a stable error `code`, if one is mapped. */
-export function codeMessage(code?: string): string | undefined {
+/**
+ * The product's copy for a stable error `code`, if one is mapped.
+ *
+ * `retryAfterSec` refines exactly one of them — see `rateLimitedCopy`. Every
+ * other code reads the same however long the server said to wait.
+ */
+export function codeMessage(code?: string, retryAfterSec?: number): string | undefined {
+  if (code === "rate_limited") return rateLimitedCopy(retryAfterSec);
   return code ? CODE_COPY[code] : undefined;
 }
 
@@ -90,7 +144,7 @@ export function codeMessage(code?: string): string | undefined {
  * place.
  */
 export function errorMessage(err: unknown, fallback = "Something went wrong."): string {
-  if (err instanceof ApiError) return codeMessage(err.code) ?? err.message ?? fallback;
+  if (err instanceof ApiError) return codeMessage(err.code, err.retryAfterSec) ?? err.message ?? fallback;
   if (err instanceof Error && err.message) return err.message;
   return fallback;
 }

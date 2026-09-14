@@ -17,6 +17,8 @@ import { createApp } from "./index";
 import { DESKTOP_HEADER } from "./desktop-token";
 import {
   SessionStore,
+  SESSION_KEPT_FILES,
+  SESSION_PERSONAL_FILES,
   isInsideDir,
   resolveSessionPath,
   workspaceRelPath,
@@ -137,7 +139,14 @@ test("one address can mint only 20 sessions an hour", async () => {
     const body = (await over.json()) as { error: string; code: string };
     assert.equal(body.code, "rate_limited");
     assert.match(body.error, /new sessions/i);
-    assert.ok(Number(over.headers.get("retry-after")) >= 1);
+    // ~3 MINUTES, not "a few seconds": 20 an hour refills one token every 180s.
+    // The client's copy branches on this (see rateLimitedCopy in web/api.ts) —
+    // the same `rate_limited` code covers a tier burst that clears in a second
+    // and this cap, and telling a first-time visitor to retry in a few seconds
+    // sends them into a reload loop that cannot succeed.
+    const retryAfter = Number(over.headers.get("retry-after"));
+    assert.ok(retryAfter > 60, `the mint cap's Retry-After should be minutes, got ${retryAfter}`);
+    assert.equal(retryAfter, 180);
     assert.equal(store.count(), 20, "the refused request must not leave a workspace behind");
   } finally {
     await close();
@@ -491,6 +500,38 @@ test("resolveSessionPath accepts the client's relative reference and refuses esc
     assert.equal(resolveSessionPath(session, ""), undefined);
     assert.equal(resolveSessionPath(session, undefined), undefined);
 
+    // ── Dot segments INSIDE the workspace ────────────────────────────────────
+    // This is the case join-then-contain got wrong: `uploads/../secrets.json` is
+    // genuinely inside the session, and it is the encrypted Anthropic key. So
+    // containment was the wrong question to ask about a relative path, and the
+    // wrong answer was reachable from GET /api/preview, POST /api/slice's
+    // `paths`, POST /api/jobs' `parts[].path` and send_to_printer's `gcodePath`.
+    const refused = (raw: string) => assert.equal(resolveSessionPath(session, raw), undefined, raw);
+    refused("uploads/../secrets.json");
+    refused("uploads/../printer-secrets.json");
+    refused("uploads/./../settings.json");
+    refused("downloads/../../sessions/other/uploads/x.stl");
+    // Backslash counts as a separator too, so a Windows-ish spelling cannot slip
+    // past a POSIX-only split.
+    refused("uploads\\..\\secrets.json");
+    // The session's own top level is not addressable at all, by any spelling.
+    refused("secrets.json");
+    refused("printers.json");
+    refused("master.key");
+    refused(".session-secret");
+    // Nor is multer's landing strip, which is never handed out to anybody.
+    refused("scratch/upload_abc123");
+
+    // The other two subtrees the server does hand out still work.
+    assert.equal(
+      resolveSessionPath(session, "downloads/kit/part1.stl"),
+      join(session.dir, "downloads", "kit", "part1.stl"),
+    );
+    assert.equal(
+      resolveSessionPath(session, "slices/plate-1.gcode"),
+      join(session.dir, "slices", "plate-1.gcode"),
+    );
+
     // The reverse direction: what the client is told, POSIX-separated.
     assert.equal(workspaceRelPath(session, join(session.uploadsDir, "cube.stl")), "uploads/cube.stl");
   } finally {
@@ -500,13 +541,16 @@ test("resolveSessionPath accepts the client's relative reference and refuses esc
   }
 });
 
-test("delete-my-data removes the chats, the jobs and any interrupted atomic write of them", async () => {
+test("delete-my-data removes EVERY per-session file, in every shape its writers produce", async () => {
   // DESKTOP: the session directory is `app.getPath("userData")` — Electron's own
-  // cookie jar and cache live in there — so it cannot be deleted wholesale and
-  // "Delete my data" has to remove data by name. Which means the list of names
-  // has to be right: `chats.json` (not `chats`, which never existed) and the
-  // temp siblings that an interrupted atomic write leaves behind, each of which
-  // is a COMPLETE copy of the file it was replacing.
+  // cookie jar, cache, GPUCache and Local Storage live in there — so it cannot be
+  // deleted wholesale and "Delete my data" has to remove data by name. Which
+  // means the list of names has to be COMPLETE. This test writes one file for
+  // every writer in the codebase (the census is in the comment on
+  // PERSONAL_FILES, and `grep -rn "sessionFile(" src` is how it was taken) plus
+  // the temp sibling each atomic writer can leave behind — every one of which is
+  // a complete copy of the file it was replacing, so leaving it is a rename and
+  // not a deletion.
   const prev = process.env.SLICELY_MODE;
   process.env.SLICELY_MODE = "desktop";
   const root = tmpRoot();
@@ -521,29 +565,66 @@ test("delete-my-data removes the chats, the jobs and any interrupted atomic writ
     const session = store.desktopSession();
     const write = (name: string) => writeFileSync(join(session.dir, name), "x");
 
-    write("secrets.json");
-    write("chats.json");
-    write("jobs.json");
-    // The three shapes this codebase's atomic writers actually produce.
-    write("jobs.json.tmp-3f2a91bc");           // main/jobs/store.ts
-    write("chats.json.tmp");                    // server/chats.ts
-    write(".secrets.json.8123.1789372358943.tmp"); // main/userkey.ts
-    // Configuration the app needs to keep working, which must SURVIVE.
-    write("settings.json");
-    write("printers.json");
-    write("master.key");
+    // ── Personal, one line per writer ──────────────────────────────────────
+    write("secrets.json"); //          main/userkey.ts — the encrypted Anthropic key
+    write("chats.json"); //            server/chats.ts — every transcript
+    write("jobs.json"); //             main/jobs/store.ts — the print queue
+    write("printers.json"); //         main/printers/registry.ts — printer connections
+    write("printer-secrets.json"); //  main/printers/registry.ts — their credentials
+    // ── And the interrupted atomic write of each, in both writer shapes ────
+    write("jobs.json.tmp-3f2a91bc"); //                  main/jobs/store.ts
+    write("chats.json.tmp"); //                          server/chats.ts
+    write(".secrets.json.8123.1789372358943.tmp"); //     main/userkey.ts
+    write(".printer-secrets.json.8123.1789372358944.tmp"); // printers/registry.ts
+    write(".printers.json.8123.1789372358945.tmp"); //    printers/registry.ts
+    // ── Configuration, which must SURVIVE ─────────────────────────────────
+    for (const name of SESSION_KEPT_FILES) write(name);
+    // ── Files, in all four scratch directories, plus the one temp file a
+    //    download leaves inside one of them (sourcing/download.ts) ──────────
     writeFileSync(join(session.uploadsDir, "cube.stl"), "solid x\nendsolid x\n");
+    writeFileSync(join(session.downloadsDir, "bracket.stl"), "solid x\nendsolid x\n");
+    writeFileSync(join(session.downloadsDir, ".slicely-dl-8123-1789372358946"), "partial");
+    writeFileSync(join(session.slicesDir, "plate-1.gcode"), "G1\n");
+    writeFileSync(join(session.scratchDir, "upload_abc123"), "raw multipart");
 
     await store.destroy(session.id);
 
-    const left = readdirSync(session.dir).sort();
+    const scratch = ["uploads", "downloads", "slices", "scratch"];
+    const left = readdirSync(session.dir)
+      .filter((n) => !scratch.includes(n))
+      .sort();
     assert.deepEqual(
-      left.filter((n) => n !== "uploads" && n !== "downloads" && n !== "slices" && n !== "scratch"),
-      ["master.key", "printers.json", "settings.json"],
+      left,
+      [...SESSION_KEPT_FILES].sort(),
       `unexpected leftovers: ${left.join(", ")}`,
     );
-    assert.deepEqual(readdirSync(session.uploadsDir), [], "the user's files go too");
+    // Nothing on the personal list survived, under any spelling.
+    for (const name of SESSION_PERSONAL_FILES) {
+      assert.equal(existsSync(join(session.dir, name)), false, `${name} survived`);
+    }
+    for (const dir of [session.uploadsDir, session.downloadsDir, session.slicesDir, session.scratchDir]) {
+      assert.deepEqual(readdirSync(dir), [], `${dir} still has files in it`);
+    }
     assert.ok(existsSync(session.dir), "the desktop workspace itself must survive");
+
+    // The two lists must between them account for every per-session file, so
+    // adding a writer without classifying its file fails here rather than
+    // quietly leaving personal data behind.
+    assert.deepEqual(
+      [...SESSION_PERSONAL_FILES, ...SESSION_KEPT_FILES].sort(),
+      [
+        ".session-secret",
+        "chats",
+        "chats.json",
+        "jobs.json",
+        "master.key",
+        "printer-secrets.json",
+        "printers.json",
+        "secrets.json",
+        "settings.json",
+      ],
+      "a new per-session file has to be classified as personal or kept",
+    );
   } finally {
     store.stopSweep();
     rmSync(root, { recursive: true, force: true });

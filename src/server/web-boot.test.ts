@@ -16,11 +16,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ApiError,
+  codeMessage,
   del,
   errorMessage,
   getJson,
   postForm,
   postJson,
+  rateLimitedCopy,
   ready,
   resetSession,
 } from "../web/api";
@@ -203,6 +205,64 @@ test("a session the server has forgotten is re-booted once, transparently", asyn
     assert.equal(status.installed, true);
     assert.equal(calls.filter((c) => c.url === "/api/config").length, 2, "it booted again");
     assert.equal(statusCalls, 2, "and repeated the request once");
+  } finally {
+    restore();
+    resetSession();
+  }
+});
+
+// ── The `rate_limited` sentence follows the server's own Retry-After ──────────
+
+test("rate_limited copy says minutes when the server asked for minutes", () => {
+  // ONE wire code, TWO very different waits. The per-session tier limiter
+  // refills in a second or two; the per-IP session-mint cap (20 an hour) sends
+  // `Retry-After: 180`, and that is the 429 a first-time visitor actually hits.
+  // "Try again in a few seconds" there reads as a broken site and invites a
+  // reload loop that cannot succeed, so the sentence follows the header.
+  assert.equal(rateLimitedCopy(180), "Slow down a little — try again in about 3 minutes");
+  assert.equal(rateLimitedCopy(3600), "Slow down a little — try again in about 60 minutes");
+  // Rounded, not floored: 100s is closer to 2 minutes than to 1.
+  assert.equal(rateLimitedCopy(100), "Slow down a little — try again in about 2 minutes");
+  assert.equal(rateLimitedCopy(90), "Slow down a little — try again in about 2 minutes");
+  assert.equal(rateLimitedCopy(61), "Slow down a little — try again in about 1 minute");
+
+  // A minute or less keeps the short line: "about 1 minute" would be a worse way
+  // of saying "a few seconds".
+  const short = "Slow down a little — try again in a few seconds";
+  assert.equal(rateLimitedCopy(10), short);
+  assert.equal(rateLimitedCopy(60), short);
+  assert.equal(rateLimitedCopy(0), short);
+  assert.equal(rateLimitedCopy(undefined), short);
+  assert.equal(rateLimitedCopy(Number.NaN), short);
+
+  // And the same sentence is what the UI reaches through its own two doors.
+  assert.equal(codeMessage("rate_limited", 180), rateLimitedCopy(180));
+  assert.equal(codeMessage("rate_limited"), short);
+  assert.equal(codeMessage("no_session", 180), "Reload Slicely to start a new session.");
+});
+
+test("a 429's Retry-After reaches the copy through ApiError", () => {
+  // The header has to survive the trip from `fetch` to the banner. Same-origin,
+  // so no `Access-Control-Expose-Headers` is involved — corsGuard refuses a
+  // cross-origin request outright, and that header only governs those.
+  resetSession();
+  const { restore } = stubFetch(async () =>
+    new Response(JSON.stringify({ error: "Too many new sessions from this address.", code: "rate_limited" }), {
+      status: 429,
+      headers: { "content-type": "application/json", "Retry-After": "180" },
+    }),
+  );
+  try {
+    return getJson("/api/config").then(
+      () => assert.fail("a 429 should reject"),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.status, 429);
+        assert.equal(err.code, "rate_limited");
+        assert.equal(err.retryAfterSec, 180);
+        assert.equal(errorMessage(err), "Slow down a little — try again in about 3 minutes");
+      },
+    );
   } finally {
     restore();
     resetSession();

@@ -270,12 +270,24 @@ export function resetSeenInfo(): void {
   seenInfoPaths.clear();
 }
 
+/**
+ * `ModelInfo` as it arrives on the wire.
+ *
+ * The server's own type names the file by its ABSOLUTE path (`filePath`), which
+ * is exactly what must not reach a browser — so routes/chat.ts rewrites it to
+ * the workspace-relative `relPath` ("uploads/cube.stl"), the same reference
+ * POST /api/upload hands out and the form GET /api/preview accepts back.
+ * Optional because a frame from an older server (or a model the agent described
+ * without a file behind it) simply has no file to preview.
+ */
+export type WireModelInfo = Omit<ModelInfo, "filePath"> & { relPath?: string };
+
 /** The dimensions/volume panel for one model, or null if this exact file has
  *  already been described in this turn. */
-export function renderInfo(info: ModelInfo): HTMLElement | null {
-  if (info.filePath) {
-    if (seenInfoPaths.has(info.filePath)) return null;
-    seenInfoPaths.add(info.filePath);
+export function renderInfo(info: WireModelInfo): HTMLElement | null {
+  if (info.relPath) {
+    if (seenInfoPaths.has(info.relPath)) return null;
+    seenInfoPaths.add(info.relPath);
   }
   const panel = make("div", "panel enter");
   panel.appendChild(panelHead("◳", "Model"));
@@ -287,7 +299,7 @@ export function renderInfo(info: ModelInfo): HTMLElement | null {
   if (info.facets !== undefined) addMetric(grid, "Triangles", info.facets.toLocaleString());
   if (info.manifold !== undefined) addMetric(grid, "Watertight", info.manifold ? "yes" : "no");
   panel.appendChild(grid);
-  if (info.filePath) attachViewer(panel, info.filePath);
+  if (info.relPath) attachViewer(panel, info.relPath);
   return panel;
 }
 
@@ -297,7 +309,7 @@ export function renderInfo(info: ModelInfo): HTMLElement | null {
  * Loaded lazily and failing silently: a preview is a nicety, and a model the
  * viewer cannot read must never take the metrics panel down with it.
  */
-export function attachViewer(panel: HTMLElement, filePath?: string, url?: string): void {
+export function attachViewer(panel: HTMLElement, relPath?: string, url?: string): void {
   const holder = make("div", "viewer");
   const canvas = make("canvas");
   canvas.setAttribute("role", "img");
@@ -310,7 +322,9 @@ export function attachViewer(panel: HTMLElement, filePath?: string, url?: string
   void (async () => {
     try {
       const mesh = await getJson<PreviewMeshData>(
-        url ?? `/api/preview?path=${encodeURIComponent(filePath ?? "")}`,
+        // A workspace-relative path, which /api/preview resolves against the
+        // caller's own session directory (see resolveSessionPath).
+        url ?? `/api/preview?path=${encodeURIComponent(relPath ?? "")}`,
       );
       if (mesh.triangles === 0) {
         holder.remove();

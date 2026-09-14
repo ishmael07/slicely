@@ -16,7 +16,7 @@ import type { JobEvent, JobPlanOptions } from "../../shared/jobs";
 import {
   adoptGcodeFile,
   resolveSessionPath,
-  workspaceRelPath,
+  toClientPaths,
   type SessionRecord,
 } from "../session";
 import { sendError, sendScrubbed, toWire, WireError } from "../errors";
@@ -238,37 +238,12 @@ function describeBadBed(bed: JobPlanOptions["bed"] | undefined): string | undefi
  * any of them: it downloads and prints by opaque id (`gcodeId`, `projectId`)
  * and labels rows with `name`.
  *
- * So a part's path becomes a workspace-relative `relPath` (the same reference
- * POST /api/upload hands out, and the one form this router accepts back), and
- * the output paths are dropped outright — their ids are already on the wire.
- *
- * Written as a walk over the object rather than a field-by-field mapper on
- * purpose: a new nested field carrying a path would otherwise ship the moment
- * somebody added it, which is exactly how these got here.
+ * The walk itself now lives in `../session` as `toClientPaths`, because the
+ * agent's SSE events needed exactly the same treatment (a `ModelInfo.filePath`,
+ * a sourcing `DownloadResult.localPath`) and two copies of this rule is one
+ * copy too many. This is the job-shaped name for it.
  */
-const RENAMED_PATH_KEYS = new Map([
-  ["path", "relPath"],
-  ["partPath", "partRelPath"],
-]);
-/** Paths to an OUTPUT we already address by token — nothing is lost by
- *  dropping them (see adoptGcodeFile). */
-const DROPPED_PATH_KEYS = new Set(["gcodePath", "projectPath", "filePath"]);
-
-export function toWireJob<T>(session: SessionRecord, job: T): unknown {
-  if (Array.isArray(job)) return job.map((entry) => toWireJob(session, entry));
-  if (!job || typeof job !== "object") return job;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(job as Record<string, unknown>)) {
-    const renamed = RENAMED_PATH_KEYS.get(key);
-    if (renamed && typeof value === "string") {
-      out[renamed] = workspaceRelPath(session, value);
-      continue;
-    }
-    if (DROPPED_PATH_KEYS.has(key)) continue;
-    out[key] = toWireJob(session, value);
-  }
-  return out;
-}
+const toWireJob = toClientPaths;
 
 export async function relocateJobEventGcode(
   session: SessionRecord,

@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, FeatureMode, PrintPreferences, SettingsState } from "../shared/types";
 import type { SourceAvailability } from "../shared/sourcing";
-import { del, errorMessage, getJson, patchJson } from "./api.js";
+import { del, errorMessage, getJson, patchJson, resetSession } from "./api.js";
 import { byId, confirmDialog, errorCard, make, menu, skeleton, toast } from "./ui.js";
 import { configLoaded, renderAboutSection, renderAiSection } from "./onboarding.js";
 
@@ -303,6 +303,12 @@ function renderDataSection(): void {
       if (!ok) return;
       try {
         await del("/api/session");
+        // The cookie we were holding now names a session the server has thrown
+        // away (hosted) or emptied (desktop), and api.ts caches the boot promise
+        // for the life of the page. Without this, the first call after the delete
+        // — which on a fast reload is the reload's own — spends a round trip on a
+        // 401 `no_session` before recovering.
+        resetSession();
         location.reload();
       } catch (err) {
         toast(errorMessage(err, "Couldn't delete your data."), "error");

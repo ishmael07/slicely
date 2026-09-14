@@ -9,7 +9,7 @@
 // The chat stream and the job stream share api.ts's streamSse(); there is no
 // second SSE parser anywhere in the client.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { AgentEvent, ModelInfo, SliceMetrics, SlicerStatus, WorkspaceFile } from "../shared/types";
+import type { AgentEvent, SliceMetrics, SlicerStatus, WorkspaceFile } from "../shared/types";
 import type { PrintJob } from "../shared/jobs";
 import type { SearchOutcome, UrlResolution } from "../shared/sourcing";
 import type { JobPanel, WireJob, WireJobEvent } from "./jobs.js";
@@ -25,6 +25,7 @@ import {
   resetSeenInfo,
   type CardLike,
   type SendMount,
+  type WireModelInfo,
 } from "./cards.js";
 import { byId, closeSheets, confirmDialog, errorCard, externalLink, make, skeleton, toast } from "./ui.js";
 import { renderMarkdownLite } from "./markdown.js";
@@ -349,7 +350,7 @@ function showCards(models: CardLike[]): void {
   if (row) mount(row);
 }
 
-function showInfo(info: ModelInfo): void {
+function showInfo(info: WireModelInfo): void {
   endBotBubble();
   const panel = renderInfo(info);
   if (panel) mount(panel);
@@ -418,7 +419,8 @@ export function handleAgentEvent(raw: AgentEvent | Record<string, unknown>): voi
       renderDownloadNote(event.model.source, event.result.fileName);
       break;
     case "info":
-      showInfo(event.info);
+      // `relPath` on the wire, not the server's `filePath` — see WireModelInfo.
+      showInfo(event.info as unknown as WireModelInfo);
       break;
     case "metrics":
       showMetrics(event.metrics, event.gcodeId);

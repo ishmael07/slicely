@@ -241,3 +241,183 @@ test("a second turn in the same tab is a 409 with code `busy`, distinguishable f
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/** The smallest ASCII STL /api/preview can actually parse — the point of the
+ *  preview assertion is that the relPath resolves and the file is read, so the
+ *  mesh only has to be real, not interesting. */
+const ONE_FACET_STL = [
+  "solid cube",
+  "  facet normal 0 0 1",
+  "    outer loop",
+  "      vertex 0 0 0",
+  "      vertex 1 0 0",
+  "      vertex 0 1 0",
+  "    endloop",
+  "  endfacet",
+  "endsolid cube",
+  "",
+].join("\n");
+
+test("a whole chat transcript for an uploaded file carries no absolute server path", async () => {
+  // The scrub used to be per-event and per-field, so each new path-carrying
+  // field shipped once before anybody noticed. This drives a turn that emits
+  // every shape the agent actually produces — a `ModelInfo`, a sourcing
+  // `DownloadResult` with parts, a `PrintJob`, a `JobEvent`, an `orientation`
+  // pass, slice `metrics`, a slicer `status` — and asserts the answer as a
+  // WHOLE contains no `/Users`, no `/tmp`, no `/private`, and not the workdir.
+  //
+  // It matters beyond the wire: routes/chat.ts persists the turn into
+  // chats.json, so a leaked path is replayed to the browser on every reload of
+  // that conversation for as long as it exists.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+
+  // A real session directory, so the emitted paths are the ones production
+  // would emit: `<sessionsRoot>/<id>/uploads/cube.stl` and friends.
+  let sessionDir = "";
+  const stub: () => ChatAgent = () => ({
+    async send(_message, emit) {
+      const upload = join(sessionDir, "uploads", "cube.stl");
+      const part = join(sessionDir, "uploads", "kit", "part1.stl");
+      const gcode = join(sessionDir, "slices", "plate-1.gcode");
+      const project = join(sessionDir, "slices", "plate-1.3mf");
+      writeFileSync(gcode, "G1 X0\n");
+      writeFileSync(project, "PKfake");
+
+      emit({ type: "info", info: { filePath: upload, sizeX: 20, sizeY: 20, sizeZ: 20, facets: 12 } });
+      emit({
+        type: "download",
+        model: { id: "1", source: "thingiverse", title: "Cube", webUrl: "https://example.test/1" } as never,
+        result: {
+          localPath: upload,
+          fileName: "cube.stl",
+          sizeBytes: 684,
+          parts: [{ localPath: part, fileName: "part1.stl", sizeBytes: 100, ext: ".stl" }],
+        },
+      });
+      emit({ type: "orientation", partPath: upload, result: { keptAsImported: true } as never });
+      emit({
+        type: "job",
+        job: {
+          id: "job1",
+          status: "ready",
+          parts: [{ path: upload, name: "cube.stl", copies: 1, sizeX: 20, sizeY: 20, sizeZ: 20 }],
+          plates: [{ index: 1, parts: [], gcodePath: gcode, projectPath: project }],
+        } as never,
+      });
+      emit({
+        type: "job_progress",
+        event: {
+          type: "plate_done",
+          jobId: "job1",
+          plateIndex: 1,
+          metrics: { gcodePath: gcode, layerCount: 100 },
+        } as never,
+      });
+      emit({ type: "metrics", metrics: { gcodePath: gcode, layerCount: 100 } });
+      emit({
+        type: "status",
+        status: { installed: true, running: false, binaryPath: "/Applications/PrusaSlicer.app", appName: "PrusaSlicer" },
+      });
+      // A tool's exception, verbatim — which is how PrusaSlicer's stderr and
+      // `G-code no longer exists at …` reach a browser inside a 200's stream.
+      emit({ type: "tool_end", tool: "slice_model", ok: false, summary: `Cannot read ${upload}` });
+      emit({ type: "error", message: `boom at ${gcode}` });
+      emit({ type: "done" });
+    },
+    cancel() {
+      /* not exercised in this test */
+    },
+  });
+
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stub, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await connectKey(base);
+    const id = cookie.split("=")[1].split(".")[0];
+    const session = store.get(id)!;
+    sessionDir = session.dir;
+    writeFileSync(join(session.uploadsDir, "cube.stl"), ONE_FACET_STL);
+
+    const resp = await fetch(`${base}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", cookie },
+      body: JSON.stringify({ message: "describe it" }),
+    });
+    const body = await resp.text();
+
+    // The blunt assertion first: nothing in the whole answer looks like a path
+    // on this machine.
+    for (const needle of ["/Users", "/tmp", "/private", root, session.dir, session.id]) {
+      assert.ok(!body.includes(needle), `the transcript leaks ${needle}:\n${body}`);
+    }
+
+    const events = body
+      .split("\n\n")
+      .map((f) => f.trim())
+      .filter((f) => f.startsWith("data: "))
+      .map((f) => JSON.parse(f.slice(6)) as Record<string, unknown> & { type: string });
+    const byType = (t: string) => events.find((e) => e.type === t)!;
+
+    // And then what each frame says INSTEAD, since "no path" would also be
+    // satisfied by dropping the field the client needs.
+    const info = byType("info").info as unknown as { relPath?: string; filePath?: string };
+    assert.equal(info.relPath, "uploads/cube.stl", "the client feeds this straight to /api/preview");
+    assert.equal(info.filePath, undefined);
+
+    const dl = byType("download").result as unknown as {
+      relPath?: string;
+      localPath?: string;
+      parts?: Array<{ relPath?: string; localPath?: string }>;
+    };
+    assert.equal(dl.relPath, "uploads/cube.stl");
+    assert.equal(dl.localPath, undefined);
+    assert.equal(dl.parts?.[0].relPath, "uploads/kit/part1.stl");
+    assert.equal(dl.parts?.[0].localPath, undefined);
+
+    const orient = byType("orientation") as unknown as { partRelPath?: string; partPath?: string };
+    assert.equal(orient.partRelPath, "uploads/cube.stl");
+    assert.equal(orient.partPath, undefined);
+
+    const job = byType("job").job as unknown as {
+      parts: Array<{ relPath?: string; path?: string }>;
+      plates: Array<{ gcodePath?: string; projectPath?: string }>;
+    };
+    assert.equal(job.parts[0].relPath, "uploads/cube.stl");
+    assert.equal(job.parts[0].path, undefined);
+    assert.equal(job.plates[0].gcodePath, undefined, "an output is addressed by token");
+    assert.equal(job.plates[0].projectPath, undefined);
+
+    const progress = byType("job_progress").event as unknown as { metrics: { gcodePath?: string } };
+    assert.equal(progress.metrics.gcodePath, undefined);
+
+    const metrics = byType("metrics") as unknown as { gcodeId?: string; metrics: { gcodePath?: string } };
+    assert.equal(metrics.metrics.gcodePath, undefined);
+    assert.match(metrics.gcodeId ?? "", /^[0-9a-f]+$/, "the token is what replaces it");
+
+    const status = byType("status").status as unknown as { binaryPath?: string; installed: boolean };
+    assert.equal(status.installed, true);
+    assert.equal(status.binaryPath, undefined, "where PrusaSlicer is installed is not the client's business");
+
+    // Free prose that quotes a thrown Error is scrubbed the same way an HTTP
+    // failure body is (errors.ts's stripPaths), not left verbatim.
+    assert.equal((byType("tool_end") as unknown as { summary: string }).summary, "Cannot read <file>");
+    assert.equal((byType("error") as unknown as { message: string }).message, "boom at <file>");
+
+    // The relPath the `info` frame handed out has to be the one /api/preview
+    // accepts back — otherwise the 3D viewer is broken by this very fix.
+    const preview = await fetch(
+      `${base}/api/preview?path=${encodeURIComponent(info.relPath!)}`,
+      { headers: { cookie } },
+    );
+    const previewBody = await preview.text();
+    assert.equal(preview.status, 200, previewBody);
+    const mesh = JSON.parse(previewBody) as { triangles: number };
+    assert.equal(typeof mesh.triangles, "number");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

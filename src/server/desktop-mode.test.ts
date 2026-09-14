@@ -395,17 +395,22 @@ test("desktop: destroy() removes jobs.json and keeps the app's configuration", a
     writeFileSync(file("jobs.json"), JSON.stringify([{ id: "j1", name: "bracket.stl" }]));
     writeFileSync(file("secrets.json"), "{}");
     writeFileSync(join(session!.uploadsDir, "bracket.stl"), "solid x\nendsolid x\n");
+    // The Settings sheet's own copy says "printer connections", and privacy.html
+    // says "printer credentials" — two files, both of them promised, and a hosted
+    // session already loses both with its whole directory.
+    writeFileSync(file("printers.json"), "[]");
+    writeFileSync(file("printer-secrets.json"), '{"version":2,"printers":{"p1":"blob"}}');
     // Configuration the app needs to keep working.
     writeFileSync(file("settings.json"), "{}");
-    writeFileSync(file("printers.json"), "[]");
 
     await store.destroy(DEFAULT_SESSION_ID);
 
     assert.equal(existsSync(file("jobs.json")), false, "the print queue names every model and G-code path");
     assert.equal(existsSync(file("secrets.json")), false);
     assert.equal(existsSync(join(session!.uploadsDir, "bracket.stl")), false);
+    assert.equal(existsSync(file("printer-secrets.json")), false, "privacy.html promises the credentials by name");
+    assert.equal(existsSync(file("printers.json")), false, "and the Settings sheet promises the connections");
     assert.equal(existsSync(file("settings.json")), true, "settings are configuration, not personal data");
-    assert.equal(existsSync(file("printers.json")), true);
     assert.equal(existsSync(session!.dir), true, "the desktop workspace IS userData — it cannot be removed");
   });
 });

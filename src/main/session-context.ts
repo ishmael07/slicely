@@ -241,6 +241,45 @@ function workspaceRoots(): string[] {
  * Note this answers a question about a PATH, not about permission to perform an
  * operation: callers still decide what they do with a contained path.
  */
+/**
+ * The only subtrees a RELATIVE workspace reference may name.
+ *
+ * A relative path arrives from somewhere untrusted by definition — the browser
+ * (a `relPath` it was handed, or one it made up) or the MODEL (a tool argument
+ * one token away from anything). The session directory's own top level is not
+ * scratch space: it holds `secrets.json` (the encrypted Anthropic key),
+ * `printer-secrets.json`, `settings.json`, and on the desktop `master.key` and
+ * `.session-secret` as well. `scratch/` is left out too — nothing is ever handed
+ * out from multer's landing strip, so naming it is never legitimate.
+ */
+export const WORKSPACE_REL_ROOTS = ["uploads", "downloads", "slices"] as const;
+
+/**
+ * True when `p` is a relative reference safe to join to a session directory.
+ *
+ * WHY A SEPARATE CHECK, when everything is containment-checked afterwards
+ * anyway: join-then-contain proves only that the result is INSIDE the session,
+ * and `uploads/../secrets.json` is inside the session. It passed, and with it a
+ * client- or model-supplied `relPath` reached the encrypted key through
+ * GET /api/preview, POST /api/slice's `paths`, POST /api/jobs' `parts[].path`
+ * and `send_to_printer`'s `gcodePath`. Containment was the wrong question for a
+ * relative path; this is the right one, and it is asked BEFORE the join.
+ *
+ * Rejected: anything absolute (the caller handles those separately, with their
+ * own containment check), a `..` or `.` segment anywhere, an empty segment, a
+ * bare filename with no subtree at all, and any first segment that is not one of
+ * `WORKSPACE_REL_ROOTS`. Backslash counts as a separator too, so a Windows-style
+ * `uploads\..\secrets.json` cannot slip past a POSIX-only split.
+ */
+export function isSafeWorkspaceRelPath(p: unknown): p is string {
+  if (typeof p !== "string" || p.trim().length === 0) return false;
+  if (isAbsolute(p)) return false;
+  const segments = p.split(/[/\\]/);
+  if (segments.length < 2) return false;
+  if (!(WORKSPACE_REL_ROOTS as readonly string[]).includes(segments[0])) return false;
+  return segments.every((seg) => seg !== "" && seg !== "." && seg !== "..");
+}
+
 export function resolveInsideSessionWorkspace(p: string): string | undefined {
   if (typeof p !== "string" || p.trim().length === 0) return undefined;
   // A RELATIVE path means "inside my workspace", never "inside whatever
@@ -255,6 +294,10 @@ export function resolveInsideSessionWorkspace(p: string): string | undefined {
   // Resolving against the session's own directory also keeps `../` honest:
   // `../other-session/uploads/x.stl` still lands outside every root below and is
   // still refused.
+  // Not just "does it land inside" — a relative reference must be one of the
+  // shapes we actually hand out. See isSafeWorkspaceRelPath: `uploads/cube.stl`
+  // yes, `uploads/../secrets.json` and a bare `secrets.json` no.
+  if (!isAbsolute(p) && !isSafeWorkspaceRelPath(p)) return undefined;
   const absolute = isAbsolute(p) ? p : join(currentSession().dir, p);
   const target = realPath(absolute);
   const desktop = isDesktop();

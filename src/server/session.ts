@@ -37,13 +37,18 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { AgentEvent, UploadResult, WorkspaceFile } from "../shared/types";
 import { getConfig } from "../main/config";
 import { isDesktop, isHosted } from "../main/mode";
-import { DEFAULT_SESSION_ID, runInSession, sessionContext } from "../main/session-context";
+import {
+  DEFAULT_SESSION_ID,
+  isSafeWorkspaceRelPath,
+  runInSession,
+  sessionContext,
+} from "../main/session-context";
 import { disposeSessionState } from "../main/agent/state";
 import { disposeSessionSettings } from "../main/settings";
 import { disposeSessionUserKey } from "../main/userkey";
 import { disposeSessionPrinters } from "../main/printers/registry";
 import { clientIp, TokenBuckets } from "./security";
-import { sendError, WireError } from "./errors";
+import { sendError, stripPaths, WireError } from "./errors";
 
 // Augment Express's Request with the session this middleware attaches. Scoped
 // to this codebase only — harmless if another module never imports it.
@@ -108,9 +113,19 @@ const DEFAULT_MINT_PER_HOUR = 20;
 const SCRATCH_DIRS = ["uploadsDir", "downloadsDir", "slicesDir", "scratchDir"] as const;
 
 /** Names a file sweep must never touch even if one turned up inside a scratch
- *  directory: the encrypted API key, the session's settings, and its chat
- *  history are the session's MEMORY, not its scratch space. */
-const KEEP_FOREVER = new Set(["secrets.json", "settings.json", "chats"]);
+ *  directory: the encrypted API key, the session's settings, its printer
+ *  credentials and its chat history are the session's MEMORY, not its scratch
+ *  space. `chats.json` is the real filename (`chats`, a directory, never
+ *  existed — the same wrong guess that once made "Delete my data" miss the
+ *  transcripts); both are listed because only one of them costs anything. */
+const KEEP_FOREVER = new Set([
+  "secrets.json",
+  "settings.json",
+  "printers.json",
+  "printer-secrets.json",
+  "chats.json",
+  "chats",
+]);
 
 /** One G-code file this session owns, addressable only by an opaque token
  *  (never by the raw filesystem path — see routes/slice.ts and printers.ts). */
@@ -195,9 +210,16 @@ export function isInsideDir(root: string, target: string): boolean {
  * Containment is then the same check as before, so `../../etc/passwd`,
  * `/etc/passwd` and another session's directory are all refused whichever form
  * they arrive in.
+ *
+ * A relative reference has to clear one check BEFORE the join, though:
+ * containment alone said yes to `uploads/../secrets.json`, which is genuinely
+ * inside the session and is the encrypted Anthropic key. See
+ * `isSafeWorkspaceRelPath` — a `..` segment, a bare filename, and anything
+ * outside `uploads/`, `downloads/` and `slices/` are all refused now.
  */
 export function resolveSessionPath(session: SessionRecord, raw: unknown): string | undefined {
   if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+  if (!isAbsolute(raw) && !isSafeWorkspaceRelPath(raw)) return undefined;
   const candidate = isAbsolute(raw) ? raw : join(session.dir, raw);
   return isInsideDir(session.dir, candidate) ? resolve(candidate) : undefined;
 }
@@ -223,6 +245,72 @@ export function workspaceRelPath(session: SessionRecord, absolute: string): stri
   const rel = relative(resolve(session.dir), resolve(absolute));
   if (!rel || rel.startsWith("..") || isAbsolute(rel)) return basename(absolute);
   return rel.split(sep).join("/");
+}
+
+/**
+ * A path-carrying field renamed to the workspace-relative form the client is
+ * allowed to hold. `path`/`localPath`/`filePath` all mean "a file in this
+ * workspace" to their respective producers, and all three become `relPath` —
+ * the one reference POST /api/upload hands out and the one form every endpoint
+ * that takes a path back accepts (see `resolveSessionPath`).
+ */
+const RENAMED_PATH_KEYS = new Map([
+  ["path", "relPath"], // JobPart.path
+  ["partPath", "partRelPath"], // ColourAssignment.partPath, the `orientation` event
+  ["localPath", "relPath"], // DownloadResult / DownloadPart — sourcing
+  ["filePath", "relPath"], // ModelInfo — what the client feeds to /api/preview
+]);
+
+/** Paths to something the client already addresses another way, so nothing is
+ *  lost by dropping them: an output G-code or .3mf carries its opaque token
+ *  (see `adoptGcodeFile`), and the slicer binary's location is not the client's
+ *  business at all — it only ever reads `installed`/`running`/`appName`. */
+const DROPPED_PATH_KEYS = new Set(["gcodePath", "projectPath", "binaryPath"]);
+
+/**
+ * Free-prose fields that carry a thrown Error's own message, and so can quote a
+ * path nobody chose to put on the wire: a `tool_end` summary is the tool's
+ * exception verbatim (PrusaSlicer's stderr, `G-code no longer exists at …`), and
+ * a `plate_failed` event's `error` is the same. `sendError` already runs
+ * `stripPaths` over every failure that leaves through an HTTP status; these are
+ * the ones that leave inside a 200's stream instead, and they were not scrubbed
+ * at all.
+ */
+const SCRUBBED_TEXT_KEYS = new Set(["summary", "message", "error"]);
+
+/**
+ * Anything on its way to a browser, with every absolute server path removed.
+ *
+ * The rule is global — "absolute filesystem paths never reach a client" — but
+ * the leaks were not: they arrived one nested field at a time, in a job's
+ * plates, in a `ModelInfo` the agent streamed, in a sourcing `DownloadResult`.
+ * A field-by-field mapper would have to be extended for each, and silently
+ * ships the next one somebody adds.
+ *
+ * So this is a walk over the whole value instead: any key in the tables above
+ * is renamed (to its workspace-relative form) or dropped, however deeply it is
+ * nested and whatever shape the surrounding object has. Deliberately untyped —
+ * it runs over `PrintJob`, `JobEvent` and `AgentEvent` alike, and the browser
+ * duck-types on `.type` anyway.
+ */
+export function toClientPaths<T>(session: SessionRecord, value: T): unknown {
+  if (Array.isArray(value)) return value.map((entry) => toClientPaths(session, entry));
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const renamed = RENAMED_PATH_KEYS.get(key);
+    if (renamed && typeof raw === "string") {
+      out[renamed] = workspaceRelPath(session, raw);
+      continue;
+    }
+    if (DROPPED_PATH_KEYS.has(key)) continue;
+    if (SCRUBBED_TEXT_KEYS.has(key) && typeof raw === "string") {
+      out[key] = stripPaths(raw);
+      continue;
+    }
+    out[key] = toClientPaths(session, raw);
+  }
+  return out;
 }
 
 // ── Cookie plumbing (no `cookie`/`cookie-parser` dependency is installed, so
@@ -634,15 +722,21 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
   // `jobs.json` belongs on this list and was missing from it: a print job names
   // the model it came from, the plates it was split into and where every G-code
   // file was written, so leaving the queue behind leaves a readable index of
-  // everything "delete my data" just deleted. `settings.json`, `printers.json`,
-  // `master.key` and `.session-secret` are configuration the app needs to keep
-  // working and deliberately stay.
+  // everything "delete my data" just deleted. `settings.json`, `master.key` and
+  // `.session-secret` are the only things that stay — see the census above.
   // `chats.json` is where server/chats.ts actually keeps the conversations;
   // `chats` (a directory) never existed under that name, so the transcripts were
   // surviving "Delete my data" on the desktop, where the session directory
   // itself cannot be removed. Both are named, since only one of them costs
   // anything and a wrong guess here is the difference between the privacy copy
   // being true and being a claim.
+  // `printer-secrets.json` and `printers.json` are both on the list for exactly
+  // that reason: site/privacy.html promises "your printer credentials" and the
+  // Settings sheet promises "printer connections", and registry.ts keeps those
+  // in two separate files. Deleting the whole directory (which is what a HOSTED
+  // session gets) took both; the desktop's by-name list took neither. See the
+  // census on PERSONAL_FILES for every file this directory can hold and which
+  // side of the line it is on.
   for (const name of PERSONAL_FILES) {
     await rm(join(session.dir, name), { recursive: true, force: true }).catch(() => undefined);
   }
@@ -651,9 +745,17 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
   // a temp file next to it, then a rename — so a crash, a kill, or a full disk
   // between the two leaves a COMPLETE copy beside the file we just deleted:
   // `jobs.json.tmp-3f2a91` (jobs/store.ts), `.secrets.json.<pid>.<ts>.tmp`
-  // (userkey.ts), `chats.json.tmp` (chats.ts). Deleting the original and leaving
-  // that is not a deletion, it is a rename. Matched against the same names, so
-  // nothing else in the directory can be swept up by accident.
+  // (userkey.ts), `.printer-secrets.json.<pid>.<ts>.tmp` (printers/registry.ts,
+  // same writer shape), `chats.json.tmp` (chats.ts). Deleting the original and
+  // leaving that is not a deletion, it is a rename.
+  //
+  // Matched by SHAPE rather than against the name list, which is the change that
+  // makes this complete: a sibling is only ever produced by one of Slicely's two
+  // atomic writers, both spelled out in `isInterruptedAtomicWrite`, and matching
+  // the shape means a file added to PERSONAL_FILES tomorrow is covered without
+  // anybody remembering to also cover its temp form. The cost is that an
+  // interrupted write of a KEPT file goes too (`.settings.json.….tmp`) — which
+  // is a half-written config file nothing will ever read again.
   let entries: string[];
   try {
     entries = await readdir(session.dir);
@@ -661,27 +763,73 @@ async function clearPersonalData(session: SessionRecord): Promise<void> {
     return; // the directory is gone, which is the stronger outcome anyway
   }
   for (const entry of entries) {
-    if (isTempSiblingOfPersonalFile(entry)) {
+    if (isInterruptedAtomicWrite(entry)) {
       await rm(join(session.dir, entry), { force: true }).catch(() => undefined);
     }
   }
 }
 
-/** What "delete my data" removes from the session directory by name. Everything
- *  else there — `settings.json`, `printers.json`, `master.key`,
- *  `.session-secret` — is configuration the app needs to keep working. */
-const PERSONAL_FILES = ["secrets.json", "chats.json", "chats", "jobs.json"];
+/**
+ * Every file the top level of a session directory can hold, and which side of
+ * "delete my data" it falls on. This is the complete census — one line per
+ * writer in the codebase:
+ *
+ * | file                    | written by                  | goes / stays |
+ * |-------------------------|-----------------------------|--------------|
+ * | `secrets.json`          | main/userkey.ts             | **goes** — the encrypted Anthropic key |
+ * | `chats.json`            | server/chats.ts             | **goes** — every transcript |
+ * | `jobs.json`             | main/jobs/store.ts          | **goes** — a readable index of every model, plate and output |
+ * | `printer-secrets.json`  | main/printers/registry.ts   | **goes** — encrypted printer credentials, which site/privacy.html promises to delete by name |
+ * | `printers.json`         | main/printers/registry.ts   | **goes** — the printer *connections* (names, hostnames, IPs on the user's LAN). Both the Settings copy and privacy.html promise "printer connections", and HOSTED already deletes them with the whole directory; leaving them on the desktop made the same button mean two different things, and left a printer list whose credentials had just been deleted out from under it. registry.ts starts from an empty store when the file is missing, so the app keeps working. |
+ * | `chats`                 | nothing (a historical name) | **goes** — kept on the list because an old install may have one |
+ * | `settings.json`         | main/settings.ts            | stays — slicing preferences, promised by neither copy line, and the app's own defaults |
+ * | `master.key`            | main/keyvault.ts            | stays — it protects nothing once the two secrets files are gone, and deleting it would re-key the install for no gain |
+ * | `.session-secret`       | this file                   | stays — it signs the cookie of the very session doing the deleting |
+ *
+ * WHY BY NAME, and not "remove everything except the keep-list": this function
+ * only ever runs for the DESKTOP session, whose directory is the workdir —
+ * `app.getPath("userData")`, which also holds Electron's own cookie jar, cache,
+ * GPUCache, Local Storage and IndexedDB. A sweep there would delete the
+ * browser engine out from under a running window. Hosted sessions never reach
+ * this function at all: `destroy` removes their whole directory, which is
+ * strictly more complete (see the two branches there).
+ *
+ * The scratch DIRECTORIES (`uploads`, `downloads`, `slices`, `scratch`) are
+ * emptied wholesale by the loop above, which also takes the one temp file that
+ * lands inside one of them (`.slicely-dl-<pid>-<ts>`, sourcing/download.ts).
+ */
+const PERSONAL_FILES = [
+  "secrets.json",
+  "chats.json",
+  "chats",
+  "jobs.json",
+  "printer-secrets.json",
+  "printers.json",
+];
 
-/** True when `entry` is an interrupted atomic write of one of those files, in
- *  any of the three shapes this codebase produces. */
-function isTempSiblingOfPersonalFile(entry: string): boolean {
-  return PERSONAL_FILES.some(
-    (name) =>
-      // `jobs.json.tmp-<hex>` and `chats.json.tmp`
-      entry.startsWith(`${name}.tmp`) ||
-      // `.secrets.json.<pid>.<timestamp>.tmp`
-      (entry.startsWith(`.${name}.`) && entry.endsWith(".tmp")),
-  );
+/** The other half of the census above: what a completed "delete my data" is
+ *  expected to leave behind. Exported so the test can assert the split is
+ *  exhaustive — a new per-session file has to be classified into one list or
+ *  the other, and the test fails until it is. */
+export const SESSION_KEPT_FILES = ["settings.json", "master.key", ".session-secret"];
+
+/** Exported for the same reason. */
+export const SESSION_PERSONAL_FILES = PERSONAL_FILES;
+
+/**
+ * True when `entry` is the leftover of an interrupted atomic write, in either
+ * shape this codebase produces:
+ *
+ *  • `<name>.tmp` / `<name>.tmp-<hex>` — server/chats.ts, main/jobs/store.ts
+ *  • `.<name>.<pid>.<timestamp>.tmp` — main/userkey.ts,
+ *    main/printers/registry.ts (one `atomicWriteJson`, two files)
+ *
+ * Both end in `.tmp` or `.tmp-<hex>`, which is the whole test. Nothing Slicely
+ * writes in a session directory to KEEP ends that way, so this cannot take a
+ * real file with it.
+ */
+function isInterruptedAtomicWrite(entry: string): boolean {
+  return /\.tmp(-[0-9a-f]+)?$/.test(entry);
 }
 
 /**

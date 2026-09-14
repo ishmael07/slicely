@@ -17,7 +17,7 @@ import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
 import { sendError, toWire } from "../errors";
 import { sessionState } from "../../main/agent/state";
 import type { AgentEvent } from "../../shared/types";
-import { adoptGcodeFile, type ChatAgent, type SessionRecord } from "../session";
+import { adoptGcodeFile, toClientPaths, type ChatAgent, type SessionRecord } from "../session";
 import { loadChats, saveChats, newChat, appendTurn } from "../chats";
 import { noLimit, type RouteLimitOptions } from "../security";
 
@@ -25,8 +25,27 @@ import { noLimit, type RouteLimitOptions } from "../security";
  *  common in browsers and reverse proxies. */
 const KEEP_ALIVE_MS = 10_000;
 
-function writeSse(res: Response, wire: Record<string, unknown>): void {
-  res.write(`data: ${JSON.stringify(wire)}\n\n`);
+/**
+ * Write one frame, with every absolute server path taken out of it first.
+ *
+ * THE ONE EXIT. Each frame used to be written straight through, and the agent's
+ * events are where the remaining leaks were hiding: `info` carried
+ * `ModelInfo.filePath`, `download` carried a sourcing `DownloadResult.localPath`
+ * (and one per part), `job`/`job_progress` carried the whole job contract the
+ * REST router had already been taught to scrub, `orientation` carried a
+ * `partPath`, `status` carried PrusaSlicer's install location, and `metrics`
+ * was handed the ABSOLUTE path of the copy we had just adopted. All of them
+ * named `<workdir>/sessions/<id>/…`, i.e. the deployment's layout and the
+ * caller's own session id, in a 200.
+ *
+ * Routing every frame through `toClientPaths` fixes them as a class rather than
+ * one at a time: `path`/`localPath`/`filePath` become the workspace-relative
+ * `relPath` the client is allowed to hold (and the form /api/preview,
+ * /api/slice and POST /api/jobs all accept back), and output paths are dropped
+ * because their opaque token is already on the wire.
+ */
+function writeSse(session: SessionRecord, res: Response, wire: Record<string, unknown>): void {
+  res.write(`data: ${JSON.stringify(toClientPaths(session, wire))}\n\n`);
 }
 
 /**
@@ -52,7 +71,9 @@ function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentE
       if (event.type === "metrics" && event.metrics.gcodePath) {
         const adopted = await adoptGcodeFile(session, event.metrics.gcodePath).catch(() => undefined);
         if (adopted) {
-          writeSse(res, { ...event, metrics: { ...event.metrics, gcodePath: adopted.path }, gcodeId: adopted.id });
+          // `gcodePath` is dropped by `writeSse`'s scrub — the token is what the
+          // client downloads and prints with, and it is right here.
+          writeSse(session, res, { ...event, metrics: { ...event.metrics }, gcodeId: adopted.id });
           return;
         }
       }
@@ -62,10 +83,10 @@ function makeEmit(session: SessionRecord, res: Response): { emit: (event: AgentE
       if (event.type === "action" && event.filePath) {
         const adopted = await adoptGcodeFile(session, event.filePath).catch(() => undefined);
         const { filePath: _dropped, ...rest } = event;
-        writeSse(res, adopted ? { ...rest, href: `/api/gcode/${adopted.id}` } : rest);
+        writeSse(session, res, adopted ? { ...rest, href: `/api/gcode/${adopted.id}` } : rest);
         return;
       }
-      writeSse(res, event as unknown as Record<string, unknown>);
+      writeSse(session, res, event as unknown as Record<string, unknown>);
     });
   };
   const flush = () => chain.catch(() => undefined);

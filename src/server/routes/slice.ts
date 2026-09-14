@@ -35,7 +35,12 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
   const heavy = opts.limit ?? noLimit;
 
   router.get("/status", async (_req: Request, res: Response) => {
-    res.json(await getStatus());
+    // `binaryPath` is where PrusaSlicer is installed on the SERVER — an absolute
+    // path, in a 200, that the client has never read (it branches on
+    // `installed`/`running` and labels with `appName`). The same field is
+    // stripped from the agent's `status` SSE frame, by routes/chat.ts's scrub.
+    const { binaryPath: _serverSide, ...status } = await getStatus();
+    res.json(status);
   });
 
   router.post("/slice", heavy, async (req: Request, res: Response) => {

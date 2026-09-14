@@ -214,8 +214,11 @@ function createJobPanel(initial: WireJob): JobPanel {
         job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "slicing" }));
         break;
       case "plate_done":
+        // `gcodeId` is the whole reference: the server drops every G-code path
+        // before the frame leaves (see session.ts's toClientPaths), so copying
+        // `ev.metrics.gcodePath` onto the plate only ever wrote `undefined`.
         if (ev.gcodeId) gcodeIds.set(ev.plateIndex, ev.gcodeId);
-        job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "ready", metrics: ev.metrics, gcodePath: ev.metrics.gcodePath }));
+        job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "ready", metrics: ev.metrics }));
         break;
       case "plate_failed":
         job = updatePlate(job, ev.plateIndex, (p) => ({ ...p, status: "failed", error: ev.error }));
