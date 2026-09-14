@@ -67,47 +67,31 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "find_models",
     description:
-      "Search EVERY available 3D model source at once (Thingiverse, Printables, MyMiniFactory, NIH 3D, " +
-      "Smithsonian, NASA, GitHub, MakerWorld, and meta-search engines) and return one ranked list. " +
-      "Prefer this over search_models — it covers far more sources and ranks models Slicely can actually " +
-      "download above ones that need a browser. Use it whenever the user wants to find something to print. " +
-      "The result reports which sources succeeded, so you can tell the user if one was unavailable. " +
-      "When the request describes a QUALITY rather than a name (buff, chunky, low-poly, articulated), also pass " +
-      "`alternates` with synonyms — sites match keywords, not meaning.",
+      "Search EVERY source at once and return one ranked list, downloadable first. Prefer it over search_models. The result says which sources answered.",
     schema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description:
-            "USE THE USER'S OWN WORDS, and as few as possible — two or three at most. Do NOT add descriptive words they did not say. " +
-            "Sources combine terms differently: some require EVERY word to match, so each word you add can drop the result count to zero " +
-            "(\"acura logo\" finds the logo; \"acura logo emblem\" finds nothing), while others match ANY word, so extra generic words " +
-            "drag in unrelated models. If a search returns nothing useful, retry with FEWER words, not more — search the brand or subject " +
-            "alone (e.g. 'acura') before giving up or suggesting alternatives.",
+            "THE USER'S OWN WORDS, two or three at most, with nothing added. Some sources require every word to match, so each extra word can drop the count to zero. If a search finds nothing useful, retry with FEWER words, never more.",
         },
         alternates: {
           type: "array",
           items: { type: "string" },
           description:
-            "Other wordings to search at the same time, for qualities a title might phrase differently. " +
-            'Model sites match keywords, not meaning: a "buff pikachu" is often titled "Ultra Swole Pikachu" or ' +
-            '"Muscular Pikachu", and searching only the user\'s exact words misses it. Supply 2-4 synonyms or ' +
-            'rephrasings of the DISTINCTIVE part of the request (["swole pikachu", "muscular pikachu"]), never ' +
-            "rewordings of a brand or proper name, which are already exact. Results are pooled and ranked together.",
+            "2-4 other wordings for the DISTINCTIVE part of the request, searched at the same time and pooled: sites match keywords, not meaning, so a \"buff pikachu\" may be titled \"swole pikachu\". Never reword a brand or proper name. Use when the request names a quality, not a specific thing.",
         },
         sources: {
           type: "array",
           items: { type: "string" },
-          description:
-            "Optional source ids to restrict to. Omit to search everything (recommended).",
+          description: "Omit to search everything, which is usually right.",
         },
         downloadableOnly: {
           type: "boolean",
-          description:
-            "Only return models Slicely can download in-app. Set true when the user wants to print now without leaving the app.",
+          description: "Only models Slicely can download in-app.",
         },
-        limit: { type: "integer", description: "Max results overall (default 12)." },
+        limit: { type: "integer", description: "Default 12." },
       },
       required: ["query"],
     },
@@ -115,9 +99,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "resolve_link",
     description:
-      "Resolve ANY URL the user pastes into something printable — a marketplace model page, a direct " +
-      ".stl/.3mf link, a .zip of parts, or a GitHub repo containing meshes. Use this the moment a user " +
-      "shares a link. Reports what it found and which files are available; follow with import_from_url to download.",
+      "Work out what a URL the user pasted actually holds — a model page, a direct mesh, a zip of parts, a repo of meshes. Use it the moment they share a link, then import_from_url.",
     schema: {
       type: "object",
       properties: { url: { type: "string", description: "The URL the user pasted." } },
@@ -127,9 +109,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "import_from_url",
     description:
-      "Download a model directly from a URL into the workspace, so it can be inspected, sliced, and printed. " +
-      "Works for direct mesh links, zips of parts, and repo files. Use after resolve_link, or straight away " +
-      "when the URL is obviously a mesh file.",
+      "Download a model straight from a URL into the workspace. Use after resolve_link, or at once when the URL is obviously a mesh file.",
     schema: {
       type: "object",
       properties: { url: { type: "string", description: "Direct or page URL to download from." } },
@@ -139,8 +119,7 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "list_sources",
     description:
-      "List which model sources are usable right now and what is blocking any that are not (e.g. a missing " +
-      "API key), including the setup link. Use when a search returns little, or the user asks where models come from.",
+      "List which model sources work right now and what blocks the rest, with the setup link. Use when a search returns little, or the user asks where models come from.",
     schema: { type: "object", properties: {} },
   },
 
@@ -148,34 +127,24 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "list_printers",
     description:
-      "List the user's connected 3D printers with live state (idle / printing / paused / offline), progress, " +
-      "temperatures, and loaded filament colours (AMS/MMU slots). Use before sending a print, when the user " +
-      "asks about their printer, or to pick colours that are actually loaded.",
+      "List connected printers with live state, progress, temperatures and the filament colours loaded in each AMS/MMU slot. Use before sending a print or picking colours.",
     schema: { type: "object", properties: {} },
   },
   {
     name: "send_to_printer",
     description:
-      "Send a sliced .gcode file to a connected printer. SAFETY: this uploads and QUEUES the job. It will " +
-      "only begin printing if the user has separately armed auto-start for that printer in settings — you " +
-      "cannot override that, and you should not imply the print has begun unless the result says started:true. " +
-      "Always tell the user to check the bed is clear before a print starts.",
+      "Upload a sliced .gcode to a printer and QUEUE it. It starts only if the user armed auto-start for that printer, which you cannot override — never say a print began unless the result says it did.",
     schema: {
       type: "object",
       properties: {
-        printerId: {
-          type: "string",
-          description: "Printer id from list_printers. Omit to use the active printer.",
-        },
+        printerId: { type: "string", description: "From list_printers. Omit for the active printer." },
         gcodePath: {
           type: "string",
-          description:
-            'Workspace path to the .gcode, as a slice result gave it to you (e.g. "slices/plate-1.gcode"). Omit to use the most recent slice.',
+          description: "Workspace path as a slice result gave it. Omit for the most recent slice.",
         },
         start: {
           type: "boolean",
-          description:
-            "Request an immediate start. Honoured only if the user armed auto-start for this printer.",
+          description: "Honoured only if the user armed auto-start for this printer.",
         },
       },
       required: [],
@@ -184,12 +153,11 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "control_printer",
     description:
-      "Pause, resume, or cancel the print currently running on a connected printer. Confirm with the user " +
-      "before cancelling — a cancelled print cannot be resumed and wastes the filament already laid down.",
+      "Pause, resume or cancel the print running on a printer. Confirm before cancelling: it cannot be resumed, and the filament already laid down is wasted.",
     schema: {
       type: "object",
       properties: {
-        printerId: { type: "string", description: "Printer id. Omit for the active printer." },
+        printerId: { type: "string", description: "Omit for the active printer." },
         action: { type: "string", enum: ["pause", "resume", "cancel"] },
       },
       required: ["action"],
@@ -198,11 +166,10 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "discover_printers",
     description:
-      "Scan the local network for 3D printers (OctoPrint, Klipper/Moonraker, PrusaLink, Bambu). Use when the " +
-      "user wants to connect a printer and doesn't know its address. Returns candidates plus what credential each needs.",
+      "Scan the local network for printers (OctoPrint, Klipper/Moonraker, PrusaLink, Bambu). Use when the user wants to connect one and does not know its address.",
     schema: {
       type: "object",
-      properties: { timeoutMs: { type: "integer", description: "Scan budget in ms (default 5000)." } },
+      properties: { timeoutMs: { type: "integer", description: "Default 5000." } },
     },
   },
 
@@ -210,80 +177,58 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "plan_job",
     description:
-      "Plan a LARGE multi-part print as a job: pick the best orientation for each part, resolve requested " +
-      "colours against the filament actually loaded in the printer, group parts to minimise tool changes, and " +
-      "pack them across as many plates as needed. Use this whenever there is more than one part, multiple " +
-      "copies, more than one colour, or the parts won't fit one bed. Returns the plate breakdown and totals. " +
-      "It does NOT slice — call run_job for that. To give ONE model several colours without painting it, pass " +
-      "colourBands (a filament swap at each height, works on any printer).",
+      "Plan a large multi-part print: orient each part, resolve requested colours against the filament actually loaded, group parts to minimise swaps, and pack them across as many plates as needed. Use it for more than one part, copies, more than one colour, or when the parts won't fit one bed. It does not slice — call run_job.",
     schema: {
       type: "object",
       properties: {
         parts: {
           type: "array",
-          description:
-            "Parts to print. Omit to use every mesh from the last import/upload.",
+          description: "Omit to use every mesh from the last import or upload.",
           items: {
             type: "object",
             properties: {
-              path: {
-                type: "string",
-                description:
-                  'Workspace path to the mesh, as a tool result gave it to you (e.g. "downloads/kit/part1.stl").',
-              },
-              copies: { type: "integer", description: "How many. Default 1." },
-              colourHex: { type: "string", description: 'Requested colour, e.g. "#c81e1e".' },
+              path: { type: "string", description: "Workspace path as a tool result gave it." },
+              copies: { type: "integer", description: "Default 1." },
+              colourHex: { type: "string", description: "Requested colour as hex." },
             },
             required: ["path"],
           },
         },
-        name: { type: "string", description: "A name for the job." },
+        name: { type: "string" },
         goal: { type: "string", enum: ["draft", "quality", "functional"] },
         material: { type: "string", enum: ["PLA", "PETG", "ABS"] },
         autoOrient: {
           type: "boolean",
-          description:
-            "Choose the best orientation per part (default true). Set false only if the user wants parts left as modelled.",
+          description: "Default true. False leaves parts as modelled.",
         },
+        // Spelled out rather than shared with slice_model's copy in tools.ts:
+        // that module imports THIS one, so reaching back for a value at module
+        // load would be a cycle that resolves to undefined.
         colourStops: {
           type: "array",
           items: {
             type: "object",
             properties: {
-              atZ: { type: "number", description: "Height in mm where this colour starts." },
-              atLayer: { type: "integer", description: "First layer number in this colour." },
-              atFraction: {
-                type: "number",
-                description: "Fraction of the model height (0-1) where this colour starts.",
-              },
-              colourHex: { type: "string", description: 'e.g. "#000000".' },
+              atZ: { type: "number" },
+              atLayer: { type: "integer" },
+              atFraction: { type: "number", description: "0-1 of height." },
+              colourHex: { type: "string" },
             },
             required: ["colourHex"],
           },
           description:
-            "Colour changes at heights the user NAMED, rather than at equal fractions: \"black up to 5 mm\", " +
-            "\"change at layer 40\", \"the bottom third in black\". One of atZ / atLayer / atFraction per entry; " +
-            "a stop at the bed (atZ 0) is the colour the print starts in. Prefer this over colourBands whenever " +
-            "the user said WHERE the colour changes.",
+            "Colour changes at heights the user named. Exactly one of atZ / atLayer / atFraction each; the stop at the bed is the starting colour. Prefer it over colourBands when they said WHERE.",
         },
         colourBands: {
           type: "array",
           items: { type: "string" },
           description:
-            "Colours stacked BOTTOM-FIRST to give ONE part several colours without painting it, e.g. " +
-            '["#000000", "#1e6fc8"] for "black bottom half, blue top half". Slicely splits the height into equal ' +
-            "bands and pauses the printer at each boundary to swap filament, so this works on ANY printer, " +
-            "including single-extruder machines with no AMS. Use it when the user wants a multi-colour version of a " +
-            "SINGLE model. Note a filament change affects the whole plate, so prefer a plate with just that part. " +
-            "Do NOT use it to give different PARTS different colours — set each part's colourHex for that.",
+            "Colours BOTTOM-FIRST to give ONE part several colours without painting it: equal bands, a filament swap at each boundary, so it works on any printer. A swap affects the whole plate, so prefer a plate with just that part. For different PARTS, set each part's colourHex.",
         },
         groupByColour: {
           type: "boolean",
           description:
-            "Set TRUE when the user wants each colour on its OWN plate (\"all the black parts on one plate, blue on another\", " +
-            "\"separate the colours\", \"one colour at a time\"). Set FALSE to force every colour onto the same plate. " +
-            "Omit to let Slicely decide: a printer with 2+ loaded filament slots (AMS/MMU) mixes colours on one plate because it " +
-            "swaps filament itself, while a single-extruder printer gets one colour per plate so the user swaps spools between plates.",
+            "TRUE puts each colour on its OWN plate, FALSE forces them onto one. Omit to decide from the printer: an AMS/MMU mixes colours on a plate, a single-extruder machine gets one colour each.",
         },
       },
       required: [],
@@ -292,49 +237,35 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "run_job",
     description:
-      "Slice every plate of a planned job, in order, reporting per-plate metrics. A plate that fails does not " +
-      "abort the rest. Call plan_job first. After it finishes, offer to send the plates to the printer.",
+      "Slice every plate of a planned job in order, reporting per-plate metrics; one failed plate does not stop the rest. Call plan_job first. When it finishes, offer to send the plates to the printer.",
     schema: {
       type: "object",
-      properties: { jobId: { type: "string", description: "Job id from plan_job. Omit for the most recent." } },
+      properties: { jobId: { type: "string", description: "From plan_job. Omit for the most recent." } },
       required: [],
     },
   },
   {
     name: "job_status",
     description:
-      "Report the state of a job — per-plate status, metrics, and totals. Use when the user asks how a big print is going.",
+      "Report a job's state: per-plate status, metrics and totals. Use when the user asks how a big print is going.",
     schema: {
       type: "object",
-      properties: { jobId: { type: "string", description: "Job id. Omit for the most recent." } },
+      properties: { jobId: { type: "string", description: "Omit for the most recent." } },
       required: [],
     },
   },
   {
     name: "split_model",
     description:
-      "Split ONE model file into its separate solid pieces. Many STLs that look like a single object actually " +
-      "contain several (a nameplate whose letters sit on a backing plate, a logo with separate rings, or a whole " +
-      "set of parts exported into one file). Splitting turns a hard problem into an easy one: each piece becomes " +
-      "an ordinary part that can be given its OWN colour, oriented, and arranged. " +
-      "Use it when the user wants different colours on different areas of one model, when a model looks like it " +
-      "holds several parts, or before planning a job from a file whose name suggests a set. " +
-      "If the model is one connected solid it says so and changes nothing — then use colourBands (colour by height) " +
-      "or hand it to PrusaSlicer for painting.",
+      "Split ONE file into its separate solid pieces, so each becomes an ordinary part that can take its own colour and orientation. Use it when a model looks like several pieces, or the user wants different colours on different areas. A single connected solid is reported unchanged — otherwise use colourBands, or hand it to PrusaSlicer for painting.",
     schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description:
-            'Workspace path to the model, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the active model.',
+          description: "Workspace path as a tool result gave it. Omit for the active model.",
         },
-        write: {
-          type: "boolean",
-          description:
-            "Write each piece as its own file so it can be printed as a separate part (default true). " +
-            "False just reports how many pieces there are.",
-        },
+        write: { type: "boolean", description: "Default true. False only counts the pieces." },
       },
       required: [],
     },
@@ -342,15 +273,13 @@ export const V2_TOOLS: ToolSpec[] = [
   {
     name: "choose_orientation",
     description:
-      "Work out the best print orientation for ONE part and explain why, comparing support area, bed contact, " +
-      "and layer count. Use when the user asks how a part should be oriented, or when a part looks support-heavy.",
+      "Work out the best print orientation for one part and explain why, comparing support area, bed contact and layer count. Use when a part looks support-heavy.",
     schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description:
-            'Workspace path to the mesh, as a tool result gave it to you (e.g. "uploads/cube.stl"). Omit to use the active model.',
+          description: "Workspace path as a tool result gave it. Omit for the active model.",
         },
         goal: { type: "string", enum: ["draft", "quality", "functional"] },
       },

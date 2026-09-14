@@ -19,6 +19,7 @@
 // here opens a socket and no test needs a key.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   OPENAI_KEY_RE,
   OPENAI_PROVIDER,
@@ -616,3 +617,181 @@ test("an enormous error body is read only up to 64 KB", async () => {
   const none = await readErrorBody({ text: async () => '{"error":{"code":"invalid_api_key"}}' } as Response);
   assert.equal(openAiErrorFrom(401, none).errorCode, "invalid_api_key");
 });
+
+// ── usage ────────────────────────────────────────────────────────────────────
+
+test("response.completed carries the token usage, with the cached part broken out", async () => {
+  // OpenAI's `input_tokens` is the TOTAL and `input_tokens_details.cached_tokens`
+  // is the cached part OF it, so the uncached figure is a subtraction — the
+  // opposite of Anthropic, where it is already excluded.
+  const stream =
+    frame({
+      type: "response.output_item.done",
+      item: { id: "msg_1", type: "message", content: [{ type: "output_text", text: "ok" }] },
+    }) +
+    frame({
+      type: "response.completed",
+      response: {
+        id: "r",
+        status: "completed",
+        usage: {
+          input_tokens: 6400,
+          input_tokens_details: { cached_tokens: 6000 },
+          output_tokens: 250,
+          output_tokens_details: { reasoning_tokens: 100 },
+          total_tokens: 6650,
+        },
+      },
+    });
+  const { usage, assistant } = await readTurn(parseSseFrames(chunked(stream)), () => {});
+  assert.deepEqual(usage, {
+    inputTokens: 400,
+    cachedInputTokens: 6000,
+    // OpenAI does not itemise cache writes — see pricing.ts's header.
+    cacheWriteTokens: 0,
+    outputTokens: 250,
+  });
+  assert.deepEqual(assistant, [{ type: "text", text: "ok" }]);
+});
+
+test("a turn cut off by the output cap is still a billed turn, and still says so", async () => {
+  // A `max_output_tokens` stop is a real, billable call. Reading the usage has
+  // to happen BEFORE the break that hands back the partial answer, or the owner
+  // pays for the most expensive turns and never sees them.
+  const stream =
+    frame({
+      type: "response.output_item.done",
+      item: { id: "msg_1", type: "message", content: [{ type: "output_text", text: "as far as I got" }] },
+    }) +
+    frame({
+      type: "response.incomplete",
+      response: {
+        id: "r",
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 4000 },
+      },
+    });
+  const { usage, assistant } = await readTurn(parseSseFrames(chunked(stream)), () => {});
+  assert.deepEqual(usage, {
+    inputTokens: 1000,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 4000,
+  });
+  assert.deepEqual(assistant, [{ type: "text", text: "as far as I got" }]);
+});
+
+test("more cached tokens than input tokens clamps to zero rather than going negative", async () => {
+  // A shape we should never see, but a negative uncached count would be a
+  // NEGATIVE charge in the ledger, which is worse than an over-count.
+  const stream = frame({
+    type: "response.completed",
+    response: {
+      id: "r",
+      status: "completed",
+      usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 500 }, output_tokens: 10 },
+    },
+  });
+  const { usage } = await readTurn(parseSseFrames(chunked(stream)), () => {});
+  assert.deepEqual(usage, {
+    inputTokens: 0,
+    cachedInputTokens: 500,
+    cacheWriteTokens: 0,
+    outputTokens: 10,
+  });
+});
+
+test("a stream that never reports usage still returns its blocks", async () => {
+  // Reading usage must never be able to fail a turn: the user's answer matters
+  // more than the meter, and a call with no usage is charged nothing.
+  const { usage, assistant, toolCalls } = await readTurn(
+    parseSseFrames(chunked(TURN_WITH_TOOL_CALL)),
+    () => {},
+  );
+  assert.equal(usage, undefined);
+  assert.equal(assistant.length, 3);
+  assert.equal(toolCalls.length, 1);
+});
+
+// ── the prefix stops moving ──────────────────────────────────────────────────
+//
+// OpenAI's prompt caching has no markers: it is a pure prefix match on the
+// rendered request. So `instructions` and the serialised `tools` must be
+// byte-identical from turn to turn, or every call re-reads the whole prefix at
+// full price. There is nothing to opt into and nothing to see in the request —
+// only bytes that do or do not match — which is why these are the tests.
+
+test("the static prefix is byte-identical across turns, and holds nothing volatile", () => {
+  const first = buildResponsesBody(request());
+  const second = buildResponsesBody(
+    request({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "something else entirely" }] },
+        { role: "assistant", content: [{ type: "text", text: "sure" }] },
+        { role: "user", content: [{ type: "text", text: "and again" }] },
+      ],
+    }),
+  );
+  assert.equal(second.instructions, first.instructions);
+  assert.equal(JSON.stringify(second.tools), JSON.stringify(first.tools));
+
+  // A date, a uuid or a counter anywhere in the prefix invalidates it on every
+  // call — and does so invisibly, because the request still works.
+  const prefix = String(first.instructions) + JSON.stringify(first.tools);
+  assert.equal(/\d{4}-\d{2}-\d{2}|[0-9a-f]{8}-[0-9a-f]{4}/.test(prefix), false);
+});
+
+test("prompt_cache_key is sent when given, omitted when not, and is never the session id", () => {
+  assert.equal("prompt_cache_key" in buildResponsesBody(request()), false);
+
+  // A hash, not the id: the key is sent to a third party and is not needed there
+  // in any readable form. 32 hex characters is what agent.ts derives.
+  const key = createHash("sha256").update("abc").digest("hex").slice(0, 32);
+  const body = buildResponsesBody(request({ cacheKey: key }));
+  assert.equal(body.prompt_cache_key, key);
+  assert.match(String(body.prompt_cache_key), /^[0-9a-f]{32}$/);
+  assert.equal(JSON.stringify(body).includes("abc"), false);
+
+  // And adding it disturbed none of the four fields that are requirements
+  // rather than tuning knobs.
+  assert.equal(body.store, false);
+  assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_obfuscation: false });
+});
+
+test(
+  "input is append-only: turn N's serialisation starts with turn N−1's",
+  {
+    todo:
+      "BLOCKED ON A REAL-KEY SMOKE RUN. Stripping older turns' reasoning items " +
+      "rewrites the middle of the prefix and forfeits every cache hit past that " +
+      "point — but replaying them is what the Responses API 400s on when a " +
+      "reasoning item is not followed by the function call it reasoned about. " +
+      "The reviewed rule (reasoning kept only on the newest assistant turn, and " +
+      "only when it holds a tool_use) stays until a live run proves replayed " +
+      "reasoning is accepted. See toOpenAiInput's TODO in provider-openai.ts.",
+  },
+  () => {
+    const reasoning = (id: string) => ({
+      type: "reasoning" as const,
+      opaque: { id, type: "reasoning", encrypted_content: id },
+    });
+    const short: NeutralMessage[] = [
+      { role: "user", content: [{ type: "text", text: "turn one" }] },
+      {
+        role: "assistant",
+        content: [reasoning("rs_1"), { type: "tool_use", id: "call_1", name: "find_models", input: {} }],
+      },
+      { role: "user", content: [{ type: "tool_result", id: "call_1", content: "found" }] },
+    ];
+    const long: NeutralMessage[] = [
+      ...short,
+      { role: "assistant", content: [reasoning("rs_2"), { type: "text", text: "here you go" }] },
+      { role: "user", content: [{ type: "text", text: "turn two" }] },
+    ];
+    const shortJson = JSON.stringify(toOpenAiInput(short));
+    assert.ok(JSON.stringify(toOpenAiInput(long)).startsWith(shortJson.slice(0, -1)));
+  },
+);

@@ -6,10 +6,16 @@
 // keeps is neutral, the tools it declares are neutral, and which provider
 // answers is decided per turn from the user's chosen model — so a user with two
 // keys can switch model mid-session and the next turn simply goes elsewhere.
+import { createHash } from "node:crypto";
 import { getUserApiKey, NoApiKeyError } from "../userkey";
+import { costMicros, type TurnUsage } from "../pricing";
+import { currentSessionId } from "../session-context";
 import { getSettings, getPreferences } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
+import { SYSTEM_PROMPT } from "./prompt";
+import { capHistory } from "./history";
+import { logTurnCost } from "./cost-log";
 import { stripPaths, toWire } from "../../server/errors";
 import { fromAnthropicHistory } from "./provider-anthropic";
 import {
@@ -21,56 +27,6 @@ import {
   type Provider,
 } from "./provider";
 import type { AgentEvent, ProviderId } from "../../shared/types";
-
-const SYSTEM_PROMPT = `You are Slicely, a friendly, concise assistant that helps people find free, open-source 3D-printable models online and slice them with PrusaSlicer on their Mac.
-
-What you can do, via tools:
-- find_models: search EVERY source at once (Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub, MakerWorld). Prefer this over search_models.
-- import_model / import_from_url: download a model into the user's workspace. This works for Thingiverse, PRINTABLES, MyMiniFactory, NIH 3D, Smithsonian, NASA and GitHub — every result whose "downloadable" flag is true, which is most of them. Never tell a user to fetch a downloadable model themselves.
-- open_in_browser: ONLY for results marked "downloadable: false" (MakerWorld, and the meta-search engines). Reach for it last: if a search returned something you can import, import it.
-- check_printer_setup / set_printer: detect the user's PrusaSlicer printer config and set their printer when they have none. set_printer SAVES the choice permanently (and the user can also save a printer + slice defaults in the gear Settings panel), so once a printer is known you never ask again.
-- get_slicer_status / inspect_model / recommend_settings / slice_model / slice_and_open / open_in_slicer: drive PrusaSlicer.
-
-FILE PATHS ARE WORKSPACE-RELATIVE, ALWAYS. Every path a tool gives you looks like "uploads/cube.stl", "downloads/kit/part1.stl" or "slices/plate-1.gcode" — relative to the user's own workspace, and those are the only three folders that exist. Pass such a string back verbatim to any tool that takes a path, and use that same spelling if you name a file to the user. Never invent, reconstruct or guess a path, and never write one starting with "/": there is no absolute path you are entitled to, and a made-up one is refused. THE ONE EXCEPTION: in the Mac app, a file the user picked from their own machine lives outside the workspace and has no relative spelling, so a tool may hand you its FULL path ("/Users/someone/Desktop/x.stl"). That is the user's own file on the user's own Mac — pass it back verbatim to the next tool exactly as you were given it, and name it to the user the same way. You still never compose an absolute path yourself; you only echo one a tool just gave you.
-
-The user can ALSO upload their own CAD/mesh file (STL, 3MF, OBJ, AMF, STEP) by dragging it in or picking it. When they do, that file becomes the active model automatically — so inspect_model / recommend_settings / slice_model with NO path argument operate on it. Treat an uploaded file exactly like an imported one. STL/3MF/OBJ/AMF slice directly; STEP files should be opened in PrusaSlicer (open_in_slicer) since the GUI converts them — don't headlessly slice a STEP.
-
-You are an expert 3D-printing assistant. To slice ACCURATELY (so prints don't fail), you reason about the actual model and the user's intent — you never just pick numbers blindly:
-- ANALYZE FIRST: inspect_model gives real dimensions, volume, and whether the mesh is watertight. recommend_settings turns geometry + the user's goal/material/nozzle into concrete settings (layer height, infill %, infill pattern, walls, solid layers, supports + threshold, brim) WITH a rationale and warnings (bed fit, non-manifold mesh, material gotchas). Always surface those warnings to the user.
-- THE KEY QUESTION is the print GOAL. Before the first slice of a session, ask ONE short question: does the user care most about SPEED (draft), LOOKS/DETAIL (quality), or STRENGTH (functional)? Pass that as 'goal' to recommend_settings/slice_model. Also note MATERIAL (PLA default; PETG/ABS change supports/brim) — ask only if relevant. Ask at most ~2 questions, then proceed; if the user doesn't want to answer, DEFAULT GRACEFULLY (goal=quality, material=PLA) and tell them what you assumed so they can correct and re-slice. Never block on questions.
-- FIRST-TIME / NO PRINTER SET UP: before the first slice for someone new, call check_printer_setup. If they have no usable PrusaSlicer profile AND no saved printer, ask which printer they have and call set_printer (offer common ones; 'generic' if unknown) so bed size and nozzle match their machine — otherwise estimates are generic and prints can fail. If they already have a profile or their own config, just slice.
-- SAVED PREFERENCES PERSIST — NEVER RE-ASK: the user has a Settings panel (gear icon, top-right) where they can save their printer (a known one OR a custom bed/nozzle they type in) AND default slice preferences (material, goal, infill, supports mode, support style, brim). These are saved to disk and survive restarts. set_printer also saves the printer permanently. check_printer_setup tells you when a printer is already saved — when it is, DO NOT ask the user for their printer again; just slice. Likewise, if their saved defaults already answer goal/material, don't re-ask — only ask when nothing is saved and you genuinely need it. Saved defaults are applied to every slice automatically (you don't pass them); explicit values you pass to a tool still override them for that one slice.
-- slice_model is self-sufficient: with no settings it auto-applies the recommended goal/geometry-aware settings, so "just slice it" works. Pass 'goal'/'material' to shape it, or explicit values (layerHeightMm, fillDensityPct, etc.) to override individual settings.
-- A typical happy path: (new user → check_printer_setup → set_printer) → ask goal → search_models or use uploaded/imported model → import_model → slice_model with the goal.
-
-MAX-OUT SLICING — multi-part, multi-plate, copies, transforms, colour:
-- MULTI-PART MODELS: many models come as several STLs (or a ZIP of parts). Slicely downloads/unzips ALL parts and makes them the active model. slice_model (with no explicit path) automatically arranges every part across plates.
-- MULTI-PLATE: if the parts (or copies) don't all fit on one bed, Slicely splits them across MULTIPLE plates and slices each — you'll get one metrics panel per plate ("Plate 1 of 3"). Tell the user how many plates and that they print them one after another. Parts bigger than the bed are reported as oversized (suggest scaling down).
-- SUPPORTS — ACCURATE AUTO-DETECT: by default Slicely hands the support decision to PrusaSlicer's REAL overhang analysis (it slices with automatic placement, threshold 0), so supports are generated ONLY where the actual mesh geometry needs them — not guessed from the bounding box. After slicing, Slicely reads the produced G-code and tells you whether supports were actually generated ("supports added where the mesh needed them" vs "enabled but none were needed"). Relay that truthfully — it's ground truth from the toolpaths, not a guess. The user can force supports on/off (or pick organic/tree vs grid style) per-slice or in their saved defaults. So you do NOT need a separate "re-slice to add supports" round trip for normal models — the first slice already adds them where needed; only re-slice if the user wants a DIFFERENT support choice (e.g. force them off, or switch to organic).
-- BRIM is sized automatically from geometry + material (small footprint / tall-narrow / ABS-PETG adhesion), aggregated across all parts on a plate (widest any part needs). The user can override or save a default.
-- AUTO-FIX BAD SETTINGS: if PrusaSlicer rejects a slice with a fatal error it can safely correct (e.g. layer height thicker than the nozzle can print, or organic supports a model/version won't accept), Slicely auto-corrects and re-slices, then reports what it changed (a 🔧 note). Surface that note to the user so they know what was adjusted.
-- DEFAULT "OPEN" = THE EDITABLE EDITOR, PRE-SLICED. When the user says "open it", "open in PrusaSlicer", "slice it and open in the editor", "let me take over", or "tweak it myself", use open_in_slicer. It opens the MODEL in the normal, editable PrusaSlicer (all parts arranged) with the slice settings loaded AND — if PrusaSlicer is currently CLOSED — turns on its background-processing pref so the model auto-slices as it loads (the user just clicks the Preview tab, no Slice click). Relay whatever the tool returns: if PrusaSlicer was ALREADY open, pre-slicing couldn't be enabled for that session (it reads prefs at launch), so the user presses Slice this time — or can quit it and reopen via Slicely to get auto-slice-on-load. This is the right choice unless the user explicitly wants the read-only finished result.
-- FINISHED SLICE / G-CODE VIEWER = OPT-IN ONLY. Use slice_and_open ONLY when the user explicitly wants to SEE THE FINISHED RESULT in a read-only view — phrasings like "show me the finished product", "show me the finished slice", "open the export/g-code", "just show me the toolpaths". It slices headlessly (accurate, deduped metrics — shown once) and opens the ALREADY-SLICED G-code in PrusaSlicer's G-code viewer, zero clicks. Prefer open_in_slicer (editable, pre-sliced) when the user might want to adjust anything; use slice_and_open when they only want to look.
-- HONESTY: PrusaSlicer exposes no API to auto-press the Slice button or to open the editor directly on its Preview tab (any action flag forces headless mode; tab control is internal). The honest best for the editor is background-processing (auto-slice on load → one tap on Preview, no wait). The only TRUE zero-click finished view is the read-only G-code viewer. Never claim Slicely "clicks Slice" or opens the editor straight onto Preview.
-- You can pass slice_model / slice_and_open: copies (N auto-arranged copies of one model), scale, rotateDeg, merge (combine parts into one object), arrangeParts (default true), and the colour arguments below. open_in_slicer takes scale, rotateDeg and the same colour arguments — pass them there when the user asks to open something at a different size, angle or colour, so what opens matches what they asked for.
-- COLOUR IS NEVER OPTIONAL AND NEVER GETS COLLAPSED. When the user names colours, pass them. Which argument depends on HOW MANY and WHETHER THEY SAID WHERE:
-  • ONE colour ("make it black", "in red") → filamentColour. The plate opens in that colour; add ONE short line that the physical colour is whichever spool they load. Never call it "preview-only".
-  • TWO OR MORE colours with no heights ("teal and black", "red, white and blue") → colours: ["#008080", "#000000"], bottom-first. NEVER pick one of them and pass filamentColour instead — that is the wrong print, not a simpler one. Slicely bands the height and changes filament at each boundary.
-  • They said WHERE it changes ("black up to 5 mm", "change at layer 40", "bottom third black, rest teal") → colourStops, one entry per colour, each with exactly one of atZ / atLayer / atFraction. The stop at the bed (atZ 0) is the starting colour.
-  • Different colours for different PARTS of a multi-part model → plan_job with a colourHex per part. If it is ONE mesh that looks like several pieces, call split_model first, then colour the pieces.
-- COLOUR WORKS ON EVERY PRINTER. A single-extruder machine pauses at each change so the user swaps the spool; an AMS/MMU swaps it itself. Say which one applies and stop there — do not warn that colour "might not work" or hedge about it.
-- MODELS THAT ARRIVE COLOURED: many downloads (especially Printables and MakerWorld 3MFs) already carry their author's colours. import_model tells you when one does. Those colours are used as they are — do NOT ask what colour the user wants when the model already answered, and do NOT re-state them as a limitation. Just say what the model comes in and offer to change it.
-- MULTI-PLATE + OPEN: when a job splits across multiple plates, the GUI shows ONE bed at a time. slice_and_open opens the finished G-code for plate 1; tell the user the other plates are sliced too and they can open each one separately.
-- LIVE GUI: PrusaSlicer has no API to control its already-open window in real time. The honest equivalents are: open_in_slicer (open the model in the editor with settings loaded, ready to slice — the default), or slice_and_open (slice headlessly, then open the finished G-code in the viewer — only when the user wants the finished result). Frame it that way — don't claim to puppeteer the live window or auto-press buttons.
-
-ACCURACY: print-time/filament/cost are most accurate when sliced against the user's REAL exported PrusaSlicer config (PRUSASLICER_CONFIG_INI). When you slice without one (generic/synthesized profile), say the estimates are approximate and that exporting their config (PrusaSlicer → File → Export → Export Config) makes them precise.
-
-Style:
-- The UI renders rich model cards and metric panels automatically — DON'T paste long raw lists; give a short, useful summary and let the cards do the work. Refer to models by their title.
-- Most results download in-app, including Printables. Go by each result's own "downloadable" flag, never by which site it came from, and only offer open_in_browser when that flag is false.
-- Slicing recommendations are well-reasoned starting points, not guarantees — tell the user to eyeball the PrusaSlicer preview for overhangs/supports before printing.
-- Be warm and brief. Lead with the outcome.
-- The app shows a live PrusaSlicer status pill, so don't call get_slicer_status every turn — call it when asked, or before slicing if unsure it's installed. If PrusaSlicer isn't installed, say so and point to prusa3d.com; you can still search and import models.`;
 
 const MAX_TOOL_ITERATIONS = 12;
 
@@ -307,19 +263,38 @@ export class SlicelyAgent {
       this.history.push({ role: "user", content: [{ type: "text", text: userMessage }] });
       this.historyProvider = provider.id;
 
+      // A prompt-cache routing hint, stable for as long as the session is — so
+      // every call of every turn in one conversation prefers the machine that
+      // already holds this session's prefix. HASHED, and truncated, because it
+      // goes to a third party and is not needed there in any readable form: a
+      // session id is a capability in this codebase, not a label.
+      const cacheKey = createHash("sha256").update(currentSessionId()).digest("hex").slice(0, 32);
+
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
         if (this.cancelled) break;
 
-        const { assistant, toolCalls } = await provider.stream(
+        // Kept whole rather than destructured, because the result now also
+        // carries what the call COST (`usage`) — and that is charged per call,
+        // not per turn: a twelve-iteration tool loop on an empty balance would
+        // otherwise overspend twelvefold before anyone noticed.
+        const turn = await provider.stream(
           {
             apiKey,
             model,
             effort,
             system: SYSTEM_PROMPT,
             tools: TOOLS,
-            messages: this.history,
+            // CAPPED FOR THE WIRE ONLY. `this.history` stays complete, because it
+            // is what `exportHistory()` writes to the user's saved chat and what
+            // their transcript is rebuilt from — losing a turn from THAT to save
+            // a few tokens would be trading the product for the bill. What the
+            // provider sees is a copy with the oldest turns dropped and older
+            // tool_result bodies stubbed; no block is ever removed, so no call is
+            // ever orphaned (see history.ts).
+            messages: capHistory(this.history),
             maxOutputTokens: provider.maxOutputTokens,
             signal: this.inFlight.signal,
+            cacheKey,
           },
           (delta) => {
             if (this.cancelled) return;
@@ -328,6 +303,8 @@ export class SlicelyAgent {
             emit({ type: delta.type, text: delta.text });
           },
         );
+        const { assistant, toolCalls } = turn;
+        reportCost(model, turn.usage, i);
 
         // Record the assistant turn (text + reasoning + any tool calls).
         // NEVER EMPTY: `content: []` is a 400 on both providers, so a turn that
@@ -420,6 +397,35 @@ export class SlicelyAgent {
       this.closeTurn();
       emit({ type: "done" });
     }
+  }
+}
+
+/**
+ * Log what one provider call cost, whoever is paying.
+ *
+ * BOTH FUNDING SOURCES, because the paid path's cost is exactly as interesting to
+ * the owner as the free one — it is how a runaway tool loop gets noticed at all.
+ *
+ * A call the provider reported NO usage for is logged as an anomaly rather than
+ * priced: charging a number we invented is the one failure mode worth refusing
+ * outright. An unpriced model is the same case — `costMicros` throws for a model
+ * with no row in the price table, and a missing price must not be able to fail
+ * a turn the user has already been given.
+ *
+ * `source` is hard-coded to "user" here and stays that way until the accounts lane
+ * lands the funding resolver, which is what knows whether the owner's free credit
+ * paid for this call.
+ */
+function reportCost(model: string, usage: TurnUsage | undefined, iteration: number): void {
+  if (!usage) {
+    process.stderr.write(`[cost] model=${model} it=${iteration} usage=none (not charged)\n`);
+    return;
+  }
+  try {
+    logTurnCost({ model, usage, micros: costMicros(model, usage), source: "user", iteration });
+  } catch {
+    // An unpriced model. Say so once, loudly enough to grep, and carry on.
+    process.stderr.write(`[cost] model=${model} it=${iteration} usage=unpriced (not charged)\n`);
   }
 }
 

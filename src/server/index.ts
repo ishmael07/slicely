@@ -32,6 +32,7 @@ import { webStatic } from "./static";
 import { sendError, WireError } from "./errors";
 import { createChatRouter } from "./routes/chat";
 import { createModelsRouter } from "./routes/models";
+import { createFindRouter } from "./routes/find";
 import { createUploadRouter } from "./routes/upload";
 import { createSliceRouter } from "./routes/slice";
 import { createSettingsRouter } from "./routes/settings";
@@ -44,6 +45,7 @@ import { createLocalRouter } from "./routes/local";
 import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
 import { loadPrintersApi } from "./facades";
+import type { SourcingApi } from "./facades";
 import type { PrinterTestResult, ResolvedPrinter } from "../shared/printers";
 
 export interface CreateAppOptions {
@@ -62,6 +64,10 @@ export interface CreateAppOptions {
    *  TESTS ONLY: it lets a test add a printer without a printer (or a network)
    *  on the other end. Never set in production. */
   printerTestOverride?: (printer: ResolvedPrinter) => Promise<PrinterTestResult>;
+  /** Replace the model-sourcing façade (`src/main/sourcing`). TESTS ONLY: it
+   *  lets `/api/find` and `/api/search` be driven without eight model sites on
+   *  the other end. Undefined in production, where the real module is loaded. */
+  sourcingApi?: SourcingApi;
   /** The per-launch secret the Electron app requires on every request (desktop
    *  mode only — see desktop-token.ts). Absent in hosted mode, where the
    *  session cookie is the identity; present but inert if `SLICELY_MODE` isn't
@@ -161,7 +167,10 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   api.use(createKeyRouter({ validate: opts.keyValidator, limit: heavyLimit }));
   api.use(createSessionRouter(store));
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
-  api.use(createModelsRouter(undefined, { limit: heavyLimit }));
+  api.use(createModelsRouter(opts.sourcingApi, { limit: heavyLimit }));
+  // POST /api/find — the deterministic search path, which costs a visitor no AI
+  // credit at all. `heavy`, because one call still fans out to every model site.
+  api.use(createFindRouter(opts.sourcingApi, { limit: heavyLimit }));
   api.use(createUploadRouter({ limit: heavyLimit }));
   // Desktop's by-path alternative to /api/upload. Mounted in both modes so the
   // hosted server answers the honest 403 rather than a 404 that reads like a
