@@ -14,6 +14,8 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { SlicelyAgent } from "../../main/agent/agent";
 import { getUserApiKey, NoApiKeyError } from "../../main/userkey";
+import { providerForModel } from "../../main/agent/provider";
+import { getSettings } from "../../main/settings";
 import { sendError, stripPaths, toWire } from "../errors";
 import { isDesktop } from "../../main/mode";
 import { sessionState } from "../../main/agent/state";
@@ -145,8 +147,11 @@ export function createChatRouter(
     // out. An error delivered inside an already-open stream is far harder for
     // the client to act on (EventSource has read a 200 by then), and the one
     // thing the UI must do here is show the "connect your key" card.
-    if (!getUserApiKey()) {
-      sendError(res, new NoApiKeyError("Connect your Anthropic API key in Settings to chat."));
+    const provider = providerForModel(getSettings().model);
+    if (!getUserApiKey(provider.id)) {
+      // Name the provider: with two keys possible, "connect your key" leaves the
+      // user guessing which of the two the chosen model needs.
+      sendError(res, new NoApiKeyError(`Connect your ${provider.label} API key in Settings to chat.`));
       return;
     }
 

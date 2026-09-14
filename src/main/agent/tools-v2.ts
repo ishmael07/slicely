@@ -9,7 +9,6 @@
 // Kept out of tools.ts on purpose — that file is already ~950 lines, and this
 // is a separable surface with its own dependencies.
 // ─────────────────────────────────────────────────────────────────────────────
-import type Anthropic from "@anthropic-ai/sdk";
 import type { AgentEvent, PrintGoal, PrintMaterial } from "../../shared/types";
 import type { SourceId } from "../../shared/sourcing";
 import type { JobPart } from "../../shared/jobs";
@@ -38,6 +37,7 @@ import {
   splitModel,
 } from "../jobs";
 import { getPreferences, printerGeometry } from "../settings";
+import type { ToolSpec } from "./provider";
 import { sessionState } from "./state";
 import { colourRequest } from "./colourRequest";
 import { resolveInsideSessionWorkspace, workspaceRef } from "../session-context";
@@ -62,7 +62,7 @@ export const V2_TOOL_NAMES = new Set([
   "split_model",
 ]);
 
-export const V2_TOOLS: Anthropic.Tool[] = [
+export const V2_TOOLS: ToolSpec[] = [
   // ── Sourcing ───────────────────────────────────────────────────────────────
   {
     name: "find_models",
@@ -74,7 +74,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "The result reports which sources succeeded, so you can tell the user if one was unavailable. " +
       "When the request describes a QUALITY rather than a name (buff, chunky, low-poly, articulated), also pass " +
       "`alternates` with synonyms — sites match keywords, not meaning.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         query: {
@@ -118,7 +118,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "Resolve ANY URL the user pastes into something printable — a marketplace model page, a direct " +
       ".stl/.3mf link, a .zip of parts, or a GitHub repo containing meshes. Use this the moment a user " +
       "shares a link. Reports what it found and which files are available; follow with import_from_url to download.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: { url: { type: "string", description: "The URL the user pasted." } },
       required: ["url"],
@@ -130,7 +130,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "Download a model directly from a URL into the workspace, so it can be inspected, sliced, and printed. " +
       "Works for direct mesh links, zips of parts, and repo files. Use after resolve_link, or straight away " +
       "when the URL is obviously a mesh file.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: { url: { type: "string", description: "Direct or page URL to download from." } },
       required: ["url"],
@@ -141,7 +141,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     description:
       "List which model sources are usable right now and what is blocking any that are not (e.g. a missing " +
       "API key), including the setup link. Use when a search returns little, or the user asks where models come from.",
-    input_schema: { type: "object", properties: {} },
+    schema: { type: "object", properties: {} },
   },
 
   // ── Printers ───────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "List the user's connected 3D printers with live state (idle / printing / paused / offline), progress, " +
       "temperatures, and loaded filament colours (AMS/MMU slots). Use before sending a print, when the user " +
       "asks about their printer, or to pick colours that are actually loaded.",
-    input_schema: { type: "object", properties: {} },
+    schema: { type: "object", properties: {} },
   },
   {
     name: "send_to_printer",
@@ -160,7 +160,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "only begin printing if the user has separately armed auto-start for that printer in settings — you " +
       "cannot override that, and you should not imply the print has begun unless the result says started:true. " +
       "Always tell the user to check the bed is clear before a print starts.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         printerId: {
@@ -186,7 +186,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     description:
       "Pause, resume, or cancel the print currently running on a connected printer. Confirm with the user " +
       "before cancelling — a cancelled print cannot be resumed and wastes the filament already laid down.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         printerId: { type: "string", description: "Printer id. Omit for the active printer." },
@@ -200,7 +200,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     description:
       "Scan the local network for 3D printers (OctoPrint, Klipper/Moonraker, PrusaLink, Bambu). Use when the " +
       "user wants to connect a printer and doesn't know its address. Returns candidates plus what credential each needs.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: { timeoutMs: { type: "integer", description: "Scan budget in ms (default 5000)." } },
     },
@@ -216,7 +216,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "copies, more than one colour, or the parts won't fit one bed. Returns the plate breakdown and totals. " +
       "It does NOT slice — call run_job for that. To give ONE model several colours without painting it, pass " +
       "colourBands (a filament swap at each height, works on any printer).",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         parts: {
@@ -294,7 +294,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     description:
       "Slice every plate of a planned job, in order, reporting per-plate metrics. A plate that fails does not " +
       "abort the rest. Call plan_job first. After it finishes, offer to send the plates to the printer.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: { jobId: { type: "string", description: "Job id from plan_job. Omit for the most recent." } },
       required: [],
@@ -304,7 +304,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     name: "job_status",
     description:
       "Report the state of a job — per-plate status, metrics, and totals. Use when the user asks how a big print is going.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: { jobId: { type: "string", description: "Job id. Omit for the most recent." } },
       required: [],
@@ -321,7 +321,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
       "holds several parts, or before planning a job from a file whose name suggests a set. " +
       "If the model is one connected solid it says so and changes nothing — then use colourBands (colour by height) " +
       "or hand it to PrusaSlicer for painting.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         path: {
@@ -344,7 +344,7 @@ export const V2_TOOLS: Anthropic.Tool[] = [
     description:
       "Work out the best print orientation for ONE part and explain why, comparing support area, bed contact, " +
       "and layer count. Use when the user asks how a part should be oriented, or when a part looks support-heavy.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         path: {

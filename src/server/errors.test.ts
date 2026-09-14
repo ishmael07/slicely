@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { WireError, sendScrubbed, stripPaths, toWire } from "./errors";
 import type { Response } from "express";
 import { NoApiKeyError, KeyFormatError } from "../main/userkey";
+import { openAiErrorFrom } from "../main/agent/provider-openai";
 
 test("stripPaths replaces absolute server paths with a placeholder", () => {
   assert.equal(stripPaths("/Users/it/Slicely-data/sessions/abc/uploads/x.stl failed"), "<file> failed");
@@ -69,6 +70,21 @@ test("Anthropic's own failures become the user's next action, not a 500", () => 
   assert.equal(otherBadRequest.body.error, "Something went wrong.");
 });
 
+test("the copy names no provider — the same sentence has to be true for either key", () => {
+  // Slicely accepts a key from more than one provider now, and this module no
+  // longer knows which one a given session is using. Naming Anthropic in the
+  // copy would be wrong for half the users and is not information anyone can
+  // act on: the fix is the same either way, and it is in Settings.
+  for (const err of [
+    new Anthropic.AuthenticationError(401, undefined, "invalid x-api-key", new Headers()),
+    new Anthropic.RateLimitError(429, undefined, "slow down", new Headers()),
+    new Anthropic.BadRequestError(400, undefined, "your credit balance is too low", new Headers()),
+  ]) {
+    const { body } = toWire(err);
+    assert.doesNotMatch(body.error, /Anthropic|OpenAI|Claude|GPT/i, `branded copy: ${body.error}`);
+  }
+});
+
 // ── sendScrubbed: keep our own wording, lose our own paths ───────────────────
 
 /** The two things `sendScrubbed` uses off a Response, recorded. */
@@ -114,4 +130,30 @@ test("sendScrubbed falls back when there is nothing to say, and defers to a Wire
   sendScrubbed(wire.res, new WireError(404, "No such printer.", "not_found"), "ignored", 422);
   assert.equal(wire.sent.status, 404);
   assert.deepEqual(wire.sent.body, { error: "No such printer.", code: "not_found" });
+});
+
+// ── the OpenAI provider's failures reach the same codes ─────────────────────
+
+test("OpenAI's failures map to the same wire codes, through the same funnel", () => {
+  const openai = (status: number, body: unknown) => toWire(openAiErrorFrom(status, JSON.stringify(body)));
+
+  const rejected = openai(401, { error: { message: "Incorrect API key provided: sk-proj-SECRET", code: "invalid_api_key" } });
+  assert.equal(rejected.status, 401);
+  assert.equal(rejected.body.code, "key_rejected");
+  assert.ok(!rejected.body.error.includes("SECRET"), "upstream prose is logged, not relayed");
+
+  const limited = openai(429, { error: { message: "Rate limit reached", code: "rate_limit_exceeded" } });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.code, "rate_limited");
+
+  // The bring-your-own-key trap: a quota 429 is NOT a rate limit. Retrying it
+  // forever cannot restore access — the account needs topping up.
+  const broke = openai(429, { error: { message: "You exceeded your quota", code: "insufficient_quota" } });
+  assert.equal(broke.status, 402);
+  assert.equal(broke.body.code, "billing");
+
+  // A request-shape bug of OURS, and an outage at OpenAI, are both generic 500s
+  // rather than a wrong instruction to the user.
+  assert.equal(openai(400, { error: { message: "Unknown parameter: 'foo'" } }).status, 500);
+  assert.equal(openai(503, { error: { message: "overloaded" } }).status, 500);
 });

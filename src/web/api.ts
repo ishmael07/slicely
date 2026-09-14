@@ -96,9 +96,16 @@ export function rateLimitedCopy(retryAfterSec?: number): string {
 }
 
 const CODE_COPY: Record<string, string> = {
-  no_key: "Connect your Anthropic API key to chat.",
-  key_rejected: "Your Anthropic key was rejected — update it in Settings.",
-  key_invalid_format: "That doesn't look like a valid Anthropic API key.",
+  // De-branded: a code alone does not say WHICH provider failed, and the fix is
+  // the same either way — it is in Settings.
+  //
+  // `no_key` is deliberately NOT mapped here. It is the one failure where the
+  // server does know the provider and says so ("Connect your OpenAI API key in
+  // Settings to use that model"), and a mapped code would overwrite that with
+  // something vaguer — see `errorMessage`, where a mapped code always wins. In
+  // the transcript the code opens the key cards anyway, so nothing is lost.
+  key_rejected: "Your API key was rejected — update it in Settings.",
+  key_invalid_format: "That doesn't look like a valid API key.",
   rate_limited: RATE_LIMITED_SHORT,
   // The page asked for something before it had a session (or after the server
   // forgot it). api.ts boots again and retries once by itself, so this line is
@@ -117,7 +124,7 @@ const CODE_COPY: Record<string, string> = {
   // server under a host name that isn't its own. Reopening the app is the fix,
   // and the only one the user can carry out.
   forbidden: "This window isn't allowed to talk to the app. Reopen Slicely.",
-  billing: "Your Anthropic account has no available credit.",
+  billing: "The account behind your API key has no available credit.",
   busy: "Still working on your last message — wait for it to finish.",
   not_found: "That wasn't found. It may have already been removed.",
   too_large: "That's too large.",

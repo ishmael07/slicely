@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // GET/PATCH /api/settings and PATCH /api/preferences — the web equivalent of
-// the Electron settings sheet: which Claude model and reasoning effort to use,
-// and the persistent printing defaults (printer geometry, material, goal,
-// infill, pattern, supports, brim).
+// the Electron settings sheet: which model (from either provider) and reasoning
+// effort to use, and the persistent printing defaults (printer geometry,
+// material, goal, infill, pattern, supports, brim).
 //
 // These read and write through main/settings.ts, which is session-scoped (see
 // main/session-context.ts), so each visitor gets their own settings.json under
@@ -20,6 +20,8 @@ import {
   MODEL_CATALOG,
   EFFORT_LEVELS,
 } from "../../main/settings";
+import { providerForModel } from "../../main/agent/provider";
+import { getUserApiKey } from "../../main/userkey";
 import { KNOWN_PRINTERS } from "../../main/profiles";
 import { seedSessionFromPreferences } from "../../main/agent/state";
 import type {
@@ -40,6 +42,7 @@ function settingsState(): SettingsState {
     current: { model: s.model, effort: s.effort },
     models: MODEL_CATALOG.map((m) => ({
       id: m.id,
+      provider: m.provider,
       label: m.label,
       blurb: m.blurb,
       supportsEffort: m.supportsEffort,
@@ -84,6 +87,20 @@ export function createSettingsRouter(): Router {
     if (!Object.keys(patch).length) {
       sendError(res, new WireError(400, "No valid model or effort supplied."));
       return;
+    }
+    // A model is only choosable if the key that pays for it exists. Refusing
+    // here — with the provider NAMED, since that is the missing piece — beats
+    // saving the choice and failing on the user's next message, which is where
+    // they would have to work out for themselves which key was missing.
+    if (patch.model) {
+      const provider = providerForModel(patch.model);
+      if (!getUserApiKey(provider.id)) {
+        sendError(
+          res,
+          new WireError(409, `Connect your ${provider.label} API key in Settings to use that model.`, "no_key"),
+        );
+        return;
+      }
     }
     updateSettings(patch);
     res.json(settingsState());

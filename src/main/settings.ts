@@ -18,12 +18,18 @@ import type {
   PrintMaterial,
   FeatureMode,
   SupportStyle,
+  ProviderId,
 } from "../shared/types";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelOption {
   id: string;
+  /** Which provider answers for this model — i.e. which API key it needs. The
+   *  catalog is the ONLY place that mapping is written down (see
+   *  agent/provider.ts's `providerForModel`), so adding a model is a one-line
+   *  data change and no request builder hardcodes a model name. */
+  provider: ProviderId;
   label: string;
   /** One-line UI description. */
   blurb: string;
@@ -45,6 +51,7 @@ export interface ModelOption {
 export const MODEL_CATALOG: ModelOption[] = [
   {
     id: "claude-opus-4-8",
+    provider: "anthropic",
     label: "Opus 4.8",
     blurb: "Most capable — best for nuanced search & reasoning",
     supportsEffort: true,
@@ -54,6 +61,7 @@ export const MODEL_CATALOG: ModelOption[] = [
   },
   {
     id: "claude-sonnet-4-6",
+    provider: "anthropic",
     label: "Sonnet 4.6",
     blurb: "Balanced — fast and smart for everyday use",
     supportsEffort: true,
@@ -63,11 +71,51 @@ export const MODEL_CATALOG: ModelOption[] = [
   },
   {
     id: "claude-haiku-4-5",
+    provider: "anthropic",
     label: "Haiku 4.5",
     blurb: "Fastest & cheapest — snappy, lighter reasoning",
     supportsEffort: false,
     supportsXHigh: false,
     supportsMax: false,
+    supportsAdaptiveThinking: false,
+  },
+  // ── OpenAI ────────────────────────────────────────────────────────────────
+  // All three take the full effort range (none…max on the 5.6 family; astra
+  // rejects only "none", which Slicely never sends). Adaptive thinking is an
+  // Anthropic parameter and does not apply.
+  //
+  // Terra is the OpenAI default rather than the flagship: same 1.05M context and
+  // 128K max output as astra, five times cheaper in and four times cheaper out.
+  // In a tool loop, where the whole history is re-billed as input every turn,
+  // that is the difference between a user's key lasting a month and a week.
+  {
+    id: "gpt-5.6-terra",
+    provider: "openai",
+    label: "GPT-5.6 Terra",
+    blurb: "Balanced OpenAI pick — cheap enough for long tool loops",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: false,
+  },
+  {
+    id: "gpt-5.6-luna",
+    provider: "openai",
+    label: "GPT-5.6 Luna",
+    blurb: "Cheapest OpenAI option — fast, lighter reasoning",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
+    supportsAdaptiveThinking: false,
+  },
+  {
+    id: "gpt-6-astra",
+    provider: "openai",
+    label: "GPT-6 Astra",
+    blurb: "OpenAI's most capable — for the hardest problems",
+    supportsEffort: true,
+    supportsXHigh: true,
+    supportsMax: true,
     supportsAdaptiveThinking: false,
   },
 ];
@@ -303,18 +351,32 @@ export function buildModelRequestParams(
     thinking?: { type: "adaptive" };
   } = {};
 
-  if (opt?.supportsEffort) {
-    let e = effort;
-    if (e === "xhigh" && !opt.supportsXHigh) e = "high";
-    if (e === "max" && !opt.supportsMax) e = "high";
-    out.outputConfig = { effort: e };
-  }
+  const e = resolveEffort(model, effort);
+  if (e) out.outputConfig = { effort: e };
 
   if (opt?.supportsAdaptiveThinking) {
     out.thinking = { type: "adaptive" };
   }
 
   return out;
+}
+
+/**
+ * The effort tier the chosen model will actually accept, or undefined when it
+ * takes none at all.
+ *
+ * Provider-neutral on purpose: both providers expose the same five tiers under
+ * different field names, and both reject a tier the model does not have (effort
+ * 400s on Haiku 4.5; `xhigh` is Opus 4.7+). Clamping in one place is what keeps
+ * a model choice from turning into a mid-turn 400.
+ */
+export function resolveEffort(model: string, effort: EffortLevel): EffortLevel | undefined {
+  const opt = modelOption(model);
+  if (!opt?.supportsEffort) return undefined;
+  let e = effort;
+  if (e === "xhigh" && !opt.supportsXHigh) e = "high";
+  if (e === "max" && !opt.supportsMax) e = "high";
+  return e;
 }
 
 /** Drop a session's cached settings (called when a web session is evicted). */

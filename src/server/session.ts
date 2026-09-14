@@ -146,8 +146,11 @@ export interface ChatAgent {
   cancel(): void;
   /** Clear the model's memory. Optional so a test stub need not implement it. */
   reset?(): void;
-  exportHistory?(): unknown[];
-  importHistory?(history: unknown[]): void;
+  /** The agent's own memory, for storing against a saved chat. Opaque here —
+   *  its shape belongs to main/agent/agent.ts, which tags it with the provider
+   *  that produced it (an UNtagged array is a pre-provider-seam v1 file). */
+  exportHistory?(): unknown;
+  importHistory?(history: unknown): void;
 }
 
 export interface SessionRecord {

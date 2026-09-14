@@ -275,6 +275,46 @@ export const IPC = {
 /** A reasoning-effort tier the user can pick. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * An AI provider a user can connect a key to.
+ *
+ * Lives here rather than beside the provider implementations because it is on
+ * the wire: /api/config lists providers, /api/key names one, and every model in
+ * /api/settings says which one it needs. The implementations are in
+ * main/agent/provider-*.ts, and nothing client-side imports those.
+ */
+export type ProviderId = "anthropic" | "openai";
+
+/** One provider as /api/config describes it. The KEY ITSELF never appears — only
+ *  whether this session has one and the four-character hint that identifies it. */
+export interface ProviderInfo {
+  id: ProviderId;
+  /** How to name it in the UI, e.g. "OpenAI". */
+  label: string;
+  hasKey: boolean;
+  keyHint?: string;
+  /** The copy the key card is built from. Shipped rather than duplicated in the
+   *  client: two tables for one truth means a corrected console URL in
+   *  main/agent/provider-*.ts leaves the card pointing at the old one. Optional,
+   *  so a client can still render against a server too old to send it. */
+  keyHelp?: ProviderKeyHelp;
+}
+
+/** One provider's key-card copy, flattened for the wire (`formatMessage` is a
+ *  sentence here, not the function it is on the server). */
+export interface ProviderKeyHelp {
+  /** Field label, e.g. "OpenAI API key". */
+  label: string;
+  /** Input placeholder, e.g. "sk-ant-…". */
+  placeholder: string;
+  consoleUrl: string;
+  /** How to name that URL in prose, e.g. "platform.openai.com/api-keys". */
+  consoleLabel: string;
+  /** What to say about a paste that isn't recognised at all — the client's own
+   *  refusal, before any request is made. */
+  formatMessage: string;
+}
+
 /** Tri-state for supports/brim in the user's saved defaults:
  *   - "auto": let Slicely decide from the model's real geometry (recommended).
  *   - "on":   always generate them, regardless of geometry.
@@ -329,6 +369,9 @@ export interface PrintPreferences {
 /** A model the UI offers in its picker, with capability flags for the UI. */
 export interface ModelChoice {
   id: string;
+  /** Which provider answers for it — i.e. which key it needs. The picker groups
+   *  on this and disables the models of a provider with no key connected. */
+  provider: ProviderId;
   label: string;
   blurb: string;
   supportsEffort: boolean;

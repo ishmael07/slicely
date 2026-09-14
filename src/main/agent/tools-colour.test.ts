@@ -12,7 +12,7 @@ import { TOOLS } from "./tools";
 function propsOf(name: string): Record<string, unknown> {
   const tool = TOOLS.find((t) => t.name === name);
   assert.ok(tool, `tool ${name} must exist`);
-  return (tool!.input_schema.properties ?? {}) as Record<string, unknown>;
+  return ((tool!.schema.properties ?? {}) as Record<string, unknown>) ?? {};
 }
 
 for (const name of ["slice_model", "slice_and_open", "open_in_slicer"]) {

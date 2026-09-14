@@ -1,7 +1,6 @@
 // Tool definitions for the Slicely agent, plus the executor that runs each one
 // against the providers / PrusaSlicer modules. The agent loop streams the
 // structured results back to the UI in addition to feeding them to the model.
-import type Anthropic from "@anthropic-ai/sdk";
 import type {
   AgentEvent,
   SliceMetrics,
@@ -41,6 +40,7 @@ import { getPreferences, printerGeometry, updatePreferences } from "../settings"
 import { sessionState } from "./state";
 import { colourRequest, type ColourRequest } from "./colourRequest";
 import { workspaceRef } from "../session-context";
+import type { ToolSpec } from "./provider";
 import { stripPaths } from "../../server/errors";
 import { join } from "node:path";
 import {
@@ -254,8 +254,12 @@ const SLICE_PROPERTIES: Record<string, unknown> = {
 };
 
 /** The v1 tool set: search/import, inspect, recommend, slice, and hand off
- *  to the PrusaSlicer GUI. Combined with V2_TOOLS into TOOLS below. */
-const V1_TOOLS: Anthropic.Tool[] = [
+ *  to the PrusaSlicer GUI. Combined with V2_TOOLS into TOOLS below.
+ *
+ *  `schema` is a plain JSON Schema, not a provider's field name: Anthropic wants
+ *  it as `input_schema`, OpenAI as `parameters`, and each provider does that
+ *  rename itself (see agent/provider.ts). */
+const V1_TOOLS: ToolSpec[] = [
   {
     name: "search_models",
     description:
@@ -264,7 +268,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "them directly. Use this whenever the user wants to find or print something (e.g. 'a model car'). " +
       "Trust each result's `downloadable` flag rather than assuming by source: Printables, MyMiniFactory, " +
       "NIH 3D, Smithsonian, NASA and GitHub are all directly downloadable in-app alongside Thingiverse.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         query: {
@@ -296,7 +300,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "inspected and sliced. Works for ANY result whose `downloadable` flag is true — Thingiverse, Printables, " +
       "MyMiniFactory, NIH 3D, Smithsonian, NASA and GitHub. Only fall back to open_in_browser when `downloadable` " +
       "is false. Returns the local file path.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         source: {
@@ -318,7 +322,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "Open a model's web page in the user's default browser, so they can download it manually. " +
       "Use ONLY for results with `downloadable: false`, whose files really are gated at source. " +
       "If a result is downloadable, import it instead of sending the user off to fetch it themselves.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         url: { type: "string", description: "The model's webUrl from search_models." },
@@ -331,7 +335,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
     description:
       "Check whether PrusaSlicer is installed, what version, and whether it's currently running. " +
       "Use this to detect the user's slicing software before slicing, or when the user asks what slicer they have.",
-    input_schema: { type: "object", properties: {} },
+    schema: { type: "object", properties: {} },
   },
   {
     name: "check_printer_setup",
@@ -340,7 +344,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "wizard / exported a config). Use this BEFORE the first slice for a new user. If they have nothing " +
       "set up, ask which printer they have and call set_printer — otherwise slices use generic defaults and " +
       "estimates won't match their machine. Returns the config state plus the list of printers Slicely knows.",
-    input_schema: { type: "object", properties: {} },
+    schema: { type: "object", properties: {} },
   },
   {
     name: "set_printer",
@@ -348,7 +352,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "Set the user's printer when they don't have a PrusaSlicer profile configured. Slicely synthesizes a " +
       "config (bed size + nozzle) so slices are realistic for their machine. Use the printer key from " +
       "check_printer_setup, or 'generic' if unknown.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         printerKey: {
@@ -366,7 +370,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "Get the physical dimensions (mm), volume, triangle count, and manifold status of a downloaded " +
       "model file using PrusaSlicer. Use after import_model, or on a path the user provides, to report " +
       "accurate metrics before slicing.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         path: {
@@ -385,7 +389,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "warnings (bed fit, non-watertight mesh, material gotchas). Pass the user's goal/material/nozzle when " +
       "known — they materially change the result. Inspects the model first if needed. Use this before slicing " +
       "so you can explain WHY the settings fit the print.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         path: {
@@ -422,7 +426,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "you get one metrics result per plate. Pass goal/material to shape the recommendation, or explicit " +
       "values to override individual settings. You can also make copies, scale, rotate, merge parts, or set a " +
       "preview filament colour.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
     },
@@ -439,7 +443,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "already-sliced G-code (the viewer is read-only — toolpaths + export, nothing to click); PrusaSlicer has no " +
       "API to auto-press the Slice button in the editor. For a multi-plate split, the finished G-code for plate 1 " +
       "opens; the rest are sliced too and openable from their panels.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
     },
@@ -456,7 +460,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
       "the settings of the most recent slice (or recommends from the model's geometry). Pass any setting below to " +
       "open with that specific value. This keeps the model EDITABLE — for the read-only finished G-code viewer, " +
       "use slice_and_open.",
-    input_schema: {
+    schema: {
       type: "object",
       properties: {
         path: {
@@ -494,7 +498,7 @@ const V1_TOOLS: Anthropic.Tool[] = [
  * Every tool the agent can call: the v1 slicing/inspection set plus the v2
  * sourcing, printer, and job tools.
  */
-export const TOOLS: Anthropic.Tool[] = [...V1_TOOLS, ...V2_TOOLS];
+export const TOOLS: ToolSpec[] = [...V1_TOOLS, ...V2_TOOLS];
 
 /** Execute one tool call. Returns the string fed back to the model as the
  *  tool_result, and emits structured UI events as a side effect. */

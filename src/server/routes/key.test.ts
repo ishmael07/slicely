@@ -23,9 +23,11 @@ import { SessionStore, type ChatAgent } from "../session";
 process.env.SLICELY_MODE = "hosted";
 process.env.SLICELY_MASTER_KEY = randomBytes(32).toString("base64");
 
-// The developer's own .env (loaded by config.ts) may carry an ANTHROPIC_API_KEY
-// and the operator flag; a hosted-mode test must never see either.
+// The developer's own .env (loaded by config.ts) may carry a provider key and
+// the operator flag; a hosted-mode test must never see either. A real
+// OPENAI_API_KEY in particular must never be reachable from a test.
 delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENAI_API_KEY;
 delete process.env.SLICELY_ALLOW_OPERATOR_KEY;
 
 const GOOD_KEY = "sk-ant-api03-" + "k".repeat(40);
@@ -340,6 +342,262 @@ test("chat with no key is a 409 with code no_key — answered BEFORE any SSE hea
     assert.equal(ok.status, 200);
     assert.match(ok.headers.get("content-type") ?? "", /text\/event-stream/);
     await ok.text();
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── two providers over HTTP ──────────────────────────────────────────────────
+
+const OPENAI_KEY = "sk-proj-" + "o".repeat(40);
+
+test("PUT /api/key takes a provider, and each provider's format is judged by its own rules", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const asked: string[] = [];
+  const { base, close } = await listen(
+    createApp({
+      sessionStore: store,
+      chatAgentFactory: stubAgent,
+      keyValidator: async (provider) => {
+        asked.push(provider);
+        return "ok";
+      },
+    }),
+  );
+  try {
+    const cookie = await boot(base);
+    const put = (body: unknown) =>
+      fetch(`${base}/api/key`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+
+    // An OpenAI key in the OpenAI card: accepted, and validated against OpenAI.
+    const openai = await put({ provider: "openai", apiKey: OPENAI_KEY });
+    assert.equal(openai.status, 200);
+    const openaiBody = (await openai.json()) as { hasKey: boolean; provider: string; keyHint: string };
+    assert.equal(openaiBody.provider, "openai");
+    assert.equal(openaiBody.keyHint, "…" + OPENAI_KEY.slice(-4));
+    assert.deepEqual(asked, ["openai"], "the right provider was asked to check it");
+
+    // The same key in the Anthropic card is refused on format alone — no call.
+    const wrongCard = await put({ provider: "anthropic", apiKey: OPENAI_KEY });
+    assert.equal(wrongCard.status, 400);
+    assert.equal(((await wrongCard.json()) as { code?: string }).code, "key_invalid_format");
+    assert.deepEqual(asked, ["openai"], "a badly-shaped key is never sent upstream");
+
+    // And an Anthropic key in the OpenAI card is named as such.
+    const swapped = await put({ provider: "openai", apiKey: GOOD_KEY });
+    assert.equal(swapped.status, 400);
+    assert.match(((await swapped.json()) as { error: string }).error, /Anthropic/);
+
+    // An unknown provider is a 400, not a silently-defaulted anthropic write.
+    const bogus = await put({ provider: "acme", apiKey: GOOD_KEY });
+    assert.equal(bogus.status, 400);
+
+    // NO PROVIDER FIELD = anthropic: every client written before OpenAI existed
+    // sends none, and this endpoint was Anthropic-only then.
+    const legacy = await put({ apiKey: GOOD_KEY });
+    assert.equal(legacy.status, 200);
+    assert.equal(((await legacy.json()) as { provider: string }).provider, "anthropic");
+    assert.deepEqual(asked, ["openai", "anthropic"]);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("/api/config lists both providers, with a hint only for the key that would pay", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await boot(base);
+    const config = async () => {
+      const resp = await fetch(`${base}/api/config`, { headers: { cookie } });
+      return (await resp.json()) as {
+        hasKey: boolean;
+        keyHint?: string;
+        providers: Array<{ id: string; label: string; hasKey: boolean; keyHint?: string }>;
+      };
+    };
+
+    const fresh = await config();
+    assert.deepEqual(
+      fresh.providers.map((p) => [p.id, p.hasKey]),
+      [
+        ["anthropic", false],
+        ["openai", false],
+      ],
+    );
+    assert.equal(fresh.hasKey, false);
+
+    // Connect ONLY an OpenAI key. `hasKey` is true — a user with one key is not a
+    // user without a key — but the default model is still an Anthropic one, so
+    // there is no hint for the key that would actually pay for the next message.
+    assert.equal(
+      (
+        await fetch(`${base}/api/key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", cookie },
+          body: JSON.stringify({ provider: "openai", apiKey: OPENAI_KEY }),
+        })
+      ).status,
+      200,
+    );
+    const withOpenai = await config();
+    assert.equal(withOpenai.hasKey, true);
+    assert.equal(withOpenai.keyHint, undefined);
+    assert.equal(withOpenai.providers.find((p) => p.id === "openai")?.hasKey, true);
+    assert.equal(withOpenai.providers.find((p) => p.id === "openai")?.keyHint, "…" + OPENAI_KEY.slice(-4));
+    assert.equal(withOpenai.providers.find((p) => p.id === "anthropic")?.hasKey, false);
+
+    // Switching to an OpenAI model makes that the key that pays.
+    const patch = await fetch(`${base}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", cookie },
+      body: JSON.stringify({ model: "gpt-5.6-terra" }),
+    });
+    assert.equal(patch.status, 200);
+    assert.equal((await config()).keyHint, "…" + OPENAI_KEY.slice(-4));
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("choosing a model whose provider has no key is a 409 no_key that names the provider", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await boot(base);
+    assert.equal(
+      (
+        await fetch(`${base}/api/key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", cookie },
+          body: JSON.stringify({ apiKey: GOOD_KEY }),
+        })
+      ).status,
+      200,
+    );
+
+    const refused = await fetch(`${base}/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", cookie },
+      body: JSON.stringify({ model: "gpt-6-astra" }),
+    });
+    assert.equal(refused.status, 409);
+    const body = (await refused.json()) as { error: string; code?: string };
+    assert.equal(body.code, "no_key");
+    assert.match(body.error, /OpenAI/, "the user has to be told WHICH key is missing");
+
+    // The choice was not saved, and every model says which provider it needs.
+    const settings = (await (await fetch(`${base}/api/settings`, { headers: { cookie } })).json()) as {
+      current: { model: string };
+      models: Array<{ id: string; provider: string }>;
+    };
+    assert.match(settings.current.model, /^claude-/);
+    assert.equal(settings.models.find((m) => m.id === "gpt-6-astra")?.provider, "openai");
+    assert.equal(settings.models.find((m) => m.id === "claude-opus-4-8")?.provider, "anthropic");
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DELETE /api/key disconnects the provider it is told about, and only that one", async () => {
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await boot(base);
+    for (const body of [{ apiKey: GOOD_KEY }, { provider: "openai", apiKey: OPENAI_KEY }]) {
+      assert.equal(
+        (
+          await fetch(`${base}/api/key`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", cookie },
+            body: JSON.stringify(body),
+          })
+        ).status,
+        200,
+      );
+    }
+
+    // A query parameter, for clients that would rather not send a DELETE body.
+    const del = await fetch(`${base}/api/key?provider=openai`, { method: "DELETE", headers: { cookie } });
+    assert.equal(del.status, 200);
+    const delBody = (await del.json()) as { hasKey: boolean; provider: string };
+    assert.equal(delBody.provider, "openai");
+    // `hasKey` answers the same question /api/config does — "any key at all" —
+    // so disconnecting one of two must not read as "you have no key".
+    assert.equal(delBody.hasKey, true);
+
+    const config = (await (await fetch(`${base}/api/config`, { headers: { cookie } })).json()) as {
+      providers: Array<{ id: string; hasKey: boolean }>;
+    };
+    assert.equal(config.providers.find((p) => p.id === "openai")?.hasKey, false);
+    assert.equal(config.providers.find((p) => p.id === "anthropic")?.hasKey, true);
+  } finally {
+    await close();
+    store.stopSweep();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("/api/config ships each provider's key-card copy, so the client keeps no second table", async () => {
+  // The web client used to carry its own copy of every label, placeholder,
+  // console URL and refusal message. Two tables for one truth: a corrected
+  // console URL in provider-openai.ts would leave the card pointing at the old
+  // one. The server owns the copy now.
+  const root = tmpRoot();
+  const store = new SessionStore({ sessionsRoot: root, secretDir: root, sweepIntervalMs: 0 });
+  const { base, close } = await listen(
+    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok" }),
+  );
+  try {
+    const cookie = await boot(base);
+    const config = (await (await fetch(`${base}/api/config`, { headers: { cookie } })).json()) as {
+      providers: Array<{
+        id: string;
+        label: string;
+        keyHelp?: { label: string; placeholder: string; consoleUrl: string; consoleLabel: string; formatMessage: string };
+      }>;
+    };
+
+    const openai = config.providers.find((p) => p.id === "openai");
+    assert.ok(openai?.keyHelp, "the OpenAI card's copy comes over the wire");
+    assert.equal(openai.keyHelp.label, "OpenAI API key");
+    assert.equal(openai.keyHelp.placeholder, "sk-…");
+    assert.match(openai.keyHelp.consoleUrl, /^https:\/\/platform\.openai\.com/);
+    assert.equal(openai.keyHelp.consoleLabel, "platform.openai.com/api-keys");
+    // The sentence for a paste that is not recognised at all — which is the one
+    // the client needs when it refuses locally, before any request.
+    assert.match(openai.keyHelp.formatMessage, /doesn't look like an OpenAI API key/);
+
+    const anthropic = config.providers.find((p) => p.id === "anthropic");
+    assert.equal(anthropic?.keyHelp?.label, "Anthropic API key");
+    assert.equal(anthropic?.keyHelp?.placeholder, "sk-ant-…");
+    assert.match(anthropic?.keyHelp?.formatMessage ?? "", /sk-ant-api/);
+
+    // A key itself is never described here, in either direction.
+    const raw = JSON.stringify(config);
+    assert.doesNotMatch(raw, /sk-ant-api03|sk-proj-o/);
   } finally {
     await close();
     store.stopSweep();

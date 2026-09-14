@@ -6,6 +6,9 @@
   "author": "ishmael07",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=20.3"
+  },
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.mjs",

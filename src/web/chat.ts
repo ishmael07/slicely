@@ -43,7 +43,7 @@ export interface ChatDeps {
   onStatus(status: SlicerStatus): void;
   /** The transcript's empty state. */
   buildEmptyState(): HTMLElement;
-  /** False when there is no Anthropic key yet: chatting is impossible, though
+  /** False when no provider key is connected yet: chatting is impossible, though
    *  search and paste-a-link still work without one. */
   canChat(): boolean;
   /** Something needs a key — returns the card to drop into the transcript. */
