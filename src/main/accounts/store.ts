@@ -222,6 +222,24 @@ export function isRetired(normalizedEmail: string): boolean {
 }
 
 /**
+ * True when this normalised email already has a live account.
+ *
+ * Asked by the sign-in route BEFORE `findOrCreateAccount`, so the per-IP signup
+ * cap is charged only for a genuinely new person: a returning visitor signing in
+ * from the same office NAT as three new ones must not be turned away as the
+ * fourth signup of the day. Read-only and synchronous — it creates nothing and
+ * changes nothing.
+ *
+ * A RETIRED email answers `false`, because there is no account: signing up again
+ * does create a record (`isRetired` is what makes sure it comes with no money),
+ * and that record is exactly the thing the cap counts.
+ */
+export function accountExistsFor(normalizedEmail: string): boolean {
+  const id = loadIndex().byEmail[normalizedEmail];
+  return id !== undefined && getAccount(id) !== undefined;
+}
+
+/**
  * Find the account this sign-in belongs to, or create one with the grant.
  *
  * The two lookups are tried in order — provider identity first (stable and

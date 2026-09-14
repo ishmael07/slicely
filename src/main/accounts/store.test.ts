@@ -7,7 +7,7 @@ import { resetConfigForTests } from "../config";
 import { centsToMicros } from "../pricing";
 import {
   findOrCreateAccount, getAccount, writeAccount, balanceMicros,
-  deleteAccount, isRetired, withAccountLock, resetAccountsForTests,
+  deleteAccount, isRetired, accountExistsFor, withAccountLock, resetAccountsForTests,
   type SignInProfile,
 } from "./store";
 import { accountFile, indexFile, utcDay } from "./paths";
@@ -105,6 +105,28 @@ test("deleting an account retires the email, so credit is never granted twice", 
     assert.equal(back.granted, false, "… but no new credit");
     assert.equal(back.account.grantedMicros, 0);
     assert.equal(balanceMicros(back.account), 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a returning visitor is not a signup — accountExistsFor says which is which", () => {
+  const dir = freshWorkdir();
+  try {
+    // The question the sign-in route asks BEFORE creating anything, so a
+    // returning visitor behind a busy NAT is not refused as somebody else's
+    // fourth signup of the day.
+    assert.equal(accountExistsFor("janedoe@gmail.com"), false, "nobody yet");
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    assert.equal(accountExistsFor("janedoe@gmail.com"), true, "now a returning visitor");
+    assert.equal(accountExistsFor("someone.else@example.com"), false);
+
+    resetAccountsForTests();                 // as if the server restarted
+    assert.equal(accountExistsFor("janedoe@gmail.com"), true, "read off disk, not from memory");
+
+    // A retired email has no account: signing up again DOES create a record —
+    // with no money in it — and that record is what the cap counts.
+    deleteAccount(account.id);
+    assert.equal(isRetired("janedoe@gmail.com"), true);
+    assert.equal(accountExistsFor("janedoe@gmail.com"), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
