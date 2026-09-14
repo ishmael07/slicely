@@ -25,5 +25,11 @@
     "noUnusedParameters": true,
     "types": []
   },
-  "include": ["src/web/**/*.ts", "src/shared/**/*.ts"]
+  // The client's own tests are NODE tests (`node:test`, run from the CommonJS
+  // copy tsconfig.json emits under dist/web) and are no part of the browser
+  // bundle. Excluding them here keeps this project's `"types": []` honest — no
+  // Node typings in the browser's compilation — and keeps anything test-shaped
+  // out of dist-web, which is served.
+  "include": ["src/web/**/*.ts", "src/shared/**/*.ts"],
+  "exclude": ["src/web/**/*.test.ts"]
 }

@@ -22,6 +22,23 @@ import type { ProviderId, ProviderInfo } from "../shared/types";
 import { ApiError, del, getJson, putJson, ready } from "./api.js";
 import { externalLink, make, toast } from "./ui.js";
 
+/** One way in, as this deploy offers it. Rendered as a button; pressing it is a
+ *  top-level navigation, never a fetch. */
+export interface SigninProvider {
+  id: "google" | "github";
+  label: string;
+}
+
+/** The free tier as this deploy is configured — the model the owner's credit
+ *  runs on, and how much of it a new account is given. Null when there is no
+ *  free tier (desktop, or no owner key), which is today's BYO-only product. */
+export interface FreeTierInfo {
+  model: string;
+  modelLabel: string;
+  effort: "medium";
+  creditCents: number;
+}
+
 export interface AppConfig {
   mode: "hosted" | "desktop";
   /** Does ANY provider have a key? */
@@ -36,6 +53,11 @@ export interface AppConfig {
   repoUrl: string;
   termsUrl: string;
   privacyUrl: string;
+  /** Can a stranger sign in here at all? False on desktop, false with no OAuth
+   *  provider configured, and false with no free tier to hand them. */
+  accountsEnabled: boolean;
+  signinProviders: SigninProvider[];
+  freeTier: FreeTierInfo | null;
 }
 
 /**
@@ -112,6 +134,11 @@ function providerState(id: ProviderId): ProviderInfo {
  * key route to offer, and nagging the user to connect a key the server would not
  * accept is worse than staying quiet. A real hosted server always answers, and
  * a `no_key` reply from /api/chat still says so.
+ *
+ * `accountsEnabled: false` for the same reason read the other way round: with no
+ * answer from the server, the safe guess is the product that needs no server
+ * feature at all — bring your own key. Offering a sign-in button that leads
+ * nowhere would be worse than not offering one.
  */
 const ASSUMED: AppConfig = {
   mode: "desktop",
@@ -124,6 +151,9 @@ const ASSUMED: AppConfig = {
   repoUrl: "",
   termsUrl: "/terms",
   privacyUrl: "/privacy",
+  accountsEnabled: false,
+  signinProviders: [],
+  freeTier: null,
 };
 
 let current: AppConfig = ASSUMED;
@@ -147,6 +177,39 @@ export function hasKey(): boolean {
   return current.hasKey;
 }
 
+/**
+ * What a server that predates accounts left out.
+ *
+ * `/api/config` is read straight into `AppConfig`, so any field an older build
+ * does not send arrives as `undefined` — and `config().signinProviders.map(…)`
+ * on an undefined is a blank page, not a missing button. The three account
+ * fields are therefore filled in on the way through, defaulted to the BYO-only
+ * product.
+ */
+function withAccountDefaults(raw: AppConfig): AppConfig {
+  return {
+    ...raw,
+    accountsEnabled: raw.accountsEnabled === true,
+    signinProviders: Array.isArray(raw.signinProviders) ? raw.signinProviders : [],
+    freeTier: raw.freeTier ?? null,
+  };
+}
+
+/** True when this deploy can sign a stranger in and fund their first turns. */
+export function accountsEnabled(): boolean {
+  return current.accountsEnabled;
+}
+
+/** The sign-in buttons to draw, in the order the server listed them. */
+export function signinProviders(): SigninProvider[] {
+  return current.signinProviders;
+}
+
+/** The free tier as configured here, or null when there isn't one. */
+export function freeTier(): FreeTierInfo | null {
+  return current.freeTier;
+}
+
 /** False when /api/config could not be reached, so the client is working from
  *  assumptions. Anything that would state a fact about the account — "your key
  *  is connected" — should stay quiet rather than make one up. */
@@ -162,7 +225,7 @@ export function configLoaded(): boolean {
  */
 export async function loadConfig(): Promise<AppConfig> {
   try {
-    current = (await ready()) as unknown as AppConfig;
+    current = withAccountDefaults((await ready()) as unknown as AppConfig);
     loaded = true;
   } catch {
     current = ASSUMED;
@@ -181,7 +244,7 @@ export async function loadConfig(): Promise<AppConfig> {
  */
 export async function refreshConfig(): Promise<void> {
   try {
-    current = await getJson<AppConfig>("/api/config");
+    current = withAccountDefaults(await getJson<AppConfig>("/api/config"));
     loaded = true;
     emit();
   } catch {
