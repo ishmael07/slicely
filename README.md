@@ -28,6 +28,18 @@ The two share one core. Only `main.ts` and `preload.ts` touch Electron; everythi
 
 ---
 
+## Download
+
+Grab the latest build from **[GitHub Releases](https://github.com/ishmael07/slicely/releases/latest)**.
+
+- **Apple silicon only, for now** — no Intel DMG yet.
+- **Unsigned build.** First launch: right-click `Slicely.app` → *Open* → *Open*. Or:
+  *System Settings → Privacy & Security → Open Anyway*.
+- **Prefer to build it yourself?** `npm run dist:mac` builds the same DMG from source —
+  see [Setup](#setup) below.
+
+---
+
 ## What it does
 
 | Capability | How |
