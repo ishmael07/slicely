@@ -27,7 +27,7 @@ import {
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
 import { desktopTokenGuard, isLoopbackBindHost } from "./desktop-token";
-import { isDesktop } from "../main/mode";
+import { isDesktop, isHosted } from "../main/mode";
 import { webStatic } from "./static";
 import { sendError, WireError } from "./errors";
 import { createChatRouter } from "./routes/chat";
@@ -43,6 +43,8 @@ import { createConfigRouter } from "./routes/config";
 import { createLocalRouter } from "./routes/local";
 import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
+import { createAuthRouter, createMeRouter } from "./routes/auth";
+import type { OauthConfig } from "./oauth/index";
 import { loadPrintersApi } from "./facades";
 import type { PrinterTestResult, ResolvedPrinter } from "../shared/printers";
 
@@ -62,6 +64,12 @@ export interface CreateAppOptions {
    *  TESTS ONLY: it lets a test add a printer without a printer (or a network)
    *  on the other end. Never set in production. */
   printerTestOverride?: (printer: ResolvedPrinter) => Promise<PrinterTestResult>;
+  /** Inject the OAuth providers and the outbound `fetch` the sign-in routes
+   *  use. TESTS ONLY in practice: production passes nothing and the providers
+   *  read their client ids and secrets from the environment. A test hands over a
+   *  fake provider so a whole sign-in can be driven without Google, GitHub, or a
+   *  network. */
+  oauth?: OauthConfig;
   /** The per-launch secret the Electron app requires on every request (desktop
    *  mode only — see desktop-token.ts). Absent in hosted mode, where the
    *  session cookie is the identity; present but inert if `SLICELY_MODE` isn't
@@ -150,8 +158,15 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   //      never on an attacker-supplied cookie string.
   // Sessions are minted here and nowhere else: static files, /healthz and the
   // legal pages never touch the store.
-  api.use(sessionMiddleware(store, { mintPerHour: opts.limits?.mintPerHour }));
-  api.use(tier(LIMITS.api, opts.limits?.api));
+  // ONE session middleware instance, shared by /api and /auth below. Two
+  // instances would mean two per-IP mint budgets and would halve the value of
+  // the cap: a visitor refused a workspace on /api/config could simply ask
+  // /auth/google/start for one instead. The `api` tier's limiter is shared for
+  // the same reason.
+  const sessionMw = sessionMiddleware(store, { mintPerHour: opts.limits?.mintPerHour });
+  const apiLimit = tier(LIMITS.api, opts.limits?.api);
+  api.use(sessionMw);
+  api.use(apiLimit);
   // /api/config and /api/key first: they are what the client calls before it
   // can render anything, and they must keep answering even when a later
   // router's dependency (the sourcing façade, say) is missing.
@@ -160,6 +175,10 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   // against Anthropic, so it costs an outbound request.
   api.use(createKeyRouter({ validate: opts.keyValidator, limit: heavyLimit }));
   api.use(createSessionRouter(store));
+  // GET /api/me and POST /api/auth/signout. Mounted in BOTH modes: the client
+  // asks who it is before it renders, and on the desktop "nobody" is the honest
+  // answer rather than a 404 the client has to special-case.
+  api.use(createMeRouter(opts.oauth));
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
   api.use(createModelsRouter(undefined, { limit: heavyLimit }));
   api.use(createUploadRouter({ limit: heavyLimit }));
@@ -181,6 +200,18 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   api.use(createChatsRouter());
   api.use(createThumbsRouter());
   app.use("/api", api);
+
+  // The sign-in redirects. HOSTED ONLY — on the desktop the owner is the user,
+  // there is nothing to sign in to, and an unmounted router answers the honest
+  // 404 rather than a route that could never work.
+  if (isHosted()) {
+    const auth = express.Router();
+    auth.use(noStore());
+    auth.use(sessionMw);
+    auth.use(apiLimit);
+    auth.use(createAuthRouter(opts.oauth));
+    app.use("/auth", auth);
+  }
 
   app.get("/healthz", (_req: Request, res: Response) => res.json({ ok: true }));
 

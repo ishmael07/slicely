@@ -30,7 +30,7 @@
 // single-process deployment; a multi-instance deployment would need a shared
 // store (Redis, a database, sticky sessions) — out of scope for P1.
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep, isAbsolute } from "node:path";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
@@ -187,6 +187,10 @@ export interface SessionRecord {
   /** Id of the conversation being added to. Chats live on disk (see chats.ts);
    *  this is just which one new turns belong to. */
   activeChatId?: string;
+  /** The account this browser signed in as, when it has (hosted mode only).
+   *  Mirrored to `<session>/account.json` so it survives a deploy — see
+   *  `bindAccountToSession`. */
+  accountId?: string;
 }
 
 /** True when `target` resolves to a path inside (or equal to) `root`. Used
@@ -898,6 +902,63 @@ export function clearSessionCookie(res: Response): void {
   res.setHeader("Set-Cookie", `${cookieName()}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`);
 }
 
+// ── Account binding (stub until accounts/core merges) ────────────────────────
+//
+// Task A5 owns this section and adds the half lane B does not need: rehydrating
+// a session record (and its `accountId`) from disk after a restart, classifying
+// `account.json` in PERSONAL_FILES, and the census line that goes with it. What
+// is here is the minimum lane B's routes call, with A5's frozen signatures, so
+// the merge is a replacement rather than a reconciliation.
+//
+// WHY THE FILE AT ALL: the session table is in memory, so without it a deploy
+// would sign every visitor out — and since a session directory is also where
+// their BYO key and transcripts live, "signed out" would mean "came back to a
+// workspace that no longer knows whose credit it is spending".
+
+const ACCOUNT_FILE = "account.json";
+
+/** Remember that this session signed in as `accountId`, in memory and on disk. */
+export function bindAccountToSession(session: SessionRecord, accountId: string): void {
+  session.accountId = accountId;
+  const path = join(session.dir, ACCOUNT_FILE);
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    // Atomic: a half-written account.json read after a crash would be a session
+    // bound to nothing, or worse to a truncated id.
+    writeFileSync(tmp, JSON.stringify({ version: 1, accountId }), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // The binding still holds for this process; the next restart just loses it.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* nothing to clean up */
+    }
+  }
+}
+
+/** Sign out: drop the binding and the file. The workspace, the transcripts and
+ *  any bring-your-own key stay exactly where they are — signing out of an
+ *  account is not deleting your data. */
+export function unbindAccountFromSession(session: SessionRecord): void {
+  delete session.accountId;
+  try {
+    rmSync(join(session.dir, ACCOUNT_FILE), { force: true });
+  } catch {
+    /* already gone */
+  }
+}
+
+/** The account id `dir` was bound to, or `undefined`. */
+export function readSessionAccountId(dir: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, ACCOUNT_FILE), "utf8")) as { accountId?: unknown };
+    return typeof parsed.accountId === "string" && parsed.accountId.length > 0 ? parsed.accountId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface SessionMiddlewareOptions {
   /** Brand-new sessions one address may mint per hour. Default 20. */
   mintPerHour?: number;
@@ -938,12 +999,34 @@ const MINTING_ROUTES = new Set([
   "POST /api/session",
 ]);
 
-/** True when `req` is one of the two calls that may create a workspace. HEAD is
+/**
+ * The parameterised members of the same set: the two OAuth routes.
+ *
+ * A visitor can arrive on a sign-in link before anything has minted them a
+ * session — a bookmark, a link in a message, a second tab — so `/auth/:p/start`
+ * and `/auth/:p/callback` have to be allowed to create the workspace the
+ * sign-in will be bound to. They cannot be listed literally, so they are
+ * matched; and the provider is matched against the CLOSED SET rather than
+ * `[a-z]+`, so this cannot be widened by inventing a provider name, and
+ * `/auth/google/bogus` is still 401 like anything else.
+ *
+ * Both spellings again, for the reason MINTING_ROUTES gives: mounted on the
+ * `/auth` router this middleware sees `/google/start`, and at the app level it
+ * would see `/auth/google/start`.
+ */
+const MINTING_PATTERNS = [
+  /^GET \/auth\/(?:google|github)\/(?:start|callback)$/,
+  /^GET \/(?:google|github)\/(?:start|callback)$/,
+];
+
+/** True when `req` is one of the calls that may create a workspace. HEAD is
  *  treated as GET, the way every other handler in this server does. */
 function mayMintSession(req: Request): boolean {
   const path = req.path.length > 1 ? req.path.replace(/\/+$/, "") : req.path;
   const method = req.method === "HEAD" ? "GET" : req.method;
-  return MINTING_ROUTES.has(`${method} ${path}`);
+  const signature = `${method} ${path}`;
+  if (MINTING_ROUTES.has(signature)) return true;
+  return MINTING_PATTERNS.some((re) => re.test(signature));
 }
 
 /**
