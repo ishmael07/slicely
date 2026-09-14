@@ -13,7 +13,7 @@
 // the emitted modules import nothing but each other.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
-import { getJson } from "./api.js";
+import { ApiError, errorMessage, getJson } from "./api.js";
 import type { SheetId } from "./ui.js";
 import { byId, closeSheets, initUi, make, onSheetChange, toggleSheet } from "./ui.js";
 import {
@@ -95,9 +95,19 @@ async function loadStatus(): Promise<void> {
     // earlier — so on first load the one blocker worth interrupting for was
     // shown and hidden in the same frame, and nobody ever saw it.
     if (!bannerEl.classList.contains("banner-action")) bannerEl.classList.add("hidden");
-  } catch {
+  } catch (err) {
     statusText.textContent = "unknown";
-    bannerEl.textContent = "Can't reach the Slicely server. Check your connection.";
+    // AN ANSWER IS NOT AN OUTAGE. The server replying 429 — "too many new
+    // sessions from this address", which a shared address or a couple of quick
+    // reloads can reach — used to be reported as "Can't reach the Slicely
+    // server. Check your connection.", sending the user to debug their own
+    // network over something that clears up by waiting a minute. An ApiError
+    // means the server answered and said why; only a network-level failure
+    // (fetch itself throwing) is an unreachable server.
+    bannerEl.textContent =
+      err instanceof ApiError
+        ? errorMessage(err, "The Slicely server refused that request.")
+        : "Can't reach the Slicely server. Check your connection.";
     bannerEl.classList.remove("hidden");
   }
 }
@@ -171,8 +181,15 @@ function isEmptyStateShowing(): boolean {
 }
 
 // /api/config decides what the first screen says — three onboarding steps with
-// the key card, or the plain invitation to type — so it is fetched before the
-// empty state is drawn. Everything else loads in parallel behind it.
+// the key card, or the plain invitation to type — so it is read before the empty
+// state is drawn.
+//
+// It is also the call that gives this browser its session cookie, and api.ts now
+// makes it exactly once and holds every other request until it answers (see the
+// boot gate there). So the three `void` calls at the bottom of this file still
+// start here, in this tick, but they no longer RACE the cookie: they queue
+// behind it. That is what stopped one page load from minting a workspace per
+// boot call.
 void (async () => {
   await loadConfig();
   showEmptyState();

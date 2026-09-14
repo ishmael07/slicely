@@ -52,6 +52,10 @@ const CODE_COPY: Record<string, string> = {
   key_rejected: "Your Anthropic key was rejected — update it in Settings.",
   key_invalid_format: "That doesn't look like a valid Anthropic API key.",
   rate_limited: "Slow down a little — try again in a few seconds",
+  // The page asked for something before it had a session (or after the server
+  // forgot it). api.ts boots again and retries once by itself, so this line is
+  // only reached if that second attempt failed too.
+  no_session: "Reload Slicely to start a new session.",
   slicer_busy: "PrusaSlicer is busy with another job — try again shortly.",
   slice_failed: "PrusaSlicer couldn't slice this. Try adjusting the settings, or check the model.",
   slice_timeout: "Slicing took too long and was stopped.",
@@ -91,13 +95,103 @@ export function errorMessage(err: unknown, fallback = "Something went wrong."): 
   return fallback;
 }
 
+// ── the boot gate ────────────────────────────────────────────────────────────
+//
+// EVERY request in this module waits for ONE `GET /api/config` to come back
+// first, because that is the call that gives this browser its session cookie.
+//
+// It used to be that the page's modules each fetched what they needed as soon
+// as they loaded — `/api/config`, `/api/status`, `/api/settings`,
+// `/api/printers`, `/api/printers/status`, `/api/sources`, … — all in the same
+// tick, all before any cookie existed. The server minted a workspace per
+// request (7–12 of them per page load, measured), the browser kept only the
+// last `Set-Cookie`, and everything done during those first seconds belonged to
+// a session the browser then abandoned: attach a model while the page was still
+// booting and "Delete my data" deleted somebody else's empty directory.
+//
+// The server now refuses to mint a workspace for anything but this one call
+// (401 `no_session`), so ordering it here is not politeness — it is the
+// contract. One promise, created on first use and shared by every caller, so
+// the calls that used to race now queue behind the cookie they all need.
+
+const CONFIG_URL = "/api/config";
+
+/** The in-flight (or settled) boot call. Cleared on failure so a later call
+ *  retries rather than inheriting a dead promise forever. */
+let booting: Promise<Record<string, unknown>> | undefined;
+
+/**
+ * The boot call's result, making it exactly once per page.
+ *
+ * Exported so the module that renders the first screen can READ the config it
+ * already paid for instead of asking for it a second time (see onboarding.ts's
+ * `loadConfig`), and so a caller outside this module — a file dropped on the
+ * page while it is still booting — can wait for the same promise.
+ */
+export function ready(): Promise<Record<string, unknown>> {
+  booting ??= bootstrap();
+  return booting;
+}
+
+/** Throw away the session we thought we had, so the next call boots again.
+ *  Used when the server tells us our cookie names nothing (`no_session`) —
+ *  which is what a server restart looks like from here, since the session table
+ *  is in memory. */
+export function resetSession(): void {
+  booting = undefined;
+}
+
+async function bootstrap(): Promise<Record<string, unknown>> {
+  try {
+    const resp = await fetch(CONFIG_URL);
+    const data = await readBody(resp);
+    if (!resp.ok) fail(CONFIG_URL, resp, data as WireError);
+    return data;
+  } catch (err) {
+    // A failed boot is not a permanent verdict: the network comes back, and a
+    // 429 from the per-IP mint cap refills. Let the next caller try again.
+    booting = undefined;
+    throw err;
+  }
+}
+
+/**
+ * One request, after the boot call, retried once if the server says our session
+ * is gone.
+ *
+ * `perform` is called with no arguments and must build the request fresh each
+ * time — a retry cannot reuse a consumed `Response`, and a `FormData` body is
+ * safe to send twice only because nothing has read it yet.
+ */
+async function withSession(
+  perform: () => Promise<Response>,
+): Promise<{ resp: Response; body: Record<string, unknown> }> {
+  // The boot call's own failure IS this request's failure — a 429 from the
+  // per-IP mint cap, or the network being down — and it arrives with its `code`
+  // intact so the UI can tell those two apart (see errorMessage / CODE_COPY).
+  await ready();
+  let resp = await perform();
+  let body = await readBody(resp);
+  if (resp.status === 401 && (body as WireError).code === "no_session") {
+    // Our cookie names a session this server no longer has (it restarted, or
+    // the session was swept). Boot again, once, and repeat the request — the
+    // alternative is telling the user to reload a page that would work.
+    resetSession();
+    await ready();
+    resp = await perform();
+    body = await readBody(resp);
+  }
+  return { resp, body };
+}
+
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const resp = await fetch(url, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body ?? {}),
-  });
-  const data = await readBody(resp);
+  const { resp, body: data } = await withSession(() =>
+    fetch(url, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body ?? {}),
+    }),
+  );
   if (!resp.ok) fail(url, resp, data as WireError);
   return data as T;
 }
@@ -121,17 +215,20 @@ export async function putJson<T>(url: string, body: unknown): Promise<T> {
 /** DELETE something. 204 (no body) is the normal answer, so nothing is parsed
  *  on success — but a failure body is still read for its `error`/`code`. */
 export async function del(url: string): Promise<void> {
-  const resp = await fetch(url, { method: "DELETE" });
-  if (!resp.ok) fail(url, resp, (await readBody(resp)) as WireError);
+  const { resp, body } = await withSession(() => fetch(url, { method: "DELETE" }));
+  if (!resp.ok) fail(url, resp, body as WireError);
 }
 
 /** Upload files as multipart/form-data. Kept here so the one place that knows
  *  about wire errors also owns the only non-JSON request. */
 export async function postForm<T>(url: string, form: FormData): Promise<T> {
-  const resp = await fetch(url, { method: "POST", body: form });
-  const data = await readBody(resp);
-  if (!resp.ok) fail(url, resp, data as WireError);
-  return data as T;
+  // This is the call a file dropped on the page during boot takes, and the one
+  // that used to land in a session the browser abandoned a moment later: the
+  // upload was attributed to one of the boot storm's orphan workspaces, so the
+  // model survived "Delete my data". `withSession` makes it wait for the cookie.
+  const { resp, body } = await withSession(() => fetch(url, { method: "POST", body: form }));
+  if (!resp.ok) fail(url, resp, body as WireError);
+  return body as T;
 }
 
 /** Read a `data: {...}\n\n` SSE stream off a POST response body — the
@@ -147,6 +244,10 @@ export async function streamSse(
   onEvent: (data: Record<string, unknown>) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  // The same boot gate as every other call. Not routed through `withSession`'s
+  // retry: a chat turn or a job run is not safe to send twice, and a stream is
+  // read from the response this function must keep hold of.
+  await ready();
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

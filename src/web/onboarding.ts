@@ -11,7 +11,7 @@
 // The client only ever sees `{ hasKey, keyHint }` — the key itself goes out in
 // one PUT body and is never read back, never logged, never in a URL.
 // ─────────────────────────────────────────────────────────────────────────────
-import { ApiError, del, getJson, putJson } from "./api.js";
+import { ApiError, del, putJson, ready } from "./api.js";
 import { externalLink, make, toast } from "./ui.js";
 
 export interface AppConfig {
@@ -75,9 +75,17 @@ export function configLoaded(): boolean {
   return loaded;
 }
 
+/**
+ * Read the config the boot call already fetched.
+ *
+ * `ready()` IS `GET /api/config` — the one request api.ts lets out before any
+ * other, because it is what gives this browser its session cookie. Fetching it
+ * again here would be a second call for bytes we already have (and, on a first
+ * load, a second workspace on any server that still minted one per request).
+ */
 export async function loadConfig(): Promise<AppConfig> {
   try {
-    current = await getJson<AppConfig>("/api/config");
+    current = (await ready()) as unknown as AppConfig;
     loaded = true;
   } catch {
     current = ASSUMED;

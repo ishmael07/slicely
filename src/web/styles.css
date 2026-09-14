@@ -881,12 +881,32 @@ details.thinking summary::-webkit-details-marker {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* Source on the left, author on the right. The gap is not decoration: without
+   it the two spans touched at a long author name and read as one word
+   ("PrintablesBy Thorin Oakenshield"). The author column is the one that gives
+   way — it truncates with an ellipsis rather than pushing the source off the
+   card or wrapping into the licence line below. */
 .card .sub {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   font-size: 11px;
   color: var(--text-faint);
   text-transform: capitalize;
+}
+.card .sub .src {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.card .sub .by {
+  /* `min-width: 0` is what lets a flex item shrink below its text's width —
+     without it `text-overflow` never fires inside a flex row. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 .card .lic {
   font-size: 11px;

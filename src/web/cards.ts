@@ -171,9 +171,18 @@ export function buildCard(m: CardLike, onImport: (m: CardLike) => void): HTMLEle
 
   const meta = make("div", "meta");
   meta.appendChild(make("div", "title", m.title));
+  // Two columns with their own classes, because they behave differently when
+  // the card is 190 px wide and the author's name is "Thorin Oakenshield": the
+  // source is short and must stay legible, the author gets whatever is left and
+  // is ellipsised. Unclassed spans with `justify-content: space-between` and no
+  // gap ran together into "PrintablesBy Thorin Oakenshield".
   const sub = make("div", "sub");
-  sub.appendChild(make("span", "", m.source));
-  sub.appendChild(make("span", "", m.creator ? `by ${m.creator}` : "open-source"));
+  sub.appendChild(make("span", "src", m.source));
+  const by = make("span", "by", m.creator ? `by ${m.creator}` : "open-source");
+  // The full name is still available to anyone who wants it, since the visible
+  // text may be cut short.
+  if (m.creator) by.title = `by ${m.creator}`;
+  sub.appendChild(by);
   meta.appendChild(sub);
   if (m.printability) {
     meta.appendChild(make("div", "score", `Printability ${Math.round(m.printability.score)}`));
