@@ -2377,6 +2377,39 @@ button.menu-item:disabled {
   color: var(--text);
 }
 
+/* ── The end of the free credit ─────────────────────────────────────────────
+   Not a failure, so not the red card: a free trial finishing is an ordinary
+   thing, and the two ways on from it are what the card is for. Same panel and
+   border as the connect card, so it reads as part of the app rather than as
+   something that went wrong. */
+.credit-card {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(100%, 560px);
+  padding: var(--sp-2);
+  border: 0.5px solid var(--border-bright);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.credit-title {
+  font-size: var(--fs-h);
+  font-weight: 650;
+  color: var(--text);
+}
+.credit-body {
+  font-size: var(--fs);
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.credit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: 4px;
+}
+
 /* Two equal buttons, not two stacked cards: which provider you use is a choice,
    not two things to read. */
 .provider-choice {

@@ -14,7 +14,7 @@
 // type, like every other button here.
 // ─────────────────────────────────────────────────────────────────────────────
 import { account, errorMessage, postJson, refreshAccount, setAccount } from "./api.js";
-import { config } from "./onboarding.js";
+import { buildConnectCard, config } from "./onboarding.js";
 import { byId, make, menu, toast } from "./ui.js";
 
 // ── signing in ───────────────────────────────────────────────────────────────
@@ -49,6 +49,10 @@ function creditWords(cents: number): string {
 export function buildSigninBlock(onUseOwnKey: () => void): HTMLElement | undefined {
   const cfg = config();
   if (!cfg.accountsEnabled || cfg.signinProviders.length === 0) return undefined;
+  // Already signed in — even with the credit spent, there is nothing to sign in
+  // to, and "Sign in to start" would be nonsense. The caller falls back to the
+  // key card, which is the one thing left to do.
+  if (account().signedIn) return undefined;
 
   const block = make("div", "signin");
   const free = cfg.freeTier;
@@ -218,6 +222,92 @@ export function initAccount(d: AccountDeps): AccountApi {
       await refreshAccount();
     },
   };
+}
+
+// ── the credit states, in the transcript ─────────────────────────────────────
+//
+// Two endings need a card rather than a line: the credit running out, and the
+// day's shared budget running out. Both are calm — nothing broke, a free trial
+// finished — so they are the app's ordinary card, not the red one a failure
+// gets, and both offer the same two ways forward.
+
+export type CreditState = "credit_exhausted" | "free_tier_paused";
+
+const CREDIT_COPY: Record<CreditState, { title: string; body: string }> = {
+  credit_exhausted: {
+    title: "You've used your free credit.",
+    body: "Add your own API key to keep going — your provider bills you directly, usually a few cents a session. Or join the waitlist for a paid plan.",
+  },
+  free_tier_paused: {
+    title: "Free usage is busy today.",
+    body: "Slicely's shared credit for today is used up. Add your own API key to keep going, or come back tomorrow.",
+  },
+};
+
+export interface CreditCardDeps {
+  onAddKey(): void;
+  onWaitlist(): void;
+}
+
+/** The card the transcript shows when free credit can pay for nothing more. */
+export function buildCreditCard(state: CreditState, on: CreditCardDeps): HTMLElement {
+  const copy = CREDIT_COPY[state];
+  const card = make("div", "credit-card");
+  card.setAttribute("role", "group");
+  card.append(make("h3", "credit-title", copy.title), make("p", "credit-body", copy.body));
+
+  const actions = make("div", "credit-actions");
+  const key = make("button", "btn primary", "Add my own key");
+  key.type = "button";
+  key.addEventListener("click", () => on.onAddKey());
+  const list = make("button", "btn", "Join the waitlist");
+  list.type = "button";
+  list.addEventListener("click", () => on.onWaitlist());
+  actions.append(key, list);
+  card.appendChild(actions);
+  return card;
+}
+
+/**
+ * The card for a turn the server refused because nobody is signed in.
+ *
+ * It must not pick a provider on the user's behalf, so it is the first-run card
+ * itself — both buttons, and the link to a key of their own — rather than a
+ * single "Sign in" button that would quietly choose Google.
+ */
+export function buildSigninCard(): HTMLElement {
+  return buildConnectCard();
+}
+
+/** A `credit` frame at the end of a metered turn. No fetch: the server has just
+ *  told us the new balance, so the pill repaints from that. */
+export function applyCreditEvent(e: {
+  balanceMicros?: number;
+  balanceLabel?: string;
+  exhausted?: boolean;
+}): void {
+  const me = account();
+  if (!me.signedIn || !me.account) return;
+  setAccount({
+    signedIn: true,
+    account: {
+      ...me.account,
+      balanceMicros: e.balanceMicros ?? me.account.balanceMicros,
+      balanceLabel: e.balanceLabel ?? me.account.balanceLabel,
+      exhausted: e.exhausted ?? me.account.exhausted,
+    },
+  });
+}
+
+/** A refusal that says the credit is gone is also news about the balance — the
+ *  pill and the composer line should not still be promising 2 cents. */
+export function markExhausted(): void {
+  const me = account();
+  if (!me.signedIn || !me.account || me.account.exhausted) return;
+  setAccount({
+    signedIn: true,
+    account: { ...me.account, balanceMicros: 0, balanceLabel: "$0.00", exhausted: true },
+  });
 }
 
 // ── what the rest of the client asks about the account ───────────────────────

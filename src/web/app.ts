@@ -13,10 +13,10 @@
 // the emitted modules import nothing but each other.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { SlicerStatus } from "../shared/types";
-import { ApiError, errorMessage, getJson, onAccountChange } from "./api.js";
-import { initAccount, renderAccountPill } from "./account.js";
+import { ApiError, codeMessage, errorMessage, getJson, onAccountChange } from "./api.js";
+import { hasFreeCredit, initAccount, readAuthErrorFromHash, renderAccountPill } from "./account.js";
 import type { SheetId } from "./ui.js";
-import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toggleSheet } from "./ui.js";
+import { byId, closeSheets, initUi, make, onSheetChange, openSheet, toast, toggleSheet } from "./ui.js";
 import {
   clearTranscript,
   initChat,
@@ -136,12 +136,21 @@ initChat({
   mountSend: attachSendSlot,
   onStatus: applyStatus,
   buildEmptyState: () => buildEmptyState((prompt) => void sendInstruction(prompt, prompt)),
-  canChat: hasKey,
+  // A key of their own, OR free credit that hasn't run out. Either one pays for
+  // the next message.
+  canChat: () => hasKey() || hasFreeCredit(),
   onConnect: openAiSettings,
+  openWaitlist,
   // A turn that reported a missing or rejected key knows something this page
   // does not, so the account is re-read rather than guessed at.
   onKeyProblem: () => void refreshConfig(),
 });
+
+/** The waitlist for a paid plan. The sheet it opens lands in the next task;
+ *  until then the button says what it will do rather than doing nothing. */
+function openWaitlist(): void {
+  toast("Paid plans are coming soon.", "info");
+}
 
 /** Open Settings on the one section that connects a provider, and put the
  *  keyboard on it — where the composer's "Connect" link goes. */
@@ -208,6 +217,12 @@ function isEmptyStateShowing(): boolean {
 // behind it. That is what stopped one page load from minting a workspace per
 // boot call.
 void (async () => {
+  // A sign-in that failed comes back as /#auth_error=<code>, because the OAuth
+  // callback has no page of its own to say it on. Said once, then wiped from
+  // the URL so a reload doesn't repeat it.
+  const authError = readAuthErrorFromHash();
+  if (authError) toast(codeMessage(authError) ?? "That sign-in didn't complete. Try again.", "error");
+
   await loadConfig();
   // WHO before WHAT: the first screen is a different screen for somebody with
   // free credit than for a stranger, so the account is read before anything is
