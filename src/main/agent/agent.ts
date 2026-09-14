@@ -13,6 +13,7 @@ import { getSettings, getPreferences } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
 import { SYSTEM_PROMPT } from "./prompt";
+import { capHistory } from "./history";
 import { stripPaths, toWire } from "../../server/errors";
 import { fromAnthropicHistory } from "./provider-anthropic";
 import {
@@ -281,7 +282,14 @@ export class SlicelyAgent {
             effort,
             system: SYSTEM_PROMPT,
             tools: TOOLS,
-            messages: this.history,
+            // CAPPED FOR THE WIRE ONLY. `this.history` stays complete, because it
+            // is what `exportHistory()` writes to the user's saved chat and what
+            // their transcript is rebuilt from — losing a turn from THAT to save
+            // a few tokens would be trading the product for the bill. What the
+            // provider sees is a copy with the oldest turns dropped and older
+            // tool_result bodies stubbed; no block is ever removed, so no call is
+            // ever orphaned (see history.ts).
+            messages: capHistory(this.history),
             maxOutputTokens: provider.maxOutputTokens,
             signal: this.inFlight.signal,
             cacheKey,
