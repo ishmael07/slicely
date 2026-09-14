@@ -10,19 +10,13 @@ import type {
 } from "./sourcing";
 import type {
   PrinterConnection,
-  PrinterSecrets,
   PrinterStatus,
   PrinterTestResult,
   PrinterTransport,
   DiscoveredPrinter,
   SendJobResult,
 } from "./printers";
-import type {
-  PrintJob,
-  JobEvent,
-  JobPlanOptions,
-  OrientationResult,
-} from "./jobs";
+import type { PrintJob, JobEvent, OrientationResult } from "./jobs";
 
 export type {
   SourceId,
@@ -249,63 +243,31 @@ export type AgentEvent =
   | { type: "error"; message: string; code?: string }
   | { type: "done" };
 
-/** Channel names used across the preload bridge. */
+/**
+ * Channel names used across the preload bridge.
+ *
+ * This list is SHORT on purpose (Task E2). It used to mirror the whole product
+ * — chat, settings, printers, sourcing, jobs — because the Mac app had its own
+ * renderer talking to the main process over IPC while the web client talked to
+ * the server over HTTP: two transports for one API, and every feature written
+ * twice. The window now loads the web client, so the API is HTTP for everybody
+ * and IPC is left with only what a browser genuinely cannot do: reach into
+ * macOS. Each channel takes an OPAQUE TOKEN, never a filesystem path — main
+ * resolves it against the session's own G-code registry, so the page can only
+ * ever name files the server already gave it.
+ */
 export const IPC = {
-  sendMessage: "slicely:sendMessage",
-  agentEvent: "slicely:agentEvent",
-  cancel: "slicely:cancel",
-  getStatus: "slicely:getStatus",
-  openExternal: "slicely:openExternal",
-  importModel: "slicely:importModel",
-  resizeWindow: "slicely:resizeWindow",
-  getConfigState: "slicely:getConfigState",
-  revealPath: "slicely:revealPath",
-  openSlicer: "slicely:openSlicer",
+  /** Open a sliced .gcode in PrusaSlicer's G-code viewer. */
   openGcode: "slicely:openGcode",
-  getSettings: "slicely:getSettings",
-  updateSettings: "slicely:updateSettings",
-  updatePreferences: "slicely:updatePreferences",
-  uploadFiles: "slicely:uploadFiles",
-  pickFile: "slicely:pickFile",
-
-  // ── v2: printers ──────────────────────────────────────────────────────────
-  listPrinters: "slicely:listPrinters",
-  addPrinter: "slicely:addPrinter",
-  updatePrinter: "slicely:updatePrinter",
-  removePrinter: "slicely:removePrinter",
-  testPrinter: "slicely:testPrinter",
-  printerStatuses: "slicely:printerStatuses",
-  sendToPrinter: "slicely:sendToPrinter",
-  controlPrinter: "slicely:controlPrinter",
-  discoverPrinters: "slicely:discoverPrinters",
-  setActivePrinter: "slicely:setActivePrinter",
-  setAutoStart: "slicely:setAutoStart",
-  driverCatalog: "slicely:driverCatalog",
-  /** Push channel: printer status changed (polled in main, streamed to UI). */
-  printerEvent: "slicely:printerEvent",
-
-  // ── v2: sourcing ──────────────────────────────────────────────────────────
-  searchModels: "slicely:searchModels",
-  resolveUrl: "slicely:resolveUrl",
-  sourceAvailability: "slicely:sourceAvailability",
-
-  // ── v2: jobs ──────────────────────────────────────────────────────────────
-  planJob: "slicely:planJob",
-  runJob: "slicely:runJob",
-  listJobs: "slicely:listJobs",
-  getJob: "slicely:getJob",
-  cancelJob: "slicely:cancelJob",
-  /** Push channel: streamed JobEvents while a job slices. */
-  jobEvent: "slicely:jobEvent",
+  /** Reveal a sliced .gcode in Finder. */
+  revealGcode: "slicely:revealGcode",
+  /** Open the file in the editable PrusaSlicer editor, pre-sliced. */
+  openInSlicer: "slicely:openInSlicer",
+  /** Native open dialog for mesh/CAD files; resolves to absolute paths. */
+  pickFiles: "slicely:pickFiles",
+  /** Synchronous: the app's version, for the About line. */
+  version: "slicely:version",
 } as const;
-
-/** Reports which credentials are present, so the UI can warn the user. */
-export interface ConfigState {
-  hasAnthropicKey: boolean;
-  hasThingiverseToken: boolean;
-  model: string;
-  workdir: string;
-}
 
 /** A reasoning-effort tier the user can pick. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -451,118 +413,47 @@ export const ACCEPTED_UPLOAD_EXTS = [
 ] as const;
 
 /**
- * The API surface the preload bridge exposes to the renderer as
- * `window.slicely`. Declared here (dependency-free) so both the preload
- * (Node/Electron context) and the renderer (browser context) can reference it
- * without the renderer pulling in Electron types.
+ * The API surface the preload bridge exposes to the page as `window.slicely`.
+ *
+ * NATIVE-ONLY, AND TOKENS NOT PATHS (Task E2). Everything the page can also do
+ * over HTTP it does over HTTP — this is only the handful of actions that need a
+ * Mac: the PrusaSlicer GUI, Finder, the native file dialog, and the real
+ * filesystem paths of dropped files (which the browser deliberately hides).
+ *
+ * The three "open this file" calls take the same opaque G-code token the server
+ * already handed the page (`GET /api/gcode/:id`), not a path. The page never
+ * learns where anything is on disk, and a compromised page cannot ask macOS to
+ * open an arbitrary file: main looks the token up in this session's own
+ * registry, and anything that isn't in it does nothing.
+ *
+ * Declared here (dependency-free) so both the preload (Electron context) and
+ * the client (browser context) can reference it. Its absence is how the client
+ * knows it is in a browser: `window.slicely` exists nowhere else, which is what
+ * gates the native buttons and the desktop header (see src/web).
  */
-export interface SlicelyApi {
-  sendMessage(message: string): Promise<void>;
-  cancel(): void;
-  onAgentEvent(handler: (event: AgentEvent) => void): () => void;
-  getStatus(): Promise<SlicerStatus>;
-  getConfigState(): Promise<ConfigState>;
-  openExternal(url: string): Promise<void>;
-  /** Open one or more model/gcode files in the PrusaSlicer GUI. Passing
-   *  multiple files loads them onto one auto-arranged plate. */
-  openInSlicer(path: string | string[]): Promise<void>;
-  /** Reveal a local file (e.g. sliced G-code) in Finder. */
-  revealPath(path: string): Promise<void>;
-  /** Open one or more MODELS in the regular PrusaSlicer editor (multiple = one
-   *  arranged plate), ready to slice. NOT for G-code — use openGcode for that. */
-  openSlicer(path: string | string[]): Promise<void>;
-  /** Open an already-sliced .gcode in PrusaSlicer's G-code viewer (the finished
-   *  toolpath preview / export view). Use only when the user wants the finished
-   *  result, not the editable editor. */
-  openGcode(gcodePath: string): Promise<void>;
-  /** Get the current model/effort selection and the available catalog. */
-  getSettings(): Promise<SettingsState>;
-  /** Persist a model/effort change; returns the updated selection. */
-  updateSettings(patch: Partial<UserSettings>): Promise<SettingsState>;
-  /** Persist a change to the user's printing preferences (printer + slice
-   *  defaults). Returns the full updated settings state. */
-  updatePreferences(patch: Partial<PrintPreferences>): Promise<SettingsState>;
-  /** Open a native file picker for CAD/mesh files; returns accepted uploads. */
-  pickFile(): Promise<UploadResult[]>;
-  /** Accept dropped files by absolute path; returns accepted uploads. */
-  uploadFiles(paths: string[]): Promise<UploadResult[]>;
-  resizeWindow(height: number): void;
+export interface SlicelyDesktopApi {
+  /** Open a sliced G-code file in PrusaSlicer's G-code viewer. */
+  openGcode(token: string): Promise<void>;
+  /** Reveal a sliced G-code file in Finder. */
+  revealGcode(token: string): Promise<void>;
+  /** Open the file in the editable PrusaSlicer editor, with the last slice's
+   *  settings loaded and background processing done, so Preview is ready. */
+  openInSlicer(token: string): Promise<void>;
+  /** Native open dialog, filtered to the accepted mesh/CAD extensions.
+   *  Resolves to absolute paths (empty when cancelled) — hand them to
+   *  `POST /api/attach-local`, which is the only thing that may read them. */
+  pickFiles(): Promise<string[]>;
+  /** The real on-disk paths of dropped `File` objects — the one thing a browser
+   *  cannot tell you about a file the user just dropped. Synchronous, because
+   *  it must run inside the drop handler while the DataTransfer is alive. */
+  pathsForDrop(files: File[]): string[];
+  /** The app's version, for the About line. */
+  version(): string;
+}
 
-  // ── v2: printers ───────────────────────────────────────────────────────────
-  /** Every configured printer. Secrets are stripped in the main process and
-   *  never cross this bridge. */
-  listPrinters(): Promise<PrinterConnection[]>;
-  /** Add a printer; the main process probes it and returns the test result. */
-  addPrinter(
-    input: Omit<PrinterConnection, "id"> & PrinterSecrets,
-  ): Promise<{ printer: PrinterConnection; test: PrinterTestResult }>;
-  updatePrinter(
-    id: string,
-    patch: Partial<PrinterConnection & PrinterSecrets>,
-  ): Promise<PrinterConnection>;
-  removePrinter(id: string): Promise<void>;
-  testPrinter(id: string): Promise<PrinterTestResult>;
-  /** Live status for every configured printer. */
-  printerStatuses(): Promise<PrinterStatus[]>;
-  /**
-   * Upload G-code to a printer. `start` is a REQUEST, not a guarantee: the main
-   * process only honours it when the user has separately armed auto-start for
-   * that printer (see setAutoStart). Otherwise the file is uploaded and queued
-   * and `result.started` comes back false.
-   */
-  sendToPrinter(
-    id: string,
-    gcodePath: string,
-    start?: boolean,
-  ): Promise<SendJobResult>;
-  controlPrinter(
-    id: string,
-    action: "pause" | "resume" | "cancel",
-  ): Promise<SendJobResult>;
-  /** Scan the LAN for printers (mDNS + port probe). */
-  discoverPrinters(timeoutMs?: number): Promise<DiscoveredPrinter[]>;
-  setActivePrinter(id: string | undefined): Promise<void>;
-  /** Arm/disarm unattended auto-start for one printer. Off by default: a print
-   *  started on an uncleared bed is a real fire risk. */
-  setAutoStart(id: string, armed: boolean): Promise<void>;
-  /** Transports Slicely can speak, for the "add printer" form. */
-  driverCatalog(): Promise<
-    Array<{
-      transport: PrinterTransport;
-      label: string;
-      defaultPort: number;
-      requiredSecrets: string[];
-    }>
-  >;
-  /** Subscribe to pushed printer-status updates. Returns an unsubscribe fn. */
-  onPrinterEvent(
-    handler: (payload: {
-      printers: PrinterConnection[];
-      statuses: PrinterStatus[];
-    }) => void,
-  ): () => void;
-
-  // ── v2: sourcing ───────────────────────────────────────────────────────────
-  /** Federated search across every available source. */
-  searchModels(query: string): Promise<SearchOutcome>;
-  /** Resolve a pasted URL (model page, raw file, repo, zip) to something
-   *  downloadable. */
-  resolveUrl(url: string): Promise<UrlResolution>;
-  /** Which sources are usable right now, and what is blocking the rest. */
-  sourceAvailability(): Promise<SourceAvailability[]>;
-
-  // ── v2: jobs ───────────────────────────────────────────────────────────────
-  /** Plan a multi-part job: orient, colour, pack across plates. */
-  planJob(
-    parts: Array<{ path: string; copies?: number; colourHex?: string }>,
-    opts: JobPlanOptions,
-  ): Promise<PrintJob>;
-  /** Slice every plate of a planned job, in order. Progress streams via
-   *  onJobEvent. */
-  runJob(jobId: string): Promise<PrintJob>;
-  listJobs(): Promise<PrintJob[]>;
-  getJob(id: string): Promise<PrintJob | undefined>;
-  cancelJob(id: string): Promise<void>;
-  /** Subscribe to streamed job progress. Returns an unsubscribe fn. */
-  onJobEvent(handler: (event: JobEvent) => void): () => void;
+declare global {
+  interface Window {
+    /** The preload bridge. Present in the Mac app and nowhere else. */
+    slicely?: SlicelyDesktopApi;
+  }
 }

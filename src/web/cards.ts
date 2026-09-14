@@ -365,6 +365,21 @@ export function renderMetrics(m: SliceMetrics, gcodeId: string | undefined, moun
     const dl = make("a", "btn small", "Download G-code");
     dl.href = `/api/gcode/${encodeURIComponent(gcodeId)}`;
     actions.appendChild(dl);
+    // Only in the Mac app: there the file is on THIS machine, so PrusaSlicer and
+    // Finder can be pointed at it. `window.slicely` exists nowhere else, and the
+    // bridge takes the same opaque token — never a path (Task E2).
+    const native = window.slicely;
+    if (native) {
+      const open = make("button", "btn small", "Open in PrusaSlicer");
+      open.type = "button";
+      open.onclick = () => void native.openGcode(gcodeId);
+      actions.appendChild(open);
+
+      const reveal = make("button", "btn small", "Reveal in Finder");
+      reveal.type = "button";
+      reveal.onclick = () => void native.revealGcode(gcodeId);
+      actions.appendChild(reveal);
+    }
     panel.appendChild(actions);
   }
 

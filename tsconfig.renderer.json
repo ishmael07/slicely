@@ -1,9 +1,14 @@
 {
-  // The renderer runs in a browser (Chromium) context, NOT Node. It is compiled
-  // separately as an ES module so the emitted JS has no CommonJS `exports`/
-  // `require` (which throw in a plain browser). All its imports are `import type`
-  // and erase at compile time, so the output is dependency-free and loads via
-  // <script type="module">.
+  // The browser client. It runs in a browser (Chromium) context, NOT Node, so
+  // it is compiled separately as an ES module and the emitted JS has no
+  // CommonJS `exports`/`require` (which throw in a plain browser). Its imports
+  // from src/shared are all `import type` and erase at compile time, so the
+  // output is dependency-free and loads via <script type="module">.
+  //
+  // `src/renderer/**` is gone from `include` as of Task E2: the old Electron
+  // renderer compiled against the wide `SlicelyApi` IPC surface that task
+  // replaced with the narrow native-only bridge. The files themselves are
+  // removed in Task E3 (which also drops the build's copy step for them).
   "compilerOptions": {
     "target": "ES2021",
     "module": "ES2020",
@@ -20,5 +25,5 @@
     "noUnusedParameters": true,
     "types": []
   },
-  "include": ["src/renderer/**/*.ts", "src/web/**/*.ts", "src/shared/**/*.ts"]
+  "include": ["src/web/**/*.ts", "src/shared/**/*.ts"]
 }

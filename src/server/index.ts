@@ -39,6 +39,7 @@ import { createThumbsRouter } from "./routes/thumbs";
 import { createPrintersRouter } from "./routes/printers";
 import { createJobsRouter } from "./routes/jobs";
 import { createConfigRouter } from "./routes/config";
+import { createLocalRouter } from "./routes/local";
 import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
 import { loadPrintersApi } from "./facades";
@@ -147,6 +148,10 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
   api.use(createModelsRouter(undefined, { limit: heavyLimit }));
   api.use(createUploadRouter({ limit: heavyLimit }));
+  // Desktop's by-path alternative to /api/upload. Mounted in both modes so the
+  // hosted server answers the honest 403 rather than a 404 that reads like a
+  // deployment mistake.
+  api.use(createLocalRouter({ limit: heavyLimit }));
   api.use(createSliceRouter({ limit: heavyLimit }));
   const printersApi = loadPrintersApi();
   if (opts.printerTestOverride) {

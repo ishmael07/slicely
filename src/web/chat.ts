@@ -581,9 +581,41 @@ function stageResults(results: UploadResult[]): void {
   inputEl.focus();
 }
 
+/** Attach files that are already on this machine's disk by path — the Mac app
+ *  only (see POST /api/attach-local). Same answer shape as the upload, so the
+ *  staging that follows is the same code. */
+async function attachLocalPaths(paths: string[]): Promise<void> {
+  try {
+    const data = await postJson<{ uploaded?: UploadResult[]; rejected?: string[] }>(
+      "/api/attach-local",
+      { paths },
+    );
+    stageResults(data.uploaded ?? []);
+    if (data.rejected && data.rejected.length > 0) {
+      renderError(`Not accepted: ${data.rejected.join(", ")}`);
+    }
+  } catch (err) {
+    renderError((err as Error).message || "Couldn't attach those files", () => void attachLocalPaths(paths));
+  }
+}
+
 async function uploadFiles(files: FileList | File[]): Promise<void> {
   const list = Array.from(files);
   if (list.length === 0) return;
+
+  // In the Mac app the file is already on the server's own disk: the preload can
+  // tell us where, so the server copies it in instead of the page re-uploading
+  // bytes that never needed to move. A browser has no such bridge and takes the
+  // multipart path below.
+  const native = window.slicely;
+  if (native) {
+    const paths = native.pathsForDrop(list);
+    if (paths.length === list.length) {
+      await attachLocalPaths(paths);
+      return;
+    }
+  }
+
   const fd = new FormData();
   for (const f of list) fd.append("files", f, f.name);
 
@@ -876,7 +908,18 @@ export function initChat(d: ChatDeps): ChatApi {
   sendBtn.addEventListener("click", submitComposer);
   stopBtn.addEventListener("click", cancelTurn);
 
-  attachBtn.addEventListener("click", () => fileInput.click());
+  // The Mac app opens the NATIVE picker (which can see the whole filesystem and
+  // hands back real paths); a browser opens its own <input type="file">.
+  attachBtn.addEventListener("click", () => {
+    const native = window.slicely;
+    if (!native) {
+      fileInput.click();
+      return;
+    }
+    void native.pickFiles().then((paths) => {
+      if (paths.length > 0) void attachLocalPaths(paths);
+    });
+  });
   fileInput.addEventListener("change", () => {
     if (fileInput.files) void uploadFiles(fileInput.files);
     fileInput.value = "";

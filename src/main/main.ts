@@ -15,13 +15,20 @@
 //   • and the handful of native actions the preload bridge exposes (Task E2).
 // ─────────────────────────────────────────────────────────────────────────────
 import "./desktop-env"; // FIRST: sets SLICELY_MODE / SLICELY_WORKDIR (see the file)
-import { app, BrowserWindow, dialog, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { startServer } from "../server/index";
 import { CSP_STRING } from "../server/security";
 import type { SessionStore } from "../server/session";
+import { IPC } from "../shared/types";
 import { sessionState } from "./agent/state";
+import {
+  openGcodeInGui,
+  openModelInEditorSliced,
+  writeEffectiveConfig,
+} from "./prusaslicer";
+import { pickerExtensions } from "./uploads";
 
 let win: BrowserWindow | null = null;
 /** Set once the server is listening; every window loads exactly this origin. */
@@ -80,6 +87,79 @@ function createWindow(url: string): void {
   void win.loadURL(url);
 }
 
+// ── The native bridge (Task E2) ──────────────────────────────────────────────
+//
+// Five channels, and every one of them resolves what it is given through the
+// session's own G-code registry rather than trusting it as a path. A token the
+// page invents resolves to nothing, and nothing is what happens.
+
+/** The file a G-code token names, or `undefined` if this session never issued
+ *  that token. The registry is a Map, so there is no path to traverse and no
+ *  string to sanitise: either the server handed the page this id, or it didn't. */
+function resolveToken(token: unknown): string | undefined {
+  if (typeof token !== "string" || token.length === 0) return undefined;
+  return store?.desktopSession().gcodeFiles.get(token)?.path;
+}
+
+/**
+ * Open one or more MODELS in the editable PrusaSlicer editor, pre-sliced (so
+ * the toolpaths are ready under Preview without the user pressing Slice), with
+ * the most recent slice's own settings loaded where we have them.
+ *
+ * Best-effort on the config: a failure there falls back to opening the bare
+ * model, which is still the thing the user asked for.
+ */
+async function openInEditor(path: string): Promise<void> {
+  let guiConfig: string | undefined;
+  if (sessionState.lastSliceParams) {
+    try {
+      guiConfig = await writeEffectiveConfig(sessionState.lastSliceParams, sessionState.lastConfigIni);
+    } catch {
+      /* fall back to opening the bare model */
+    }
+  }
+  await openModelInEditorSliced(path, guiConfig);
+}
+
+function registerNativeIpc(): void {
+  // Synchronous, and answered even before a window exists: the preload reads it
+  // once at load time (see preload.ts).
+  ipcMain.on(IPC.version, (event) => {
+    event.returnValue = app.getVersion();
+  });
+
+  ipcMain.handle(IPC.openGcode, async (_e, token: unknown) => {
+    const path = resolveToken(token);
+    if (path) await openGcodeInGui(path);
+  });
+
+  ipcMain.handle(IPC.revealGcode, async (_e, token: unknown) => {
+    const path = resolveToken(token);
+    if (path) shell.showItemInFolder(path);
+  });
+
+  ipcMain.handle(IPC.openInSlicer, async (_e, token: unknown) => {
+    const path = resolveToken(token);
+    if (path) await openInEditor(path);
+  });
+
+  // The native open dialog. It returns PATHS, not uploads: the client posts them
+  // to /api/attach-local, which is the one place allowed to read a local file
+  // into the workspace (and which checks that the path is the user's own).
+  ipcMain.handle(IPC.pickFiles, async (): Promise<string[]> => {
+    if (!win) return [];
+    const result = await dialog.showOpenDialog(win, {
+      title: "Choose a 3D model to slice",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "3D models", extensions: pickerExtensions() },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+}
+
 async function boot(): Promise<void> {
   // A fresh secret per launch, held only in this process's memory and in the
   // window's cookie jar. See server/desktop-token.ts for what it's for.
@@ -120,6 +200,7 @@ async function boot(): Promise<void> {
 
 app.whenReady().then(async () => {
   try {
+    registerNativeIpc();
     await boot();
   } catch (err) {
     // Nothing useful can happen without the server: no window, no UI. Say so
