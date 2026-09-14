@@ -524,6 +524,42 @@ export interface SlicelyDesktopApi {
   pathsForDrop(files: File[]): string[];
 }
 
+// ── Accounts (Task A7 owns these; stub until accounts/core merges) ──────────
+//
+// The wire shapes lane B's `/api/me` and lane A's `/api/config` both speak.
+// Frozen verbatim in the plan (Task A7's Interfaces block), so lane A's copy and
+// this one are the same text and the merge can take either.
+
+/** One sign-in button. The order of the list is fixed (google, then github) so
+ *  the UI never reorders between renders. */
+export interface SigninProvider {
+  id: "google" | "github";
+  label: string;
+}
+
+/** Everything the client is told about a signed-in account — an email, a
+ *  monogram letter, four integers and two pre-formatted strings. Deliberately
+ *  NOT the provider identity, the provider user id, or anything about a key. */
+export interface AccountView {
+  email: string;
+  name?: string;
+  /** One uppercase letter, for the monogram. */
+  initial: string;
+  balanceMicros: number;
+  /** "$0.42" — formatted once, on the server, so two clients cannot disagree. */
+  balanceLabel: string;
+  grantedMicros: number;
+  grantedLabel: string;
+  chatsToday: number;
+  chatsPerDay: number;
+  exhausted: boolean;
+}
+
+export interface MeResponse {
+  signedIn: boolean;
+  account?: AccountView;
+}
+
 declare global {
   interface Window {
     /** The preload bridge. Present in the Mac app and nowhere else. */
