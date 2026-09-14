@@ -11,7 +11,7 @@ import type { Request, Response } from "express";
 import { loadPrintersApi } from "../facades";
 import type { PrintersApi } from "../facades";
 import { isMultiUser, isLanOnlyTransport } from "../security";
-import { sendError, stripPaths, WireError } from "../errors";
+import { sendError, sendScrubbed, WireError } from "../errors";
 import type { PrinterConnection, PrinterSecrets, PrinterTransport } from "../../shared/printers";
 
 export function createPrintersRouter(api: PrintersApi | undefined = loadPrintersApi()): Router {
@@ -19,7 +19,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
 
   if (!api) {
     router.use((_req, res) => {
-      res.status(503).json({ error: "Printer connections are not available on this server yet." });
+      sendError(res, new WireError(503, "Printer connections are not available on this server yet."));
     });
     return router;
   }
@@ -49,7 +49,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       return undefined;
     }
     if (printer) return printer;
-    res.status(404).json({ error: "No such printer.", code: "not_found" });
+    sendError(res, new WireError(404, "No such printer.", "not_found"));
     return undefined;
   }
 
@@ -62,15 +62,11 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
    *  generic complaint, with absolute paths scrubbed — no wire payload may
    *  carry a server path (spec §Error handling). */
   function fail(res: Response, err: unknown, fallback: string, status = 422): void {
-    if (err instanceof WireError) {
-      sendError(res, err);
+    if (err instanceof Error && !(err instanceof WireError) && /^printer not found/i.test(err.message)) {
+      sendError(res, new WireError(404, "No such printer.", "not_found"));
       return;
     }
-    if (err instanceof Error && /^printer not found/i.test(err.message)) {
-      res.status(404).json({ error: "No such printer.", code: "not_found" });
-      return;
-    }
-    res.status(status).json({ error: stripPaths((err as Error)?.message || fallback) });
+    sendScrubbed(res, err, fallback, status);
   }
 
   router.get("/printers", async (_req: Request, res: Response) => {
@@ -106,11 +102,14 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
   // treat "discover" as an :id.
   router.post("/printers/discover", async (req: Request, res: Response) => {
     if (isMultiUser()) {
-      res.status(403).json({
-        error:
+      sendError(
+        res,
+        new WireError(
+          403,
           "LAN discovery is disabled on a hosted/multi-user server — a datacenter's network isn't your printer's network. Add a cloud connection (Prusa Connect / Bambu Cloud) instead.",
-        code: "forbidden_in_hosted_mode",
-      });
+          "forbidden_in_hosted_mode",
+        ),
+      );
       return;
     }
     const raw = (req.body ?? {}).timeoutMs;
@@ -129,7 +128,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
       // as addressing one by id — and the façade throws for an unknown id,
       // which would otherwise surface as a 500 (or, unguarded, a crash).
       if (typeof id === "string" && !(await api.getPrinter(id))) {
-        res.status(404).json({ error: "No such printer.", code: "not_found" });
+        sendError(res, new WireError(404, "No such printer.", "not_found"));
         return;
       }
       await api.setActivePrinter(typeof id === "string" ? id : undefined);
@@ -143,7 +142,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     const body = (req.body ?? {}) as Record<string, unknown>;
     const transport = body.transport as PrinterTransport | undefined;
     if (!transport) {
-      res.status(400).json({ error: "transport is required" });
+      sendError(res, new WireError(400, "transport is required"));
       return;
     }
     // The folder transport writes to the machine Slicely runs on. On a hosted
@@ -152,13 +151,21 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     // message below, which would be confusing advice for a transport that has
     // no network at all.
     if (isMultiUser() && transport === "file") {
-      res.status(403).json({ error: "Saving to a folder only works in the Mac app.", code: "forbidden_in_hosted_mode" });
+      sendError(
+        res,
+        new WireError(403, "Saving to a folder only works in the Mac app.", "forbidden_in_hosted_mode"),
+      );
       return;
     }
     if (isMultiUser() && isLanOnlyTransport(transport)) {
-      res.status(400).json({
-        error: `"${transport}" requires being on the printer's own LAN, so it can't be added on a hosted server. Use a cloud transport (Prusa Connect or Bambu Cloud).`,
-      });
+      sendError(
+        res,
+        new WireError(
+          400,
+          `"${transport}" requires being on the printer's own LAN, so it can't be added on a hosted server. Use a cloud transport (Prusa Connect or Bambu Cloud).`,
+          "forbidden_in_hosted_mode",
+        ),
+      );
       return;
     }
     try {
@@ -173,7 +180,10 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
   router.patch("/printers/:id", async (req: Request, res: Response) => {
     const patch = (req.body ?? {}) as Record<string, unknown>;
     if (isMultiUser() && typeof patch.transport === "string" && isLanOnlyTransport(patch.transport as PrinterTransport)) {
-      res.status(400).json({ error: "LAN-only transports are disabled on a hosted server." });
+      sendError(
+        res,
+        new WireError(400, "LAN-only transports are disabled on a hosted server.", "forbidden_in_hosted_mode"),
+      );
       return;
     }
     if (!(await ownPrinter(req, res))) return;
@@ -219,7 +229,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     const body = (req.body ?? {}) as Record<string, unknown>;
     const gcodeId = body.gcodeId;
     if (typeof gcodeId !== "string") {
-      res.status(400).json({ error: "gcodeId is required (from a /api/slice or job result)." });
+      sendError(res, new WireError(400, "gcodeId is required (from a /api/slice or job result)."));
       return;
     }
     // The gcode-id registry is the ONLY way a filesystem path reaches the
@@ -228,7 +238,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
     // in a session that produced the file itself.
     const entry = session.gcodeFiles.get(gcodeId);
     if (!entry) {
-      res.status(404).json({ error: "Unknown gcodeId for this session." });
+      sendError(res, new WireError(404, "Unknown gcodeId for this session.", "not_found"));
       return;
     }
     const opts = (body.opts ?? {}) as Record<string, unknown>;
@@ -251,7 +261,7 @@ export function createPrintersRouter(api: PrintersApi | undefined = loadPrinters
   router.post("/printers/:id/control", async (req: Request, res: Response) => {
     const action = (req.body ?? {}).action;
     if (action !== "pause" && action !== "resume" && action !== "cancel") {
-      res.status(400).json({ error: "action must be pause, resume, or cancel" });
+      sendError(res, new WireError(400, "action must be pause, resume, or cancel"));
       return;
     }
     if (!(await ownPrinter(req, res))) return;

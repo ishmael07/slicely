@@ -14,7 +14,7 @@ import { noLimit, type RouteLimitOptions } from "../security";
 import type { JobsApi, PlanJobPartInput } from "../facades";
 import type { JobEvent, JobPlanOptions } from "../../shared/jobs";
 import { adoptGcodeFile, isInsideDir, type SessionRecord } from "../session";
-import { toWire } from "../errors";
+import { sendError, sendScrubbed, toWire, WireError } from "../errors";
 import { withSliceQueueLimit, REST_SLICE_QUEUE_MS } from "../../main/prusaslicer";
 
 export function createJobsRouter(
@@ -27,7 +27,7 @@ export function createJobsRouter(
 
   if (!api) {
     router.use((_req, res) => {
-      res.status(503).json({ error: "Job planning is not available on this server yet." });
+      sendError(res, new WireError(503, "Job planning is not available on this server yet."));
     });
     return router;
   }
@@ -37,13 +37,16 @@ export function createJobsRouter(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const parts = body.parts;
     if (!Array.isArray(parts) || parts.length === 0) {
-      res.status(400).json({ error: "parts is required" });
+      sendError(res, new WireError(400, "parts is required"));
       return;
     }
     for (const part of parts) {
       const p = (part as { path?: unknown }).path;
       if (typeof p !== "string" || !isInsideDir(session.dir, p)) {
-        res.status(403).json({ error: "One or more part paths are outside this session's workspace." });
+        sendError(
+          res,
+          new WireError(400, "One or more of those files isn't in your workspace.", "not_in_workspace"),
+        );
         return;
       }
     }
@@ -55,7 +58,7 @@ export function createJobsRouter(
     // 'x')", which tells the user nothing they can act on.
     const bedError = describeBadBed(opts.bed);
     if (bedError) {
-      res.status(400).json({ error: bedError });
+      sendError(res, new WireError(400, bedError));
       return;
     }
     try {
@@ -66,7 +69,10 @@ export function createJobsRouter(
       session.lastActiveAt = Date.now();
       res.json(job);
     } catch (err) {
-      res.status(422).json({ error: (err as Error).message ?? "planning failed" });
+      // The planner's own complaints ("planJob requires at least one part.",
+      // "part is larger than the bed") are exactly what the user needs to read,
+      // so they are kept — with any absolute path scrubbed out of them.
+      sendScrubbed(res, err, "That job couldn't be planned.", 422);
     }
   });
 
@@ -74,7 +80,7 @@ export function createJobsRouter(
     const session = req.session!;
     // Only the session that planned a job may run it.
     if (!session.jobIds.has(req.params.id)) {
-      res.status(404).json({ error: "Not found." });
+      sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
     res.writeHead(200, {
@@ -149,12 +155,12 @@ export function createJobsRouter(
   router.get("/jobs/:id/plate/:index/preview", async (req: Request, res: Response) => {
     const session = req.session!;
     if (!session.jobIds.has(req.params.id)) {
-      res.status(404).json({ error: "Not found." });
+      sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
     const index = Number(req.params.index);
     if (!Number.isInteger(index) || index < 1) {
-      res.status(400).json({ error: "Bad plate index." });
+      sendError(res, new WireError(400, "Bad plate index."));
       return;
     }
     try {
@@ -163,7 +169,7 @@ export function createJobsRouter(
       res.setHeader("Cache-Control", "private, max-age=600");
       res.json(mesh);
     } catch (err) {
-      res.status(422).json({ error: (err as Error).message ?? "Could not build a preview." });
+      sendScrubbed(res, err, "Could not build a preview.", 422);
     }
   });
 
@@ -172,12 +178,12 @@ export function createJobsRouter(
     // 404 rather than 403 for a job owned by someone else: a visitor should
     // not be able to probe which job ids exist on the server.
     if (!session.jobIds.has(req.params.id)) {
-      res.status(404).json({ error: "Not found." });
+      sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
     const job = await api.getJob(req.params.id);
     if (!job) {
-      res.status(404).json({ error: "Not found." });
+      sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
     res.json(job);

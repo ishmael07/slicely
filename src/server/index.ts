@@ -25,6 +25,8 @@ import {
   type RateLimitOptions,
 } from "./security";
 import { SessionStore, sessionMiddleware, type ChatAgent } from "./session";
+import { webStatic } from "./static";
+import { sendError, WireError } from "./errors";
 import { createChatRouter } from "./routes/chat";
 import { createModelsRouter } from "./routes/models";
 import { createUploadRouter } from "./routes/upload";
@@ -104,14 +106,12 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   app.use(corsGuard());
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
-  // The zero-install client itself: static HTML/CSS served straight from
-  // src/web (nothing to compile there), and the browser-targeted TS compiled
-  // separately (see tsconfig.renderer.json) into dist-web/web — mounted at
-  // "/web" so index.html's `<script src="/web/app.js">` resolves, without
-  // also publishing the Electron renderer's compiled output that happens to
-  // live alongside it under dist-web/.
-  app.use(express.static(join(REPO_ROOT, "src", "web")));
-  app.use("/web", express.static(join(REPO_ROOT, "dist-web", "web")));
+  // The zero-install client itself, plus the two legal pages. Served from an
+  // explicit allow-list (static.ts), NOT by publishing a directory: `src/web`
+  // is the source tree, so `express.static` on it handed out `app.ts` and
+  // `app.js.map` along with everything anyone ever drops in there next. Every
+  // URL this server serves off disk is one line in that table.
+  app.use(webStatic(REPO_ROOT));
 
   const api = express.Router();
   // Before anything else, including the limiter's own 429s: no API response is
@@ -154,13 +154,25 @@ export function createApp(opts: CreateAppOptions = {}): Express {
 
   app.get("/healthz", (_req: Request, res: Response) => res.json({ ok: true }));
 
+  // Nothing matched: not a route, and not one of the allow-listed static
+  // files. Same JSON shape as every other failure, so a client never has to
+  // guess whether a body is parseable.
   app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: "Not found." });
+    sendError(res, new WireError(404, "Not found.", "not_found"));
   });
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("[server] unhandled error:", err);
-    if (!res.headersSent) res.status(500).json({ error: "Internal server error." });
+    // A body that blew the JSON limit is the one thing that reliably lands here
+    // rather than in a route, and it has a real answer: the request was too
+    // big. Everything else goes through the funnel, which logs the detail
+    // server-side and tells the client only "Something went wrong." — never a
+    // stack, a path, or an Express internal.
+    const type = (err as { type?: string }).type;
+    if (type === "entity.too.large") {
+      sendError(res, new WireError(413, `Request body too large — the limit is ${JSON_BODY_LIMIT}.`, "too_large"));
+      return;
+    }
+    sendError(res, err);
   });
 
   return app;

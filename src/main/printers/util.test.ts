@@ -319,6 +319,9 @@ test("hosted mode refuses a printer on a private network — there is no LAN to 
       "fc00::1",
       "::ffff:a00:1", // 10.0.0.1 as new URL spells an IPv4-mapped IPv6 address
       "[::ffff:c0a8:132]", // 192.168.1.50, bracketed
+      "64:ff9b::c0a8:132", // 192.168.1.50, reached over NAT64
+      "2002:c0a8:132::1", // 192.168.1.50, reached over a 6to4 tunnel
+      "192.168.1.50..", // the same LAN address with two root dots
     ]) {
       await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `hosted must refuse ${host}`);
     }
@@ -334,6 +337,10 @@ test("desktop mode allows a printer on a private network — that is where print
     await assertPrinterHostAllowed("prusa-mk4.local", {
       lookup: fakeLookup({ "prusa-mk4.local": ["192.168.1.50"] }),
     });
+    // Folding an embedded IPv4 address must not start refusing real public
+    // IPv6, and a public 6to4 address is public.
+    await assertPrinterHostAllowed("2002:808:808::1");
+    await assertPrinterHostAllowed("2606:4700::1");
   });
 });
 
@@ -359,9 +366,17 @@ test("both modes refuse the machine Slicely runs on, and the cloud metadata serv
         "0:0:0:0:0:ffff:127.0.0.1",
         "::7f00:1", // the deprecated IPv4-compatible form
         // A trailing root dot names the same host and used to match neither the
-        // hostname list nor isIP.
+        // hostname list nor isIP. More than one dot is equally valid to a
+        // resolver, and stripping only the last one left the host unrecognised.
         "localhost.",
+        "localhost..",
+        "localhost...",
         "127.0.0.1.",
+        "127.0.0.1..",
+        "[::1].",
+        // NAT64 and 6to4 spellings of the loopback (see normalizeIp).
+        "64:ff9b::7f00:1",
+        "2002:7f00:1::1",
         "", // no host at all is not a printer either
       ]) {
         await rejectsHostBlocked(() => assertPrinterHostAllowed(host), `${mode} must refuse ${JSON.stringify(host)}`);

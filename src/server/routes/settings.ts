@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { sendError, WireError } from "../errors";
 import {
   getSettings,
   updateSettings,
@@ -81,7 +82,7 @@ export function createSettingsRouter(): Router {
       patch.effort = body.effort as EffortLevel;
     }
     if (!Object.keys(patch).length) {
-      res.status(400).json({ error: "No valid model or effort supplied." });
+      sendError(res, new WireError(400, "No valid model or effort supplied."));
       return;
     }
     updateSettings(patch);
@@ -96,7 +97,7 @@ export function createSettingsRouter(): Router {
   router.patch("/preferences", (req: Request, res: Response) => {
     const body = req.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      res.status(400).json({ error: "Expected a preferences object." });
+      sendError(res, new WireError(400, "Expected a preferences object."));
       return;
     }
     const next = updatePreferences(body as Record<string, unknown>);

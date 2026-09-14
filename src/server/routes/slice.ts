@@ -21,7 +21,7 @@ import {
 } from "../../main/prusaslicer";
 import type { SliceParams, PrintGoal, PrintMaterial } from "../../shared/types";
 import { adoptGcodeFile, isInsideDir } from "../session";
-import { sendError } from "../errors";
+import { sendError, WireError } from "../errors";
 import { loadPrintersApi } from "../facades";
 import { noLimit, type RouteLimitOptions } from "../security";
 
@@ -48,14 +48,24 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
         : session.activeModelPaths;
 
     if (requestedPaths.length === 0) {
-      res.status(400).json({ error: "No model to slice — upload, import, or pass { paths }." });
+      sendError(res, new WireError(400, "No model to slice — upload, import, or pass { paths }."));
       return;
     }
     // Never slice an arbitrary server path a client might pass in `paths` —
     // only files this session itself uploaded/imported/sliced-before.
     for (const p of requestedPaths) {
       if (!isInsideDir(session.dir, p)) {
-        res.status(403).json({ error: "Path is not part of this session's workspace." });
+        // 400 with the stable code, and a sentence that names nothing: the
+        // reply used to be a 403, which — combined with the 404 an unknown
+        // file gets elsewhere — let a caller tell "that file exists but isn't
+        // yours" from "that file doesn't exist", i.e. probe another session's
+        // workspace one guess at a time. The message must not echo the path
+        // back either: a path is only ever ABSOLUTE here, and an echo would
+        // confirm the sessions root to anyone who guessed a prefix.
+        sendError(
+          res,
+          new WireError(400, "That file isn't in your workspace. Upload or import it first.", "not_in_workspace"),
+        );
         return;
       }
     }
@@ -115,14 +125,29 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
           : [await sliceOne(primary, params, undefined, outName)],
       );
 
+      // THE WIRE CARRIES A TOKEN AND A NAME, NEVER A PATH. `m.gcodePath` and
+      // `info.filePath` are absolute server paths (`/data/sessions/<id>/…`), and
+      // this success body used to ship both. A path in a 200 leaks the
+      // deployment layout and the session id exactly as reliably as one in an
+      // error does — and the client has never had a use for it: it downloads via
+      // `/api/gcode/<id>` and prints via `{ gcodeId }`. So the path is replaced
+      // by the opaque token plus the basename, which is the only part of it a
+      // person actually reads ("bracket-k3j1.gcode").
       const plates: Array<Record<string, unknown>> = [];
       for (const m of metricsList) {
         const adopted = await adoptGcodeFile(session, m.gcodePath);
-        plates.push({ ...m, gcodePath: adopted.path, gcodeId: adopted.id });
+        const { gcodePath: _absolute, ...metrics } = m;
+        plates.push({ ...metrics, gcodeId: adopted.id, displayName: basename(adopted.path) });
       }
 
+      const { filePath: _modelPath, ...modelInfo } = info;
       session.lastActiveAt = Date.now();
-      res.json({ info, rationale: rec.rationale, warnings: rec.warnings, plates });
+      res.json({
+        info: { ...modelInfo, displayName: basename(info.filePath) },
+        rationale: rec.rationale,
+        warnings: rec.warnings,
+        plates,
+      });
     } catch (err) {
       // Everything goes through the one funnel. A slice we gave up on carries
       // its own status and code (422 `slice_failed`, 503 `slicer_busy`, 504
@@ -143,11 +168,15 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
     const session = req.session!;
     const path = typeof req.query.path === "string" ? req.query.path : "";
     if (!path) {
-      res.status(400).json({ error: "path is required" });
+      sendError(res, new WireError(400, "path is required"));
       return;
     }
     if (!isInsideDir(session.dir, path)) {
-      res.status(403).json({ error: "That file is outside this session's workspace." });
+      // Same answer, same reason, as POST /slice above.
+      sendError(
+        res,
+        new WireError(400, "That file isn't in your workspace. Upload or import it first.", "not_in_workspace"),
+      );
       return;
     }
     try {
@@ -166,7 +195,7 @@ export function createSliceRouter(opts: RouteLimitOptions = {}): Router {
     const session = req.session!;
     const entry = session.gcodeFiles.get(req.params.id);
     if (!entry) {
-      res.status(404).json({ error: "Not found." });
+      sendError(res, new WireError(404, "Not found.", "not_found"));
       return;
     }
     res.download(entry.path, basename(entry.label));

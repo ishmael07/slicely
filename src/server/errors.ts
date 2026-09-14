@@ -153,3 +153,32 @@ export function sendError(res: Response, err: unknown): void {
   if (res.headersSent) return;
   res.status(status).json(body);
 }
+
+/**
+ * Answer a failure whose own wording is worth keeping, with paths scrubbed.
+ *
+ * `sendError` alone generalises anything it doesn't recognise to "Something
+ * went wrong.", which is right for a bug but wrong for the large middle class
+ * of failures where OUR OWN code has already written the sentence the user
+ * needs: "transport is required", "The printer bed's x size is 0, which isn't a
+ * usable measurement in mm", "planJob requires at least one part." Throwing
+ * those away would replace an actionable complaint with a shrug.
+ *
+ * So: a `WireError` (or anything else `toWire` maps deliberately) is sent as
+ * itself; anything else keeps its message with absolute paths replaced, under
+ * the `status` the CALLER chose — because only the route knows whether an
+ * unrecognised failure from the layer it just called is the client's fault
+ * (422) or an upstream's (502).
+ *
+ * Use this ONLY where the thrown messages are ours. A failure carrying an
+ * upstream provider's response body (see routes/models.ts) must not come
+ * through here — its text is not ours to forward.
+ */
+export function sendScrubbed(res: Response, err: unknown, fallback: string, status = 422): void {
+  if (err instanceof WireError) {
+    sendError(res, err);
+    return;
+  }
+  const message = err instanceof Error ? err.message : "";
+  sendError(res, new WireError(status, stripPaths(message) || fallback));
+}

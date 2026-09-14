@@ -7,6 +7,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { loadSourcingApi } from "../facades";
+import { sendError, WireError } from "../errors";
 import { noLimit, type RouteLimitOptions } from "../security";
 import type { SourcingApi } from "../facades";
 import type { SourceId, SearchOptions } from "../../shared/sourcing";
@@ -21,7 +22,7 @@ export function createModelsRouter(
 
   if (!api) {
     router.use((_req, res) => {
-      res.status(503).json({ error: "Model sourcing is not available on this server yet." });
+      sendError(res, new WireError(503, "Model sourcing is not available on this server yet."));
     });
     return router;
   }
@@ -29,7 +30,7 @@ export function createModelsRouter(
   router.get("/search", async (req: Request, res: Response) => {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     if (!q) {
-      res.status(400).json({ error: "q is required" });
+      sendError(res, new WireError(400, "q is required"));
       return;
     }
     const opts: SearchOptions = {};
@@ -47,20 +48,20 @@ export function createModelsRouter(
       const outcome = await api.searchModels(q, opts);
       res.json(outcome);
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "search failed" });
+      sendSourcingError(res, err, "None of the model sites answered. Try again in a moment.");
     }
   });
 
   router.post("/resolve", async (req: Request, res: Response) => {
     const url = typeof req.body?.url === "string" ? req.body.url.trim() : "";
     if (!url) {
-      res.status(400).json({ error: "url is required" });
+      sendError(res, new WireError(400, "url is required"));
       return;
     }
     try {
       res.json(await api.resolveUrl(url));
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "resolve failed" });
+      sendSourcingError(res, err, "That link couldn't be read.");
     }
   });
 
@@ -84,7 +85,7 @@ export function createModelsRouter(
           : undefined;
 
       if (!result) {
-        res.status(400).json({ error: "Provide either { url } or { source, modelId }." });
+        sendError(res, new WireError(400, "Provide either { url } or { source, modelId }."));
         return;
       }
 
@@ -94,7 +95,7 @@ export function createModelsRouter(
       session.lastActiveAt = Date.now();
       res.json(result);
     } catch (err) {
-      res.status(502).json({ error: (err as Error).message ?? "import failed" });
+      sendSourcingError(res, err, "That model couldn't be downloaded.");
     }
   });
 
@@ -109,4 +110,36 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   const n = Math.round(Number(raw));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * Answer a sourcing failure without quoting the upstream.
+ *
+ * Unlike the planner or the printer registry, the errors that come out of
+ * main/sourcing carry OTHER PEOPLE'S text: `guardedFetch` throws
+ * `` `${url} failed (${status}): ${await safeText(res)}` ``, i.e. a slice of
+ * Thingiverse's / GitHub's / MyMiniFactory's response body. Forwarding that to
+ * the browser hands a visitor an arbitrary upstream document (with whatever the
+ * upstream chose to say about our owner-held API token in it), and tells them
+ * nothing they can act on. So nothing is forwarded here.
+ *
+ * The URL guard's refusals ARE worth distinguishing, because they are the one
+ * failure the user caused and can fix — a link pointing at localhost, at a
+ * private address, at a non-http port. Those become the stable `host_blocked`
+ * code with our own wording; everything else is the caller's fallback sentence.
+ */
+function sendSourcingError(res: Response, err: unknown, fallback: string): void {
+  if (err instanceof WireError) {
+    sendError(res, err);
+    return;
+  }
+  const message = err instanceof Error ? err.message : "";
+  if (/^refusing to fetch|^not a valid url|^too many redirects/i.test(message)) {
+    sendError(
+      res,
+      new WireError(400, "That link can't be fetched — it has to be a public http(s) URL.", "host_blocked"),
+    );
+    return;
+  }
+  sendError(res, new WireError(502, fallback));
 }

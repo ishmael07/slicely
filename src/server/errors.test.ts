@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Anthropic from "@anthropic-ai/sdk";
-import { WireError, stripPaths, toWire } from "./errors";
+import { WireError, sendScrubbed, stripPaths, toWire } from "./errors";
+import type { Response } from "express";
 import { NoApiKeyError, KeyFormatError } from "../main/userkey";
 
 test("stripPaths replaces absolute server paths with a placeholder", () => {
@@ -66,4 +67,51 @@ test("Anthropic's own failures become the user's next action, not a 500", () => 
   const otherBadRequest = toWire(new Anthropic.BadRequestError(400, undefined, "max_tokens too large", new Headers()));
   assert.equal(otherBadRequest.status, 500);
   assert.equal(otherBadRequest.body.error, "Something went wrong.");
+});
+
+// ── sendScrubbed: keep our own wording, lose our own paths ───────────────────
+
+/** The two things `sendScrubbed` uses off a Response, recorded. */
+function recorder(): { res: Response; sent: { status?: number; body?: unknown } } {
+  const sent: { status?: number; body?: unknown } = {};
+  const res = {
+    headersSent: false,
+    status(code: number) {
+      sent.status = code;
+      return this;
+    },
+    json(body: unknown) {
+      sent.body = body;
+      return this;
+    },
+  } as unknown as Response;
+  return { res, sent };
+}
+
+test("sendScrubbed keeps a message we wrote and drops the paths inside it", () => {
+  const { res, sent } = recorder();
+  sendScrubbed(res, new Error("Part /data/sessions/abc/uploads/x.stl is larger than the bed"), "nope", 422);
+  assert.equal(sent.status, 422);
+  const body = sent.body as { error: string; code?: string };
+  assert.match(body.error, /is larger than the bed/, "the actionable half must survive");
+  assert.ok(!body.error.includes("/data/sessions"), `path leaked: ${body.error}`);
+  assert.match(body.error, /<file>/);
+});
+
+test("sendScrubbed falls back when there is nothing to say, and defers to a WireError", () => {
+  const empty = recorder();
+  sendScrubbed(empty.res, new Error(""), "That job couldn't be planned.", 422);
+  assert.deepEqual(empty.sent.body, { error: "That job couldn't be planned." });
+
+  const notAnError = recorder();
+  sendScrubbed(notAnError.res, "a string nobody should see", "Could not build a preview.", 500);
+  assert.equal(notAnError.sent.status, 500);
+  assert.deepEqual(notAnError.sent.body, { error: "Could not build a preview." });
+
+  // A WireError already decided its own status and code; the caller's
+  // suggestion must not override it.
+  const wire = recorder();
+  sendScrubbed(wire.res, new WireError(404, "No such printer.", "not_found"), "ignored", 422);
+  assert.equal(wire.sent.status, 404);
+  assert.deepEqual(wire.sent.body, { error: "No such printer.", code: "not_found" });
 });

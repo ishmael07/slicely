@@ -76,7 +76,10 @@ function bareHost(host: string): string {
     .toLowerCase()
     .replace(/^\[/, "")
     .replace(/\]$/, "")
-    .replace(/\.$/, "");
+    // EVERY trailing root dot, not one: `printer.local..` is the same host to a
+    // resolver as `printer.local`, and stripping a single dot left the second
+    // one attached — enough for `.local`/loopback name matching to miss it.
+    .replace(/\.+$/, "");
   return normalizeIp(bare);
 }
 

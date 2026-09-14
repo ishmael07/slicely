@@ -201,7 +201,10 @@ export function createUploadRouter(opts: RouteLimitOptions = {}): Router {
         } else if (code === "LIMIT_FILE_COUNT" || code === "LIMIT_PART_COUNT") {
           res.status(413).json({ error: "Too many files in one upload (12 max).", code: "too_large" });
         } else {
-          res.status(400).json({ error: (err as Error).message ?? "upload failed" });
+          // multer's other failures are transport-level ("Unexpected end of
+          // form", a malformed boundary) and name internal parser state. The
+          // client can only do one thing about any of them, so say that.
+          sendError(res, new WireError(400, "That upload couldn't be read. Try again."));
         }
         return;
       }
@@ -225,6 +228,7 @@ export function createUploadRouter(opts: RouteLimitOptions = {}): Router {
         });
         return;
       }
+
 
       const session = req.session!;
       const relocated: UploadResult[] = [];
@@ -277,11 +281,11 @@ export function createUploadRouter(opts: RouteLimitOptions = {}): Router {
           }
         }
       } catch (e) {
-        if (e instanceof WireError) {
-          sendError(res, e);
-        } else {
-          res.status(400).json({ error: (e as Error).message ?? "upload failed" });
-        }
+        // Every non-WireError here is a filesystem failure from mkdir/rename
+        // (ENOSPC, EACCES, a vanished staging dir) whose message is a server
+        // path and an errno — nothing a visitor can act on, and not theirs to
+        // see. Let the funnel log it and answer generically.
+        sendError(res, e);
         return;
       } finally {
         await discard(req);

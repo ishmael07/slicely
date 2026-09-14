@@ -146,13 +146,29 @@ function ipv6Hextets(ip: string): number[] | undefined {
  * the socket layer then dials the IPv4 address they mean.
  *
  * So: brackets and any zone id come off, the address is expanded to eight
- * hextets, and if it is an IPv4-mapped (`::ffff:0:0/96`) or deprecated
- * IPv4-compatible (`::/96`) address, the last two hextets are rewritten as the
- * dotted IPv4 address they actually are. `::` and `::1` are left alone — they
- * are IPv6 addresses in their own right, handled by the v6 rules.
+ * hextets, and if it carries an IPv4 address INSIDE it, that IPv4 address is
+ * what comes back. Four families do:
+ *
+ *   • `::ffff:0:0/96` IPv4-mapped     — the WHATWG hex spelling above.
+ *   • `::/96` IPv4-compatible         — deprecated, still routed.
+ *   • `64:ff9b::/96` NAT64            — the well-known prefix an IPv6-only host
+ *     uses to reach IPv4. `64:ff9b::7f00:1` IS 127.0.0.1 to any NAT64 gateway on
+ *     the path, and nothing in the v6 range checks would have noticed.
+ *   • `2002::/16` 6to4                — the IPv4 address sits in hextets 1–2, so
+ *     `2002:7f00:1::1` is a 6to4 tunnel to 127.0.0.1. Folding is unconditional
+ *     and that is correct in both directions: the embedded address decides.
+ *     `2002:808:808::1` folds to the perfectly public 8.8.8.8 and stays allowed.
+ *
+ * `::` and `::1` are left alone — they are IPv6 addresses in their own right,
+ * handled by the v6 rules.
  *
  * Anything that isn't an IP literal is returned unchanged (lowercased and
- * de-bracketed), so callers can hand it a hostname safely.
+ * de-bracketed), so callers can hand it a hostname safely. That includes
+ * malformed near-IPv6 text (`:::1`, `1:2:3:4:5:6:7:8:9`): it comes back verbatim
+ * rather than throwing, and it is not a hole, because nothing can ever dial it —
+ * `isIP` rejects it (so the range checks answer "not an address"), and
+ * `new URL()` refuses to parse it as a host, so it cannot become a socket
+ * target by any route that reaches this function.
  */
 export function normalizeIp(ip: string): string {
   const bare = (ip ?? "")
@@ -165,12 +181,23 @@ export function normalizeIp(ip: string): string {
 
   const h = ipv6Hextets(bare);
   if (!h) return bare;
+  // 6to4: 2002:WWXX:YYZZ::/48 embeds the IPv4 address in hextets 1 and 2.
+  if (h[0] === 0x2002) return dotted(h[1], h[2]);
+  // NAT64's well-known prefix: 64:ff9b::/96, IPv4 in the last two hextets.
+  if (h[0] === 0x0064 && h[1] === 0xff9b && !h[2] && !h[3] && !h[4] && !h[5]) {
+    return dotted(h[6], h[7]);
+  }
   if (h[0] || h[1] || h[2] || h[3] || h[4]) return bare; // not in ::/96 or ::ffff:0:0/96
   const mapped = h[5] === 0xffff;
   // ::/96 minus :: and ::1 themselves, which are IPv6 loopback/unspecified.
   const compat = h[5] === 0 && !(h[6] === 0 && (h[7] === 0 || h[7] === 1));
   if (!mapped && !compat) return bare;
-  return `${h[6] >> 8}.${h[6] & 255}.${h[7] >> 8}.${h[7] & 255}`;
+  return dotted(h[6], h[7]);
+}
+
+/** Two hextets as the dotted IPv4 address they encode. */
+function dotted(high: number, low: number): string {
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 
 /**
@@ -240,10 +267,23 @@ export function isPrivateAddress(ip: string): boolean {
   return false;
 }
 
+/**
+ * Drop the DNS root label(s) from the end of a hostname.
+ *
+ * `localhost.` is the fully-qualified spelling of `localhost`, and resolvers
+ * treat the two identically — as they do `localhost..`, which `new URL()` also
+ * accepts. String comparisons do not, so every allow/deny list that matches a
+ * hostname has to compare against the form with the dots removed, or the dotted
+ * spelling walks past it.
+ */
+function stripRootDots(host: string): string {
+  return host.replace(/\.+$/, "");
+}
+
 /** Pure, synchronous check against a hostname or IP literal. Exported so
  *  tests (and the resolver) can check it directly without a DNS round-trip. */
 export function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const h = stripRootDots(hostname.toLowerCase().replace(/^\[|\]$/g, ""));
   if (PRIVATE_HOSTNAMES.has(h)) return true;
   if (h.endsWith(".localhost") || h.endsWith(".local")) return true;
   const version = isIP(h);
@@ -297,7 +337,13 @@ export async function assertPublicHttpUrl(raw: string, opts: UrlGuardOptions = {
     throw new Error(`Refusing to fetch ${url.hostname} — not an allowed host for this request.`);
   }
 
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // The trailing dot comes off BEFORE any check. `http://localhost./x` and
+  // `http://localhost../x` both parse, both name the loopback host to every
+  // resolver on earth, and neither is `"localhost"` as a string — so the
+  // hostname rules below (and PRIVATE_HOSTNAMES in particular) used to miss
+  // them, and the guard fell through to a DNS lookup for a name it should have
+  // refused outright. See `stripRootDots`.
+  const host = stripRootDots(url.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
   // A host made only of digits and dots is an IP address written so that
   // `isIP` does not recognise it — "http://2130706433/" and "http://0177.1/"
   // are both 127.0.0.1 — while the socket layer dials it happily. In practice

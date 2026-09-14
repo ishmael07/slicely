@@ -329,3 +329,76 @@ test("clamp bounds a number into [lo, hi]", () => {
   assert.equal(clamp(-5, 1, 10), 1);
   assert.equal(clamp(50, 1, 10), 10);
 });
+
+// ── Extras E2–E4: two more spellings of the same address, and no throwing ─────
+
+test("an IPv6 address that CARRIES an IPv4 address is judged by the address it carries", () => {
+  // NAT64's well-known prefix. An IPv6-only host reaches 127.0.0.1 as
+  // 64:ff9b::7f00:1, and the gateway on the path does the translation — none of
+  // the IPv6 range rules would have noticed, because no IPv6 range contains it.
+  assert.equal(normalizeIp("64:ff9b::7f00:1"), "127.0.0.1");
+  assert.equal(isPrivateAddress("64:ff9b::7f00:1"), true);
+  assert.equal(isLocalOrLinkLocalAddress("64:ff9b::7f00:1"), true);
+  assert.equal(isPrivateAddress("64:ff9b::a9fe:a9fe"), true, "the cloud metadata address, via NAT64");
+  assert.equal(isPrivateAddress("64:ff9b::c0a8:101"), true, "192.168.1.1, via NAT64");
+
+  // 6to4 keeps the IPv4 address in hextets 1–2.
+  assert.equal(normalizeIp("2002:7f00:1::1"), "127.0.0.1");
+  assert.equal(isPrivateAddress("2002:7f00:1::1"), true);
+  assert.equal(isPrivateAddress("2002:a9fe:a9fe::1"), true, "169.254.169.254, via 6to4");
+
+  // And the folding cuts both ways — which is the point. A 6to4 address whose
+  // embedded IPv4 is public IS public, and must stay fetchable.
+  assert.equal(normalizeIp("2002:808:808::1"), "8.8.8.8");
+  assert.equal(isPrivateAddress("2002:808:808::1"), false);
+  assert.equal(isPrivateAddress("2002:0808:0808::"), false);
+  // Real IPv6 that merely starts nearby is untouched.
+  assert.equal(isPrivateAddress("2001:db8::1"), false);
+  assert.equal(isPrivateAddress("2606:4700::1"), false);
+});
+
+test("a trailing DNS root dot does not walk past the hostname rules", async () => {
+  // `localhost.` is the fully-qualified spelling of `localhost` and resolves to
+  // the loopback everywhere — but it is a different STRING, so the name lists
+  // missed it and the guard fell through to a DNS lookup for a name it should
+  // have refused outright. Two dots got past even a single-dot strip.
+  for (const host of ["localhost.", "localhost..", "LocalHost."]) {
+    assert.equal(isPrivateHost(host), true, `${host} should read as loopback`);
+  }
+  assert.equal(isPrivateHost("printer.local."), true);
+
+  // The refusal happens on the NAME: the lookup below throws if it is reached,
+  // so this also proves no DNS query was made.
+  const neverCalled = async (h: string): Promise<string[]> => {
+    throw new Error(`no lookup should have happened, got ${h}`);
+  };
+  for (const url of ["http://localhost./x", "http://localhost..", "http://127.0.0.1./x"]) {
+    await assert.rejects(
+      () => assertPublicHttpUrl(url, { lookup: neverCalled }),
+      /private\/loopback|numeric host/,
+      `${url} should be refused by the hostname rule`,
+    );
+  }
+});
+
+test("malformed near-IPv6 input is returned verbatim rather than throwing", () => {
+  // These reach normalizeIp from hostile input and from `new URL` alike. The
+  // requirement is only that the guards stay UP and the process stays ALIVE: a
+  // throw here would turn "refuse this host" into a 500 (or an unhandled
+  // rejection) on every code path that classifies an address.
+  for (const bad of [":::1", "1:2:3:4:5:6:7:8:9", "1::", "::", "1:2:3:4:5:6:7:8:", "2002:", "64:ff9b:::1", "", "::ffff:1.2.3.4.5", "[]", "%eth0"]) {
+    assert.doesNotThrow(() => normalizeIp(bad), `normalizeIp threw on ${JSON.stringify(bad)}`);
+    assert.doesNotThrow(() => isPrivateAddress(bad), `isPrivateAddress threw on ${JSON.stringify(bad)}`);
+    assert.doesNotThrow(() => isLocalOrLinkLocalAddress(bad), `isLocalOrLinkLocalAddress threw on ${JSON.stringify(bad)}`);
+    assert.doesNotThrow(() => isPrivateHost(bad), `isPrivateHost threw on ${JSON.stringify(bad)}`);
+    assert.equal(typeof normalizeIp(bad), "string");
+  }
+  // Unrecognised text comes back as itself (lowercased, de-bracketed), and is
+  // then simply "not an address" to every range check.
+  assert.equal(normalizeIp(":::1"), ":::1");
+  assert.equal(normalizeIp("1:2:3:4:5:6:7:8:9"), "1:2:3:4:5:6:7:8:9");
+  assert.equal(isPrivateAddress(":::1"), false);
+  // …and it can never become a socket target, because the URL parser refuses it.
+  assert.throws(() => new URL("http://:::1/"));
+  assert.throws(() => new URL("http://1:2:3:4:5:6:7:8:9/"));
+});

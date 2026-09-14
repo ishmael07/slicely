@@ -100,9 +100,17 @@ test("session isolation: session B cannot slice a file session A uploaded", asyn
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths: [sessionAsPath] }),
     });
-    const sliceData = (await sliceResp.json()) as { error: string };
-    assert.equal(sliceResp.status, 403);
-    assert.match(sliceData.error, /not part of this session/);
+    // 400 with the stable code (Task D8), not a 403: a 403 distinguishes
+    // "exists but isn't yours" from "doesn't exist", which is a probe for
+    // another session's files. And the body must not echo the path back —
+    // that is how the sessions root (and a live session id) leaked.
+    const raw = await sliceResp.text();
+    const sliceData = JSON.parse(raw) as { error: string; code?: string };
+    assert.equal(sliceResp.status, 400);
+    assert.equal(sliceData.code, "not_in_workspace");
+    assert.ok(!raw.includes(root), `the reply leaked the sessions root: ${raw}`);
+    assert.ok(!raw.includes(sessionAsPath), `the reply echoed the path back: ${raw}`);
+    assert.ok(!/\/(Users|home|data|private|var|tmp)\//.test(raw), `the reply carries an absolute path: ${raw}`);
   } finally {
     await close();
     store.stopSweep();

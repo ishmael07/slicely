@@ -15,6 +15,10 @@
       content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'"
     />
     <title>Slicely</title>
+    <!-- The ◆ mark, shared with the marketing site. Served from the static
+         allow-list in src/server/static.ts, which is the only reason it (and
+         nothing else) is reachable. -->
+    <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
