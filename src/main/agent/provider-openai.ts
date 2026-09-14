@@ -32,6 +32,7 @@
 //    (`fc_…`). They are different values and mixing them up fails silently.
 // ─────────────────────────────────────────────────────────────────────────────
 import { resolveEffort } from "../settings";
+import { tokenCount, toTurnUsage } from "../pricing";
 import type {
   KeyVerdict,
   NeutralBlock,
@@ -43,6 +44,7 @@ import type {
   ToolCall,
   ToolSpec,
   TurnResult,
+  TurnUsage,
 } from "./provider";
 
 const RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -369,6 +371,7 @@ function dataOf(frame: string): string | undefined {
 export async function readTurn(frames: AsyncIterable<string>, emit: StreamEmit): Promise<TurnResult> {
   const assistant: NeutralBlock[] = [];
   const toolCalls: ToolCall[] = [];
+  let usage: TurnUsage | undefined;
 
   for await (const payload of frames) {
     let event: Record<string, unknown>;
@@ -385,6 +388,8 @@ export async function readTurn(frames: AsyncIterable<string>, emit: StreamEmit):
       if (typeof event.delta === "string" && event.delta) emit({ type: "thinking", text: event.delta });
     } else if (type === "response.output_item.done") {
       collectItem(event.item, assistant, toolCalls);
+    } else if (type === "response.completed") {
+      usage = usageFromResponse(event.response) ?? usage;
     } else if (type === "error") {
       // Bare `error`, with no `response.` prefix — the one event name that
       // breaks a switch written from the others.
@@ -397,13 +402,48 @@ export async function readTurn(frames: AsyncIterable<string>, emit: StreamEmit):
       // model did produce beats the generic 500 a thrown error becomes. Every
       // other reason (a content filter, an aborted upstream) really is a failure.
       if (type === "response.incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
+        // READ THE USAGE BEFORE BREAKING OUT. A turn that hit the output ceiling
+        // is a real, billable call — the most expensive kind there is, since it
+        // spent the whole output budget — and breaking first would hand the owner
+        // the bill with no record of it.
+        usage = usageFromResponse(event.response) ?? usage;
         break;
       }
       throw errorFromEvent((response.error ?? event) as Record<string, unknown>);
     }
   }
 
-  return { assistant, toolCalls };
+  const result: TurnResult = { assistant, toolCalls };
+  if (usage) result.usage = usage;
+  return result;
+}
+
+/**
+ * `response.usage` as a `TurnUsage`, or undefined when the response carried none.
+ *
+ * THE SUBTRACTION IS THE POINT. OpenAI's `input_tokens` is the TOTAL, with
+ * `input_tokens_details.cached_tokens` broken out OF it — the opposite of
+ * Anthropic, where the cached read is already excluded. Billing the total at the
+ * full input rate would over-charge a cache hit by ten times.
+ *
+ * `cacheWriteTokens` is always 0: OpenAI does not itemise writes, so the 1.25×
+ * premium on a cold prefix is invisible to us. pricing.ts's header records the
+ * bound on that under-report.
+ */
+function usageFromResponse(raw: unknown): TurnUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const u = (raw as { usage?: unknown }).usage;
+  if (!u || typeof u !== "object") return undefined;
+  const usage = u as { input_tokens?: unknown; input_tokens_details?: { cached_tokens?: unknown }; output_tokens?: unknown };
+  const cached = tokenCount(usage.input_tokens_details?.cached_tokens);
+  return toTurnUsage({
+    // Clamped, because `cached > total` is a shape we should never see and a
+    // negative uncached count would be a NEGATIVE charge in the ledger.
+    inputTokens: Math.max(0, tokenCount(usage.input_tokens) - cached),
+    cachedInputTokens: cached,
+    cacheWriteTokens: 0,
+    outputTokens: usage.output_tokens,
+  });
 }
 
 function errorFromEvent(event: Record<string, unknown>): OpenAiError {

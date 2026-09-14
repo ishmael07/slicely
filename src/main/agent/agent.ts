@@ -310,7 +310,11 @@ export class SlicelyAgent {
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
         if (this.cancelled) break;
 
-        const { assistant, toolCalls } = await provider.stream(
+        // Kept whole rather than destructured, because the result now also
+        // carries what the call COST (`usage`) — and that is charged per call,
+        // not per turn: a twelve-iteration tool loop on an empty balance would
+        // otherwise overspend twelvefold before anyone noticed.
+        const turn = await provider.stream(
           {
             apiKey,
             model,
@@ -328,6 +332,7 @@ export class SlicelyAgent {
             emit({ type: delta.type, text: delta.text });
           },
         );
+        const { assistant, toolCalls } = turn;
 
         // Record the assistant turn (text + reasoning + any tool calls).
         // NEVER EMPTY: `content: []` is a 400 on both providers, so a turn that

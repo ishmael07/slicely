@@ -192,3 +192,56 @@ test("each provider owns its per-turn output cap", () => {
   assert.equal(getProvider("anthropic").maxOutputTokens, 16000);
   assert.ok(getProvider("openai").maxOutputTokens > getProvider("anthropic").maxOutputTokens);
 });
+
+// ── usage ────────────────────────────────────────────────────────────────────
+
+test("a final message's token usage comes back as a TurnUsage", () => {
+  // Anthropic's `input_tokens` ALREADY EXCLUDES the cached part, so the four
+  // fields map across one-for-one with no subtraction. Getting that wrong the
+  // other way (subtracting the cache read) would under-bill every call.
+  const final = {
+    content: [{ type: "text", text: "done" }],
+    usage: {
+      input_tokens: 400,
+      cache_read_input_tokens: 6000,
+      cache_creation_input_tokens: 0,
+      output_tokens: 250,
+    },
+  };
+  const { usage } = fromAnthropicMessage(final as never);
+  assert.deepEqual(usage, {
+    inputTokens: 400,
+    cachedInputTokens: 6000,
+    cacheWriteTokens: 0,
+    outputTokens: 250,
+  });
+});
+
+test("a message with no usage reports NOTHING, not zero", () => {
+  // The difference is load-bearing: "nothing reported" is an anomaly that is
+  // charged nothing and logged, while "nothing used" is a real free call. A
+  // zeroed object would hide the first inside the second.
+  const { usage } = fromAnthropicMessage({ content: [{ type: "text", text: "hi" }] } as never);
+  assert.equal(usage, undefined);
+});
+
+test("a nonsense usage report is clamped to non-negative integers", () => {
+  // costMicros multiplies straight through, so one float or one negative here
+  // stops the ledger being integral. The guard belongs where usage is BUILT.
+  const final = {
+    content: [{ type: "text", text: "x" }],
+    usage: {
+      input_tokens: -5,
+      cache_read_input_tokens: 10.7,
+      cache_creation_input_tokens: null,
+      output_tokens: "250",
+    },
+  };
+  const { usage } = fromAnthropicMessage(final as never);
+  assert.deepEqual(usage, {
+    inputTokens: 0,
+    cachedInputTokens: 10,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+  });
+});

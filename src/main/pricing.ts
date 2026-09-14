@@ -98,6 +98,45 @@ export interface TurnUsage {
   outputTokens: number;
 }
 
+/**
+ * A token count as a provider claimed it, turned into something the ledger can
+ * hold: a non-negative integer.
+ *
+ * `costMicros` multiplies straight through with no division, which is what keeps
+ * money integral end to end — so one float, one numeric string or one negative
+ * from an upstream shape change would quietly stop the ledger being integral,
+ * and a negative would be a negative CHARGE. Anything that is not a finite
+ * number counts as nothing reported for that field.
+ */
+export function tokenCount(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.trunc(raw));
+}
+
+/**
+ * Build a `TurnUsage` with every field clamped by `tokenCount`.
+ *
+ * THE ONLY SANCTIONED WAY TO MAKE ONE. Both providers go through it, so neither
+ * can hand the meter a number the other couldn't, and the guard sits next to the
+ * function whose arithmetic depends on the invariant. It lives here rather than
+ * in provider.ts because provider.ts builds `PROVIDERS` at module load from the
+ * two provider modules, so a runtime import back from them would be a cycle —
+ * and pricing.ts is a leaf, which is the whole reason `TurnUsage` is here too.
+ */
+export function toTurnUsage(parts: {
+  inputTokens: unknown;
+  cachedInputTokens: unknown;
+  cacheWriteTokens: unknown;
+  outputTokens: unknown;
+}): TurnUsage {
+  return {
+    inputTokens: tokenCount(parts.inputTokens),
+    cachedInputTokens: tokenCount(parts.cachedInputTokens),
+    cacheWriteTokens: tokenCount(parts.cacheWriteTokens),
+    outputTokens: tokenCount(parts.outputTokens),
+  };
+}
+
 /** The cost of one provider call, in µ¢. Every component is charged at its own
  *  rate; `tokens × centsPer1M` is already µ¢, so there is nothing to divide. */
 export function costMicros(model: string, usage: TurnUsage): number {

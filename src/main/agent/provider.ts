@@ -28,9 +28,21 @@
 // provider-openai.ts. Nothing else in the codebase imports a provider SDK.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { EffortLevel, ProviderId } from "../../shared/types";
+import type { TurnUsage } from "../pricing";
 import { MODEL_CATALOG } from "../settings";
 import { ANTHROPIC_PROVIDER } from "./provider-anthropic";
 import { OPENAI_PROVIDER } from "./provider-openai";
+
+/** Re-exported so a provider (or the meter) can name the shape without also
+ *  pulling in the price table. It is DEFINED in pricing.ts, never here — and
+ *  `toTurnUsage` there is the only sanctioned way to BUILD one, because it is
+ *  what clamps a provider's claim to the non-negative integers the ledger needs.
+ *
+ *  TYPE-ONLY, and that is not an accident: provider.ts builds `PROVIDERS` at
+ *  module load from the two provider modules, so anything they import back from
+ *  here at RUNTIME is `undefined` when the cycle starts on their side. A type
+ *  re-export is erased and costs nothing. */
+export type { TurnUsage };
 
 /** One piece of a conversation, in the only shapes the loop knows about. */
 export type NeutralBlock =
@@ -76,6 +88,17 @@ export interface StreamRequest {
    * ceiling so an unattended turn cannot hang either.
    */
   signal?: AbortSignal;
+  /**
+   * A stable, opaque routing hint for the provider's prompt cache — OpenAI's
+   * `prompt_cache_key`, which nudges a session's calls onto the machine that
+   * already holds its prefix.
+   *
+   * NEVER THE SESSION ID ITSELF. It is sent to a third party and is not needed
+   * there in any readable form, so `agent.ts` sends a hash. Absent means "don't
+   * send the field" — a wrong-but-stable key is worse than none, because it
+   * points a whole session at one shard for nothing.
+   */
+  cacheKey?: string;
 }
 
 export interface ToolCall {
@@ -89,6 +112,15 @@ export interface TurnResult {
   assistant: NeutralBlock[];
   /** The subset of `assistant` that has to run before the next turn. */
   toolCalls: ToolCall[];
+  /**
+   * What this call actually consumed, when the provider said.
+   *
+   * `undefined` means NOTHING WAS REPORTED, which is not the same as nothing
+   * being used: a metered call with no usage is charged nothing and logged as an
+   * anomaly, never charged a guessed number. Reading usage must also never fail
+   * a turn — the answer matters more than the meter.
+   */
+  usage?: TurnUsage;
 }
 
 /** Streamed deltas, for the UI only — never for history (the authoritative

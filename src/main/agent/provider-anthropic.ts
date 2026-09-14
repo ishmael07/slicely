@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import Anthropic from "@anthropic-ai/sdk";
 import { buildModelRequestParams } from "../settings";
+import { toTurnUsage } from "../pricing";
 import type {
   KeyVerdict,
   NeutralBlock,
@@ -93,7 +94,22 @@ export function fromAnthropicMessage(final: Anthropic.Message): TurnResult {
     // Anything else (a server_tool_use block, a future type) is not part of a
     // Slicely turn and is dropped rather than replayed as something it isn't.
   }
-  return { assistant, toolCalls };
+  const result: TurnResult = { assistant, toolCalls };
+  const usage = final.usage;
+  if (usage) {
+    // `input_tokens` ALREADY EXCLUDES the cached read on this API, so the four
+    // fields map across one-for-one with no subtraction. (OpenAI is the other way
+    // round — see provider-openai.ts.) Every number goes through the clamp in
+    // pricing.ts, because a float or a negative here stops the ledger being
+    // integral.
+    result.usage = toTurnUsage({
+      inputTokens: usage.input_tokens,
+      cachedInputTokens: usage.cache_read_input_tokens,
+      cacheWriteTokens: usage.cache_creation_input_tokens,
+      outputTokens: usage.output_tokens,
+    });
+  }
+  return result;
 }
 
 /**
