@@ -75,9 +75,26 @@
       <li><strong>Files you bring.</strong> Models you upload, models fetched from a link you pasted, and models downloaded from a source site on your behalf.</li>
       <li><strong>Sliced output.</strong> The G-code and the metrics produced from those files.</li>
       <li><strong>Printer connection details,</strong> including the address of each printer and the credentials or API keys it needs. Credentials are stored encrypted.</li>
-      <li><strong>Your AI provider credentials</strong> (currently, your Anthropic API key), stored encrypted at rest. They are never logged, never returned in any response, and never included in an error message; the app displays only a hint of the key's last few characters.</li>
+      <li><strong>Your AI provider credentials</strong> (your Anthropic or OpenAI API key), stored encrypted at rest. They are never logged, never returned in any response, and never included in an error message; the app displays only a hint of the key's last few characters.</li>
       <li><strong>Server logs</strong> containing IP addresses, timestamps, and request paths, kept for 14 days to debug failures and to catch abuse.</li>
     </ul>
+    <p>
+      <strong>If you sign in.</strong> Signing in with Google or GitHub is optional —
+      it is what grants the one-time free AI credit — and it stores a small record: the
+      email address the provider confirms, the display name it returns, and the single
+      letter we draw in the header from that name. We keep <em>no</em> provider tokens:
+      the access token from the sign-in is used once to read those fields and is never
+      written down, so we cannot act on your Google or GitHub account and have nothing
+      to refresh. To stop one address claiming the free credit over and over, we record
+      a one-way hash of your IP address for the day you sign up (the address itself is
+      never stored, and the hash cannot be turned back into it). Every model call your
+      free credit pays for appends one line to a usage ledger — the model, the token
+      counts and the fraction of a cent it cost — which is how the balance in the header
+      is worked out. <strong>Delete my data</strong> removes all of it: the account
+      record, the balance, the ledger lines, and the chats, files and keys in your
+      session. The email address is then retired rather than reused, so the free credit
+      is not granted twice.
+    </p>
 
     <h2 id="p2">2. What we do not collect</h2>
     <p>
@@ -90,9 +107,9 @@
       tracking cookies, and share nothing with data brokers or ad networks.
     </p>
     <p>
-      <strong>No account.</strong> There is no sign-up, no password, and no email address.
-      We do not ask for your name, and we have no way to connect a session to a real person
-      beyond the IP address in the logs.
+      <strong>No password.</strong> Signing in is optional and goes through Google or
+      GitHub, so we never see, set, or store a password — and you can use Slicely with
+      your own API key and no account at all.
     </p>
     <p>
       <strong>No training.</strong> We do not use your chats, files, or prints to train any
@@ -113,8 +130,8 @@
 
     <h2 id="p4">4. Who receives it</h2>
     <ul>
-      <li><strong>Anthropic.</strong> Your prompts, and text derived from your files (names, dimensions, geometry summaries, slice metrics), are sent to Anthropic's API to run the agent, using <em>your own key</em> and therefore under your own agreement with Anthropic and their terms and policies.</li>
-      <li><strong>Any AI provider you connect in the future</strong> (for example, OpenAI, if and when Slicely adds "Sign in with ChatGPT" or similar) receives only what that feature needs to run, under your own account with that provider, and nothing else — the same rule this policy already applies to Anthropic.</li>
+      <li><strong>Anthropic or OpenAI.</strong> Your prompts, and text derived from your files (names, dimensions, geometry summaries, slice metrics), are sent to the API of the provider you chose to run the agent. With your own key that happens under your own agreement with that provider; on free credit it happens under ours, and the provider still receives nothing beyond the prompt itself.</li>
+      <li><strong>Google or GitHub, if you sign in.</strong> They learn that you signed in to Slicely and tell us your confirmed email address and display name; we send them nothing else.</li>
       <li><strong>The model sites you search.</strong> A search sends your query to the sources it covers — Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub, MakerWorld and others — and a download fetches from whichever site hosts the file. Those sites see the request and their own privacy policies apply to it.</li>
       <li><strong>Your printer, or your cloud print service.</strong> Sending a file transmits the G-code, and the credentials you configured, to the printer or service you chose.</li>
       <li><strong>Our hosting provider,</strong> which operates the server and stores the encrypted volume on our behalf.</li>
@@ -127,7 +144,7 @@
       <li><strong>Sessions</strong> — including chats, settings, printers, and your encrypted key — expire after <strong>30 days idle</strong>, and everything in them is deleted.</li>
       <li><strong>Workspace files</strong> — uploads, downloaded models, and sliced output — are swept after <strong>2 hours idle</strong>, well before the session itself expires.</li>
       <li><strong>Server logs</strong> are kept <strong>14 days</strong>.</li>
-      <li><strong>"Delete my data"</strong> in the app removes your session, your chats, your files, your printer credentials and your key <strong>immediately</strong>, without waiting for any of the above.</li>
+      <li><strong>"Delete my data"</strong> in the app removes your session, your chats, your files, your printer credentials, your key and — if you signed in — your account record, balance and usage ledger <strong>immediately</strong>, without waiting for any of the above.</li>
     </ul>
     <p>In the macOS app, nothing expires and nothing is swept by us; the files are yours to keep or delete.</p>
 
@@ -135,9 +152,9 @@
     <p>
       Everything we hold about you is visible in the app and deletable from it. Use "Delete
       my data" to erase all of it at once, or write to
-      <span class="ph">ishmaellallmahamad2@gmail.com</span> and we will help. Because there is no
-      account, we may not be able to identify your data from an email alone — tell us from
-      the browser session concerned, or the request may be impossible to fulfil.
+      <span class="ph">ishmaellallmahamad2@gmail.com</span> and we will help. If you never signed in
+      there is no account to look up, so tell us from the browser session concerned, or the
+      request may be impossible to fulfil.
     </p>
     <p>
       <strong>GDPR and UK GDPR.</strong> If you are in the EEA or the UK, our lawful basis
