@@ -6,8 +6,7 @@
   and who it sends things to, not by a lawyer to satisfy any particular
   regulator. Before launch:
     1. have a lawyer review it;
-    2. replace {{ENTITY}}, {{CONTACT_EMAIL}} and {{EFFECTIVE_DATE}} throughout;
-    3. delete the <p class="legal-banner"> element below.
+    2. delete the <p class="legal-banner"> element below.
   The retention periods and the list of recipients must be kept in step with
   what the server actually does — if the code changes, this file changes.
 -->
@@ -47,12 +46,12 @@
     <!-- Delete this banner once a lawyer has reviewed the page. -->
     <p class="legal-banner">
       <span aria-hidden="true">⚠</span>
-      <span>Template — not legal advice. Have a lawyer review before launch.</span>
+      <span>This page was prepared without a lawyer. It is offered in good faith and may change.</span>
     </p>
 
     <h1>Privacy Policy</h1>
-    <p class="legal-meta">Effective <span class="ph">{{EFFECTIVE_DATE}}</span></p>
-    <p class="legal-meta">Slicely is operated by <span class="ph">{{ENTITY}}</span> ("we", "us").</p>
+    <p class="legal-meta">Effective <span class="ph">September 14, 2026</span></p>
+    <p class="legal-meta">Slicely is operated by <span class="ph">Ishmael Lallmahamad, an individual developer</span> ("we", "us").</p>
 
     <p class="legal-intro">
       Slicely has no accounts, no analytics and no advertising, so there is not much to say
@@ -81,7 +80,7 @@
       <li><strong>Files you bring.</strong> Models you upload, models fetched from a link you pasted, and models downloaded from a source site on your behalf.</li>
       <li><strong>Sliced output.</strong> The G-code and the metrics produced from those files.</li>
       <li><strong>Printer connection details,</strong> including the address of each printer and the credentials or API keys it needs. Credentials are stored encrypted.</li>
-      <li><strong>Your Anthropic API key,</strong> stored encrypted at rest. It is never logged, never returned in any response, and never included in an error message; the app displays only a hint of its last few characters.</li>
+      <li><strong>Your AI provider credentials</strong> (currently, your Anthropic API key), stored encrypted at rest. They are never logged, never returned in any response, and never included in an error message; the app displays only a hint of the key's last few characters.</li>
       <li><strong>Server logs</strong> containing IP addresses, timestamps, and request paths, kept for 14 days to debug failures and to catch abuse.</li>
     </ul>
 
@@ -120,6 +119,7 @@
     <h2 id="p4">4. Who receives it</h2>
     <ul>
       <li><strong>Anthropic.</strong> Your prompts, and text derived from your files (names, dimensions, geometry summaries, slice metrics), are sent to Anthropic's API to run the agent, using <em>your own key</em> and therefore under your own agreement with Anthropic and their terms and policies.</li>
+      <li><strong>Any AI provider you connect in the future</strong> (for example, OpenAI, if and when Slicely adds "Sign in with ChatGPT" or similar) receives only what that feature needs to run, under your own account with that provider, and nothing else — the same rule this policy already applies to Anthropic.</li>
       <li><strong>The model sites you search.</strong> A search sends your query to the sources it covers — Thingiverse, Printables, MyMiniFactory, NIH 3D, Smithsonian, NASA, GitHub, MakerWorld and others — and a download fetches from whichever site hosts the file. Those sites see the request and their own privacy policies apply to it.</li>
       <li><strong>Your printer, or your cloud print service.</strong> Sending a file transmits the G-code, and the credentials you configured, to the printer or service you chose.</li>
       <li><strong>Our hosting provider,</strong> which operates the server and stores the encrypted volume on our behalf.</li>
@@ -140,7 +140,7 @@
     <p>
       Everything we hold about you is visible in the app and deletable from it. Use "Delete
       my data" to erase all of it at once, or write to
-      <span class="ph">{{CONTACT_EMAIL}}</span> and we will help. Because there is no
+      <span class="ph">ishmaellallmahamad2@gmail.com</span> and we will help. Because there is no
       account, we may not be able to identify your data from an email alone — tell us from
       the browser session concerned, or the request may be impossible to fulfil.
     </p>
@@ -150,7 +150,7 @@
       (Art. 6(1)(b)), and our legitimate interest in keeping the service secure and working
       for the server logs (Art. 6(1)(f)). You have the right to access, rectify, erase,
       restrict, and port your data, and to object to processing; the controller is
-      <span class="ph">{{ENTITY}}</span>. You may complain to your local supervisory
+      <span class="ph">Ishmael Lallmahamad, an individual developer</span>. You may complain to your local supervisory
       authority. We do not make automated decisions producing legal effects about you.
     </p>
     <p>
@@ -164,7 +164,7 @@
     <p>
       Slicely is not intended for anyone under 16, and we do not knowingly collect data from
       children. If you believe a child has used Slicely, contact
-      <span class="ph">{{CONTACT_EMAIL}}</span> and we will delete the session.
+      <span class="ph">ishmaellallmahamad2@gmail.com</span> and we will delete the session.
     </p>
 
     <h2 id="p8">8. Changes</h2>
@@ -177,7 +177,7 @@
     <h2 id="p9">9. Contact</h2>
     <p>
       Privacy questions, access requests, and deletion requests:
-      <span class="ph">{{CONTACT_EMAIL}}</span>.
+      <span class="ph">ishmaellallmahamad2@gmail.com</span>.
     </p>
   </main>
 

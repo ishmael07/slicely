@@ -5,9 +5,7 @@
   This file was written by an engineer to describe honestly what Slicely does,
   not by a lawyer to be enforceable where you operate. Before launch:
     1. have a lawyer review it;
-    2. replace {{ENTITY}}, {{CONTACT_EMAIL}}, {{JURISDICTION}} and
-       {{EFFECTIVE_DATE}} throughout;
-    3. delete the <p class="legal-banner"> element below.
+    2. delete the <p class="legal-banner"> element below.
   Section 4 (3D printing safety) is the one that matters most in practice and
   should survive review substantially intact.
 -->
@@ -47,12 +45,12 @@
     <!-- Delete this banner once a lawyer has reviewed the page. -->
     <p class="legal-banner">
       <span aria-hidden="true">⚠</span>
-      <span>Template — not legal advice. Have a lawyer review before launch.</span>
+      <span>This page was prepared without a lawyer. It is offered in good faith and may change.</span>
     </p>
 
     <h1>Terms of Service</h1>
-    <p class="legal-meta">Effective <span class="ph">{{EFFECTIVE_DATE}}</span></p>
-    <p class="legal-meta">Slicely is operated by <span class="ph">{{ENTITY}}</span> ("we", "us").</p>
+    <p class="legal-meta">Effective <span class="ph">September 14, 2026</span></p>
+    <p class="legal-meta">Slicely is operated by <span class="ph">Ishmael Lallmahamad, an individual developer</span> ("we", "us").</p>
 
     <p class="legal-intro">
       Slicely finds 3D models, slices them, and sends the result to a printer you control.
@@ -88,6 +86,10 @@
     <p>
       You must be at least 16 years old to use Slicely. If you are using it on behalf of an
       organisation, you confirm you are authorised to accept these terms for it.
+    </p>
+    <p>
+      Slicely has no accounts, no sign-up and no password — your browser session is your
+      only identity, and it is yours to delete at any time.
     </p>
 
     <h2 id="s2">2. The service</h2>
@@ -128,6 +130,13 @@
       your use of Slicely incurs on your Anthropic account, including charges caused by
       retries, large jobs, or a key you have shared with someone else. A Claude Pro or Max
       subscription cannot be used with Slicely; the API is billed separately.
+    </p>
+    <p>
+      If Slicely adds support for another AI provider — for example, OpenAI, or
+      "Sign in with ChatGPT" — the same rule applies: your API key and your chat are sent
+      only to the AI provider you connected, the key stays encrypted at rest and is never
+      shared, and that provider's own terms and privacy policy govern the traffic between
+      you and them.
     </p>
 
     <h2 id="s4">4. 3D printing safety</h2>
@@ -188,7 +197,7 @@
     </p>
     <p>
       If you believe content reached you through Slicely in a way that infringes your
-      rights, contact us at <span class="ph">{{CONTACT_EMAIL}}</span> with enough detail to
+      rights, contact us at <span class="ph">ishmaellallmahamad2@gmail.com</span> with enough detail to
       identify the model and the source, and we will act on it.
     </p>
 
@@ -228,6 +237,10 @@
       the "Delete my data" control in the app. You confirm you have the right to upload what
       you upload.
     </p>
+    <p>
+      Even if you never click it, inactive sessions and their files are deleted
+      automatically — see the retention periods in the <a href="privacy.html">Privacy Policy</a>.
+    </p>
 
     <h2 id="s8">8. Availability and changes</h2>
     <p>
@@ -240,6 +253,13 @@
     <p>
       The macOS app runs on your own machine and does not depend on our hosted service.
       Slicely's source is public, so you can always run it yourself.
+    </p>
+    <p>
+      The hosted service runs PrusaSlicer, which is licensed under the GNU AGPLv3; because
+      we run it as a network service, we publish the exact source of what's running to
+      satisfy AGPL §13 — see Settings → About in the app, or
+      <a href="https://github.com/ishmael07/slicely" target="_blank" rel="noopener">github.com/ishmael07/slicely</a>,
+      for the source of this build.
     </p>
 
     <h2 id="s9">9. Disclaimer of warranties</h2>
@@ -298,9 +318,9 @@
 
     <h2 id="s13">13. Governing law</h2>
     <p>
-      These terms are governed by the laws of <span class="ph">{{JURISDICTION}}</span>,
+      These terms are governed by the laws of <span class="ph">the State of New York, United States</span>,
       without regard to its conflict-of-laws rules, and the courts of
-      <span class="ph">{{JURISDICTION}}</span> have exclusive jurisdiction over any dispute
+      <span class="ph">the State of New York, United States</span> have exclusive jurisdiction over any dispute
       arising from them. If you are a consumer, this does not deprive you of the protection
       of the mandatory law of the country where you live.
     </p>
@@ -316,7 +336,7 @@
     <h2 id="s15">15. Contact</h2>
     <p>
       Questions, takedown requests, and anything else:
-      <span class="ph">{{CONTACT_EMAIL}}</span>.
+      <span class="ph">ishmaellallmahamad2@gmail.com</span>.
     </p>
   </main>
 
