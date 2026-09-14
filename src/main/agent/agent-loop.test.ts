@@ -506,3 +506,29 @@ test("a turn that dies between the tool calls and their results still answers ev
     });
   });
 });
+
+test("every call of a session carries the same hashed prompt-cache key", async () => {
+  await withTempDir("agent-cachekey-", async (dir) => {
+    const provider = fakeProvider([
+      {
+        assistant: [{ type: "tool_use", id: "t1", name: "get_slicer_status", input: {} }],
+        toolCalls: [{ id: "t1", name: "get_slicer_status", input: {} }],
+      },
+      { assistant: [{ type: "text", text: "done" }], toolCalls: [] },
+    ]);
+    await runInSession(sessionContext("cache-me", dir), async () => {
+      setUserApiKey("anthropic", KEY);
+      const agent = new SlicelyAgent({ resolveProvider: () => provider });
+      await agent.send("status?", () => {});
+    });
+
+    // STABLE, or the hint is worse than useless: it would scatter one
+    // conversation's calls across machines that each hold a cold prefix.
+    assert.equal(provider.seen.length, 2);
+    assert.equal(provider.seen[0].cacheKey, provider.seen[1].cacheKey);
+    // A HASH, not the session id. It is sent to a third party, and a session id
+    // is a capability in this codebase rather than a label.
+    assert.match(String(provider.seen[0].cacheKey), /^[0-9a-f]{32}$/);
+    assert.equal(provider.seen[0].cacheKey?.includes("cache-me"), false);
+  });
+});

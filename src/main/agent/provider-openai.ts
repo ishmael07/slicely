@@ -245,6 +245,35 @@ function reasoningTurnIndex(messages: NeutralMessage[]): number {
   return -1;
 }
 
+/**
+ * Neutral history → Responses `input` items.
+ *
+ * TODO — MAKE THIS APPEND-ONLY, ONCE A REAL-KEY RUN SAYS IT IS SAFE.
+ *
+ * OpenAI's prompt caching is a pure prefix match with no markers, so a request
+ * caches only as far as its bytes are unchanged from the last one. `instructions`
+ * and `tools` are byte-stable (there is a test), but `input` is NOT append-only:
+ * `reasoningTurnIndex` strips older assistant turns' reasoning items as the
+ * conversation grows, which rewrites bytes in the MIDDLE of the request and
+ * forfeits every cache hit from that point on. On a twelve-call tool loop that is
+ * the difference the whole free tier rests on.
+ *
+ * The obvious fix — stop stripping — is not obviously safe. The Responses API
+ * requires a reasoning item to be followed by the function call it reasoned
+ * about, and replaying every past turn's reasoning puts one in front of a plain
+ * user message, which is the 400 that makes a second message in a chat
+ * impossible. Whether OpenAI accepts a REPLAYED older `encrypted_content` at all
+ * is not something a fixture can answer.
+ *
+ * So the reviewed rule stands for now: reasoning is replayed for exactly one
+ * turn — the newest assistant turn, and only when it holds a `tool_use`, i.e. we
+ * are mid-tool-loop and the next item is that call. When the E2 smoke run with a
+ * real key shows replayed reasoning being accepted, delete the
+ * `reasoningTurnIndex` call below, push every reasoning item, and flip the `todo`
+ * on "input is append-only" in provider-openai.test.ts to a live test. If the
+ * smoke run shows it REJECTED, keep this and record that the mid-prefix rewrite
+ * is a known, accepted cost — the trade was considered, not overlooked.
+ */
 export function toOpenAiInput(messages: NeutralMessage[]): unknown[] {
   const items: unknown[] = [];
   const replayReasoningAt = reasoningTurnIndex(messages);
@@ -299,6 +328,13 @@ export function buildResponsesBody(req: StreamRequest): Record<string, unknown> 
     // Upper bound INCLUDING reasoning tokens, unlike Anthropic's max_tokens.
     max_output_tokens: req.maxOutputTokens,
   };
+  // A ROUTING HINT FOR THE PROMPT CACHE, not a cache control. OpenAI's caching
+  // is automatic and unmarked; this only improves the odds that a session's
+  // calls land on the machine already holding its prefix. Omitted when absent
+  // rather than sent empty: a wrong-but-stable key would pin a whole session to
+  // one shard for nothing. It is a hash of the session id, never the id itself —
+  // see StreamRequest.cacheKey.
+  if (req.cacheKey) body.prompt_cache_key = req.cacheKey;
   const effort = resolveEffort(req.model, req.effort);
   // `summary: "auto"` is what produces the reasoning summary deltas the UI shows
   // as thinking; without it a reasoning model streams nothing until it answers.

@@ -6,7 +6,9 @@
 // keeps is neutral, the tools it declares are neutral, and which provider
 // answers is decided per turn from the user's chosen model — so a user with two
 // keys can switch model mid-session and the next turn simply goes elsewhere.
+import { createHash } from "node:crypto";
 import { getUserApiKey, NoApiKeyError } from "../userkey";
+import { currentSessionId } from "../session-context";
 import { getSettings, getPreferences } from "../settings";
 import { seedSessionFromPreferences } from "./state";
 import { TOOLS, executeTool, toolLabel, type Emit } from "./tools";
@@ -307,6 +309,13 @@ export class SlicelyAgent {
       this.history.push({ role: "user", content: [{ type: "text", text: userMessage }] });
       this.historyProvider = provider.id;
 
+      // A prompt-cache routing hint, stable for as long as the session is — so
+      // every call of every turn in one conversation prefers the machine that
+      // already holds this session's prefix. HASHED, and truncated, because it
+      // goes to a third party and is not needed there in any readable form: a
+      // session id is a capability in this codebase, not a label.
+      const cacheKey = createHash("sha256").update(currentSessionId()).digest("hex").slice(0, 32);
+
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
         if (this.cancelled) break;
 
@@ -324,6 +333,7 @@ export class SlicelyAgent {
             messages: this.history,
             maxOutputTokens: provider.maxOutputTokens,
             signal: this.inFlight.signal,
+            cacheKey,
           },
           (delta) => {
             if (this.cancelled) return;
