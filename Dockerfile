@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+# See the runtime stage below for why this is an arg.
+ARG NODE_IMAGE=node:20-bookworm-slim
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json ./
@@ -24,7 +26,8 @@ RUN npm run build && npm prune --omit=dev
 # arm64 build MUST be given `--build-arg NODE_IMAGE=node:20-trixie-slim`
 # (deploy/oracle/compose.yml does), and the arm64 branch below refuses anything
 # older than 2.7 rather than shipping a slicer that fails on the first model.
-ARG NODE_IMAGE=node:20-bookworm-slim
+# (NODE_IMAGE itself is declared at the top of the file: an ARG is only visible
+# to a FROM if it precedes the first FROM.)
 FROM ${NODE_IMAGE}
 # PrusaSlicer stopped shipping a Linux AppImage as of the 2.9.x line (see the
 # 2.9.2 release notes: "Linux build is now distributed through Flathub"; 2.9.0,
