@@ -82,8 +82,9 @@ ENV HOME=/home/slicely
 # returned error: 504`, a 504 being exactly the transient class curl will retry
 # for the asking. `--retry-all-errors` covers the connection resets a plain
 # `--retry` won't.
-RUN set -eux; mkdir -p /opt/prusaslicer; \
+RUN set -eux; \
     if [ "$TARGETARCH" = "arm64" ]; then \
+      mkdir -p /opt/prusaslicer; \
       printf '#!/bin/sh\nexec xvfb-run -a prusa-slicer "$@"\n' > /opt/prusaslicer/slicer.sh; \
       chmod +x /opt/prusaslicer/slicer.sh; /opt/prusaslicer/slicer.sh --help >/dev/null; \
       rm -rf /tmp/.X11-unix /tmp/.X*-lock; exit 0; \
