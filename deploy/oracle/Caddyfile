@@ -1,0 +1,13 @@
+# HTTPS in front of the app. Caddy issues and renews the Let's Encrypt
+# certificate for SLICELY_HOST on its own; nothing to configure beyond DNS.
+{$SLICELY_HOST} {
+	encode zstd gzip
+	reverse_proxy app:8080 {
+		# Chats stream over SSE for minutes; don't let the proxy give up first.
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+}

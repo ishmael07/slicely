@@ -18,3 +18,4 @@ jobs.json
 settings.json
 .session-secret
 master.key
+**/.env

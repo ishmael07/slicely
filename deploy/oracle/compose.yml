@@ -1,0 +1,53 @@
+# Slicely on one VM (written for an Oracle Cloud Always-Free Ampere instance,
+# but any Docker host works): the app container plus Caddy for HTTPS.
+#
+#   cp .env.example .env   # fill it in — see docs/DEPLOY-ORACLE.md
+#   docker compose up -d --build
+#
+# Persistent state is two named volumes: slicely_data (SLICELY_WORKDIR — sessions,
+# uploads, sliced files, accounts) and caddy_data (the TLS certificate). Both
+# survive `docker compose down`; only `down -v` deletes them.
+services:
+  app:
+    build:
+      context: ../..
+      args:
+        # arm64 needs Debian trixie's prusa-slicer (2.9.2); see the Dockerfile.
+        # On an amd64 host delete this line to get Prusa's own AppImage instead.
+        NODE_IMAGE: node:20-trixie-slim
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-dev}
+    env_file: .env
+    environment:
+      SLICELY_MODE: hosted
+      SLICELY_WORKDIR: /data
+      SLICELY_TRUST_PROXY: "1"
+    volumes:
+      - slicely_data:/data
+    restart: unless-stopped
+    # PrusaSlicer wants headroom for a large mesh; the free Ampere shape has 24GB.
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The public hostname, e.g. slicely.duckdns.org. Caddy gets the certificate.
+      SLICELY_HOST: ${SLICELY_HOST:?set SLICELY_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  slicely_data:
+  caddy_data:
+  caddy_config:

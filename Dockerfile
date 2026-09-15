@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+# See the runtime stage below for why this is an arg.
+ARG NODE_IMAGE=node:20-bookworm-slim
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json ./
@@ -15,7 +17,18 @@ COPY src ./src
 COPY site ./site
 RUN npm run build && npm prune --omit=dev
 
-FROM node:20-bookworm-slim
+# The runtime base is a build arg because of PrusaSlicer, not Node. On amd64 the
+# slicer is Prusa's own AppImage, extracted below, and bookworm is what it was
+# built against. Prusa ships no arm64 Linux build at all, so on arm64 (an
+# Oracle Always-Free Ampere VM, a Raspberry Pi) the slicer comes from Debian's
+# own `prusa-slicer` package instead — 2.5.0 in bookworm, which predates
+# organic supports and other flags this app passes, but 2.9.2 in trixie. So an
+# arm64 build MUST be given `--build-arg NODE_IMAGE=node:20-trixie-slim`
+# (deploy/oracle/compose.yml does), and the arm64 branch below refuses anything
+# older than 2.7 rather than shipping a slicer that fails on the first model.
+# (NODE_IMAGE itself is declared at the top of the file: an ARG is only visible
+# to a FROM if it precedes the first FROM.)
+FROM ${NODE_IMAGE}
 # PrusaSlicer stopped shipping a Linux AppImage as of the 2.9.x line (see the
 # 2.9.2 release notes: "Linux build is now distributed through Flathub"; 2.9.0,
 # 2.9.1 and 2.9.2 all have zero linux-* assets). 2.8.1 is the newest release
@@ -31,9 +44,17 @@ ENV SLICELY_MODE=hosted SLICELY_WORKDIR=/data SLICELY_TRUST_PROXY=1 SLICELY_PORT
 # --no-install-recommends drops. Without it the wrapper dies on
 # `xvfb-run: error: xauth command not found` before PrusaSlicer is even reached,
 # which is to say every slice would have failed.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl libgtk-3-0 libgl1 libglu1-mesa libegl1 libwebkit2gtk-4.1-0 libdbus-1-3 xvfb xauth \
-    && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN set -eux; apt-get update; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+      apt-get install -y --no-install-recommends ca-certificates curl xvfb xauth prusa-slicer; \
+      v=$(dpkg-query -W -f='${Version}' prusa-slicer); \
+      dpkg --compare-versions "$v" ge 2.7 || { echo "prusa-slicer $v is too old for this app (needs >= 2.7); build with --build-arg NODE_IMAGE=node:20-trixie-slim" >&2; exit 1; }; \
+    else \
+      apt-get install -y --no-install-recommends \
+        ca-certificates curl libgtk-3-0 libgl1 libglu1-mesa libegl1 libwebkit2gtk-4.1-0 libdbus-1-3 xvfb xauth; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 # THE RUNTIME USER IS CREATED HERE, not just before `USER` at the bottom, and it
 # gets a REAL HOME. `useradd -r` on its own leaves `$HOME` pointing at a
 # `/home/slicely` that was never created, and PrusaSlicer wants somewhere to put
@@ -61,7 +82,14 @@ ENV HOME=/home/slicely
 # returned error: 504`, a 504 being exactly the transient class curl will retry
 # for the asking. `--retry-all-errors` covers the connection resets a plain
 # `--retry` won't.
-RUN set -eux; RETRY="--retry 5 --retry-delay 3 --retry-all-errors"; \
+RUN set -eux; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+      mkdir -p /opt/prusaslicer; \
+      printf '#!/bin/sh\nexec xvfb-run -a prusa-slicer "$@"\n' > /opt/prusaslicer/slicer.sh; \
+      chmod +x /opt/prusaslicer/slicer.sh; /opt/prusaslicer/slicer.sh --help >/dev/null; \
+      rm -rf /tmp/.X11-unix /tmp/.X*-lock; exit 0; \
+    fi; \
+    RETRY="--retry 5 --retry-delay 3 --retry-all-errors"; \
     url=$(curl -fsSL $RETRY "https://api.github.com/repos/prusa3d/PrusaSlicer/releases/tags/version_${PRUSASLICER_VERSION}" \
       | grep browser_download_url | grep 'linux-x64.*GTK3' | grep -v 'bgcode\|older' | head -1 | cut -d '"' -f 4); \
     curl -fsSL $RETRY -o /tmp/ps.AppImage "$url"; chmod +x /tmp/ps.AppImage; \
