@@ -29,3 +29,6 @@ jobs.json
 master.key
 printer-secrets.json
 secrets.json
+
+# a VM deployment's secrets live next to its compose file
+deploy/oracle/.env
