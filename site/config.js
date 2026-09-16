@@ -6,7 +6,7 @@
  * with no JavaScript at all; this file is what you edit. Keep the two in step —
  * main.js warns in the console when they disagree, naming both values.
  *
- * APP_URL is the Fly deployment. If the app ever moves (a custom domain, say),
+ * APP_URL is the Railway deployment. If the app ever moves (a custom domain, say),
  * change it here AND in the href attributes in index.html.
  *
  * CONTACT_EMAIL has no consumer on this page and is not meant to grow one: the
@@ -18,7 +18,7 @@
  * discovering a second one later.
  */
 window.SLICELY_SITE = {
-  APP_URL: "https://slicely.fly.dev",
+  APP_URL: "https://slicely-production.up.railway.app",
   DOWNLOAD_URL: "https://github.com/ishmael07/slicely/releases/latest",
   REPO_URL: "https://github.com/ishmael07/slicely",
   CONTACT_EMAIL: "{{CONTACT_EMAIL}}",

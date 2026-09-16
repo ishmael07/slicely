@@ -43,7 +43,7 @@ pages' relative links behave more like production over HTTP.
 
 ## Before you deploy — the checklist
 
-1. **`APP_URL`** — the deployed web app, currently `https://slicely.fly.dev`. It lives
+1. **`APP_URL`** — the deployed web app, currently `https://slicely-production.up.railway.app`. It lives
    in **two** places and both must change together if the app ever moves:
    `config.js`, and the `href` attributes in `index.html`. Every CTA carries both, on
    purpose: the `href` is what makes the link work and be keyboard-focusable with no
