@@ -166,6 +166,12 @@ a {
   gap: 6px;
   overflow: visible;
 }
+/* The `hidden` attribute must win over any display rule below (e.g. `.pill { display: flex }`),
+   otherwise an element toggled with `el.hidden = true` keeps rendering. */
+[hidden] {
+  display: none !important;
+}
+
 .pill {
   display: flex;
   align-items: center;
