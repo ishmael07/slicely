@@ -65,6 +65,14 @@ You need the [`flyctl`](https://fly.io/docs/flyctl/install/) CLI and a Fly accou
 
 ## Set up sign-in (optional — the free tier)
 
+> **Which origin?** Every URL below uses the address your app is actually served from — the
+> value of `SLICELY_PUBLIC_URL`. On Fly that is `https://slicely.fly.dev`; on Railway it is
+> the service domain, e.g. `https://slicely-production.up.railway.app`. The callback paths
+> (`/auth/google/callback`, `/auth/github/callback`) never change, and they must match the
+> OAuth app settings byte for byte. On Railway, set the same variables in the service's
+> **Variables** tab instead of `fly secrets set` (Railway redeploys on save).
+
+
 Skip this whole section and you get exactly the app described above: every visitor
 connects their own API key, nothing of yours is ever spent, and no sign-in button appears.
 Do it and a visitor can sign in with Google or GitHub, get **50¢ of your** AI credit once,
