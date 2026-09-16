@@ -122,7 +122,9 @@ USER slicely
 # xvfb-run needs a writable home or config directory, this is the line that says
 # so — at build time, in CI, rather than on the first slice after a deploy.
 RUN /opt/prusaslicer/slicer.sh --help >/dev/null
-VOLUME ["/data"]
+# No VOLUME instruction: /data is created above, and the host attaches the
+# persistent disk to it (fly.toml [mounts], the compose file, or Railway's
+# service settings — Railway rejects a Dockerfile that declares VOLUME).
 EXPOSE 8080
 HEALTHCHECK CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 CMD ["node", "dist/server/index.js"]
