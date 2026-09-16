@@ -155,7 +155,16 @@ let commitCache: string | undefined;
 /** The commit this server is running, resolved once. */
 function sourceCommit(): string {
   if (commitCache) return commitCache;
-  const fromEnv = process.env.SLICELY_SOURCE_COMMIT?.trim();
+  // The image bakes SLICELY_SOURCE_COMMIT from the SOURCE_COMMIT build arg. Hosts that
+  // build straight from git without build args (Railway) expose the commit as a runtime
+  // env var instead; "dev" is the Dockerfile's default and means "not set".
+  const fromEnv = [
+    process.env.SLICELY_SOURCE_COMMIT,
+    process.env.RAILWAY_GIT_COMMIT_SHA,
+    process.env.SOURCE_COMMIT,
+  ]
+    .map((v) => v?.trim())
+    .find((v) => v && v !== "dev");
   if (fromEnv) {
     commitCache = fromEnv;
     return commitCache;
