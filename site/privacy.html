@@ -90,10 +90,13 @@
       never stored, and the hash cannot be turned back into it). Every model call your
       free credit pays for appends one line to a usage ledger — the model, the token
       counts and the fraction of a cent it cost — which is how the balance in the header
-      is worked out. <strong>Delete my data</strong> removes all of it: the account
-      record, the balance, the ledger lines, and the chats, files and keys in your
-      session. The email address is then retired rather than reused, so the free credit
-      is not granted twice.
+      is worked out. We also keep, for each of your last 20 sign-ins, a one-way hash of
+      the internet address you signed in from and the id of the browser session you used.
+      It exists only to spot one person claiming the free credit twice, it cannot be turned
+      back into an address, and Delete my data removes it. <strong>Delete my data</strong>
+      removes all of it: the account record, the balance, the ledger lines, the sign-in
+      history, and the chats, files and keys in your session. The email address is then
+      retired rather than reused, so the free credit is not granted twice.
     </p>
 
     <h2 id="p2">2. What we do not collect</h2>
@@ -144,7 +147,7 @@
       <li><strong>Sessions</strong> — including chats, settings, printers, and your encrypted key — expire after <strong>30 days idle</strong>, and everything in them is deleted.</li>
       <li><strong>Workspace files</strong> — uploads, downloaded models, and sliced output — are swept after <strong>2 hours idle</strong>, well before the session itself expires.</li>
       <li><strong>Server logs</strong> are kept <strong>14 days</strong>.</li>
-      <li><strong>"Delete my data"</strong> in the app removes your session, your chats, your files, your printer credentials, your key and — if you signed in — your account record, balance and usage ledger <strong>immediately</strong>, without waiting for any of the above.</li>
+      <li><strong>"Delete my data"</strong> in the app removes your session, your chats, your files, your printer credentials, your key and — if you signed in — your account record, balance, usage ledger and sign-in history <strong>immediately</strong>, without waiting for any of the above.</li>
     </ul>
     <p>In the macOS app, nothing expires and nothing is swept by us; the files are yours to keep or delete.</p>
 
