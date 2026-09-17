@@ -48,6 +48,14 @@ How to cut and ship a Slicely `.dmg`. Web/Docker deploys are a separate thing �
    Signing and notarization turn on automatically — no code change — once `APPLE_ID`,
    `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` are all set in the environment.
 
+4b. **Launch the built app once and prove the bridge is alive.** Open the DMG, start
+   Slicely.app, then in its window press ⌥⌘I (DevTools) and run `typeof window.slicely`
+   — it must print `"object"`. If it prints `"undefined"`, the preload failed silently
+   (a sandboxed preload may only `require("electron")`; anything else throws before
+   `contextBridge` runs), and the app is a browser tab in a frame: no drag region, no
+   "Open in PrusaSlicer", no file-drop shortcut. `src/main/preload-channels.test.ts`
+   guards this in CI, but only a real launch proves the packaged binary.
+
 5. **Write the GitHub Release notes.** Use this template:
 
    ```markdown
