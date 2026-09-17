@@ -153,7 +153,7 @@ test("the page itself is served, and is only a shell", async () => {
     assert.match(page.headers.get("content-type") ?? "", /text\/html/);
     const html = await page.text();
     assert.match(html, /\/web\/admin\.js/);
-    assert.doesNotMatch(html, /@/, "no address is baked into the page");
+    assert.doesNotMatch(html, /[\w.+-]+@[\w-]+\.\w+/, "no address is baked into the page");
     const mod = await fetch(`${h.base}/web/admin.js`);
     assert.equal(mod.status, 200);
   } finally {

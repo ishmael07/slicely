@@ -22,33 +22,41 @@
       .adm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
       .adm-head h1 { font-size: 20px; font-weight: 680; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
       .adm-head h1 .logo { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-      .adm-head .when { font-size: 12.5px; color: var(--text-faint); }
+      .adm-head .when { font-size: 13px; color: var(--text-faint); }
       .adm-head .when a { color: var(--text-dim); margin-left: 12px; }
-      .adm h2 { font-size: 12px; font-weight: 680; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim); margin: 26px 0 10px; }
+      .adm h2 { font-size: 13px; font-weight: 680; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim); margin: 26px 0 10px; }
       .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
       .tile { background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); padding: 12px 13px; }
-      .tile .k { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+      .tile .k { display: block; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
       .tile .v { display: block; margin-top: 4px; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
       .tile .v.acc { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-      .tile .s { display: block; margin-top: 2px; font-size: 12px; color: var(--text-dim); }
+      .tile .s { display: block; margin-top: 2px; font-size: 13px; color: var(--text-dim); }
       .bars { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; align-items: end; height: 96px; padding: 12px 13px 6px; background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); }
       .bar { position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
       .bar i { display: block; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--accent-2), var(--accent)); min-height: 2px; }
       .bar.unknown i { background: repeating-linear-gradient(45deg, var(--panel-2) 0 4px, transparent 4px 8px); }
-      .bar span { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; font-size: 10px; color: var(--text-faint); text-align: center; white-space: nowrap; }
-      .bars-wrap { padding-bottom: 18px; }
+      .bar span { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; font-size: 13px; color: var(--text-faint); text-align: center; white-space: nowrap; }
+      .bars-wrap { padding-bottom: 22px; }
+      /* Fourteen labels do not fit under fourteen bars on a phone: label
+         every other day, and under 600px show only the last seven bars. */
+      .bar:nth-child(even) span { visibility: hidden; }
+      @media (max-width: 599px) {
+        .bar:nth-child(-n+7) { display: none; }
+        .bar:nth-child(even) span { visibility: visible; }
+        .bar:nth-child(odd) span { visibility: hidden; }
+      }
       .bar:hover i { filter: brightness(1.15); }
-      .bar b { position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 3px; font-size: 10px; font-weight: 600; text-align: center; color: var(--text-dim); opacity: 0; }
+      .bar b { position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 3px; font-size: 13px; font-weight: 600; text-align: center; color: var(--text-dim); opacity: 0; }
       .bar:hover b { opacity: 1; }
       table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
       th, td { text-align: left; padding: 9px 11px; border-top: 0.5px solid var(--border); white-space: nowrap; }
-      thead th { border-top: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); font-weight: 600; background: rgba(255, 255, 255, 0.02); }
+      thead th { border-top: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); font-weight: 600; background: rgba(255, 255, 255, 0.02); }
       td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
       td.dim { color: var(--text-dim); }
-      td .tag { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--panel-2); border: 0.5px solid var(--border); color: var(--text-dim); }
+      td .tag { display: inline-block; font-size: 13px; padding: 2px 7px; border-radius: 999px; background: var(--panel-2); border: 0.5px solid var(--border); color: var(--text-dim); }
       td .tag.blocked { color: var(--err); border-color: rgba(248, 113, 113, 0.35); }
       .table-wrap { overflow-x: auto; }
-      .empty-note { padding: 14px; color: var(--text-dim); font-size: 13px; background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); }
+      .adm-empty { padding: 14px; color: var(--text-dim); font-size: 13px; background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); }
       .gate { max-width: 440px; margin: 18vh auto; text-align: center; color: var(--text-dim); font-size: 14px; line-height: 1.6; }
       .gate .big { font-size: 40px; display: block; margin-bottom: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
       .gate a { color: var(--accent-2); }

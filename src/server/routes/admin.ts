@@ -6,12 +6,13 @@
 // are the same person here as they are at sign-up. No separate password, no
 // token in a URL: the same OAuth sign-in every visitor uses, plus a list.
 //
-// Everybody else gets a 404, not a 403. The page's existence is nobody else's
-// business, and "forbidden" would confirm there is something to be forbidden
-// from. The same 404 covers a desktop build (no accounts) and a hosted one
-// with the variable unset — there is no owner to show it to.
+// Everybody else gets a 404, not a 403: "forbidden" would confirm there is
+// something to be forbidden from. The same 404 covers a desktop build (no
+// accounts) and a hosted one with the variable unset — there is no owner to
+// show it to. The PAGE at /admin is a public, empty shell (static.ts); this
+// route is the only thing that ever hands out data.
 import { Router } from "express";
-import type { Request, RequestHandler, Response } from "express";
+import type { Request, Response } from "express";
 import { isHosted } from "../../main/mode";
 import { adminSummary } from "../../main/accounts/admin-summary";
 import { normalizeEmail } from "../../main/accounts/email";
@@ -37,14 +38,12 @@ export function adminEmails(raw: string | undefined = process.env.SLICELY_ADMIN_
 export interface AdminRouterOptions {
   /** Live sessions in this process, for the "right now" figure. */
   sessions: () => number;
-  limit?: RequestHandler;
 }
 
 export function createAdminRouter(opts: AdminRouterOptions): Router {
   const r = Router();
-  const guards: RequestHandler[] = opts.limit ? [opts.limit] : [];
 
-  r.get("/admin/summary", ...guards, (req: Request, res: Response) => {
+  r.get("/admin/summary", (req: Request, res: Response) => {
     const notFound = () => sendError(res, new WireError(404, "Not found.", "not_found"));
     if (!isHosted()) return notFound();
     const id = req.session?.accountId;

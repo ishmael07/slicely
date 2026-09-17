@@ -96,8 +96,11 @@ function isLedgerLine(x: unknown): x is LedgerLine {
   );
 }
 
+/** A count or an amount as the ledger should have written it: a finite,
+ *  non-negative integer. Anything else counts as 0, the way meter.ts refuses
+ *  to let one bad byte become "unlimited". */
 function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
 }
 
 /** Every account on disk, via the store's own reader so its validation applies. */
@@ -225,12 +228,12 @@ export function adminSummary(sessions: number, now = Date.now()): AdminSummary {
     const lines = readLedger(day);
     const entry: AdminDay = { day, spendMicros: readSpend(day), calls: lines.length, ledgerMicros: 0, tokensIn: 0, tokensOut: 0 };
     for (const l of lines) {
-      entry.ledgerMicros += l.micros;
+      entry.ledgerMicros += num(l.micros);
       entry.tokensIn += num(l.in) + num(l.cacheRead) + num(l.cacheWrite);
       entry.tokensOut += num(l.out);
       const m = byModel.get(l.model) ?? { model: l.model, calls: 0, micros: 0 };
       m.calls += 1;
-      m.micros += l.micros;
+      m.micros += num(l.micros);
       byModel.set(l.model, m);
     }
     if (day === today) callsToday = lines.length;
