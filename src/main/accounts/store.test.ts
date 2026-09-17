@@ -7,8 +7,8 @@ import { resetConfigForTests } from "../config";
 import { centsToMicros } from "../pricing";
 import {
   findOrCreateAccount, getAccount, writeAccount, balanceMicros,
-  deleteAccount, isRetired, accountExistsFor, withAccountLock, resetAccountsForTests,
-  type SignInProfile,
+  deleteAccount, isRetired, accountExistsFor, withAccountLock, recordSignin,
+  resetAccountsForTests, type Account, type SignInProfile,
 } from "./store";
 import { accountFile, indexFile, utcDay } from "./paths";
 
@@ -198,5 +198,98 @@ test("deleting an account retires its email even when the account file is unread
     const again = findOrCreateAccount(profile(), GRANT);
     assert.equal(again.granted, false);
     assert.equal(again.account.grantedMicros, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── sign-in history ──────────────────────────────────────────────────────────
+
+/** `recordSignin` returns void and does its work under the account lock, so a
+ *  test waits by taking the same lock afterwards: the chain runs in order. */
+function settled(id: string): Promise<unknown> {
+  return withAccountLock(id, async () => undefined);
+}
+
+test("a sign-in is recorded newest first, with the hashed address and the session", async () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    recordSignin(account.id, { ipHash: "a".repeat(32), sid: "sid-one" });
+    await settled(account.id);
+    recordSignin(account.id, { ipHash: "b".repeat(32), sid: "sid-two" });
+    await settled(account.id);
+
+    resetAccountsForTests();
+    const stored = getAccount(account.id)!;
+    assert.equal(stored.signins?.length, 2);
+    assert.equal(stored.signins![0].sid, "sid-two", "newest first");
+    assert.equal(stored.signins![0].ipHash, "b".repeat(32));
+    assert.equal(stored.signins![1].sid, "sid-one");
+    assert.ok(Number.isSafeInteger(stored.signins![0].at) && stored.signins![0].at > 0);
+    assert.ok(stored.signins![0].at >= stored.signins![1].at, "time does not run backwards");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("only the last twenty sign-ins are kept", async () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    for (let i = 0; i < 25; i += 1) {
+      recordSignin(account.id, { ipHash: "c".repeat(32), sid: `sid-${i}` });
+    }
+    await settled(account.id);
+
+    resetAccountsForTests();
+    const stored = getAccount(account.id)!;
+    assert.equal(stored.signins?.length, 20, "the history is capped, not unbounded");
+    assert.equal(stored.signins![0].sid, "sid-24", "the newest survives");
+    assert.equal(stored.signins![19].sid, "sid-5", "the oldest five fell off the end");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an account written before sign-in history existed records its first one", async () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    // An old record on disk: no `signins` key at all. Reading it must work, and
+    // the first sign-in after the upgrade must start the list rather than throw.
+    const old = { ...account } as Partial<Account> & { signins?: unknown };
+    delete old.signins;
+    writeAccount(old as Account);
+    resetAccountsForTests();
+    assert.equal(getAccount(account.id)!.signins, undefined, "an old record simply has none");
+
+    recordSignin(account.id, { ipHash: "d".repeat(32), sid: "sid-after" });
+    await settled(account.id);
+    resetAccountsForTests();
+    assert.deepEqual(
+      getAccount(account.id)!.signins!.map((s) => s.sid),
+      ["sid-after"],
+    );
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("deleting an account takes its sign-in history with it", async () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    recordSignin(account.id, { ipHash: "e".repeat(32), sid: "sid-gone" });
+    await settled(account.id);
+    assert.ok(readFileSync(accountFile(account.id), "utf8").includes("sid-gone"));
+
+    deleteAccount(account.id);
+    assert.equal(existsSync(accountFile(account.id)), false, "the whole record goes, history included");
+    resetAccountsForTests();
+    assert.equal(getAccount(account.id), undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("recording a sign-in for an account that is gone is a no-op, not a throw", async () => {
+  const dir = freshWorkdir();
+  try {
+    const { account } = findOrCreateAccount(profile(), GRANT);
+    deleteAccount(account.id);
+    recordSignin(account.id, { ipHash: "f".repeat(32), sid: "sid-nowhere" });
+    await settled(account.id);
+    assert.equal(existsSync(accountFile(account.id)), false, "nothing is resurrected");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -315,16 +315,33 @@ test("accounts on, no key, not signed in: 401 signin_required as JSON, before an
   } finally { await h.close(); }
 });
 
-test("a blocked account is refused 403 email_blocked", async () => {
+test("a blocked account is refused 409 account_blocked, with no provider call", async () => {
   const h = await harness({ setup: accountsOn });
   try {
     const account = signIn(h);
     account.blocked = true;
     writeAccount(account);
     const r = await chat(h);
-    assert.equal(r.status, 403);
-    assert.equal(r.json?.code, "email_blocked");
+    assert.equal(r.status, 409);
+    assert.equal(r.json?.code, "account_blocked");
+    assert.equal(r.json?.error, "This account can't use Slicely.");
     assert.match(r.contentType, /application\/json/);
+    assert.doesNotMatch(r.contentType, /text\/event-stream/);
+    assert.equal(h.agents, 0, "a blocked account never reaches a provider");
+  } finally { await h.close(); }
+});
+
+test("a blocked account with its own key is refused too, still before any provider call", async () => {
+  const h = await harness({ setup: accountsOn });
+  try {
+    const account = signIn(h);
+    account.blocked = true;
+    writeAccount(account);
+    connectKey(h, "anthropic", USER_ANTHROPIC);
+    const r = await chat(h);
+    assert.equal(r.status, 409);
+    assert.equal(r.json?.code, "account_blocked");
+    assert.equal(h.agents, 0);
   } finally { await h.close(); }
 });
 

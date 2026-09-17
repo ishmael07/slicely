@@ -3,10 +3,11 @@
 //
 // An account is the only durable record Slicely keeps about a human, and it is
 // deliberately tiny: who they are at their provider, the email to show them,
-// what was granted, what has been spent, and today's chat count. No IP, no
-// access token, no refresh token, no avatar URL, no prompt text. A test reads
-// the file back and asserts exactly that, because the cheapest way to keep a
-// promise about what we store is to store almost nothing.
+// what was granted, what has been spent, today's chat count, and the last
+// twenty sign-ins. No RAW IP (the history keeps signups.ts's salted hash and
+// nothing else), no access token, no refresh token, no avatar URL, no prompt
+// text. A test reads the file back and asserts exactly that, because the
+// cheapest way to keep a promise about what we store is to store almost nothing.
 //
 // TWO LOOKUPS, ONE IDENTITY. `byProviderUser` ("google:1078…") is the fast,
 // stable path for a repeat sign-in — it survives the person changing their
@@ -41,6 +42,33 @@ import { accountFile, byIdDir, indexFile, utcDay } from "./paths";
 export type AccountProvider = "google" | "github";
 
 /**
+ * One sign-in, as the record keeps it.
+ *
+ * NO RAW ADDRESS, EVER. `ipHash` is signups.ts's `hashIp` — `sha256(salt ‖ ip)`
+ * truncated to 128 bits, under this machine's own salt — because an account file
+ * lives indefinitely and site/privacy.html promises IPs are kept for fourteen
+ * days in server logs. A hash is enough for the only question this history is
+ * for ("is this the same address as last time, or as that other account's?") and
+ * is useless to anyone who is not this machine.
+ *
+ * `sid` is the session the sign-in happened in — the workspace the browser was
+ * holding when it bound. It is this deployment's own opaque id, not a cookie
+ * value and not a secret: the cookie is the id PLUS a signature, and only the
+ * signature authenticates.
+ */
+export interface SigninEntry {
+  at: number;
+  /** 32 lowercase hex characters. See signups.ts's `hashIp`. */
+  ipHash: string;
+  sid: string;
+}
+
+/** How many sign-ins one account remembers. Twenty is enough to see a pattern
+ *  (the same address twice, a burst of new sessions) and small enough that the
+ *  history can never dominate the file it lives in. */
+const SIGNIN_HISTORY = 20;
+
+/**
  * One person's account.
  *
  * Money is in µ¢ — millionths of a cent, 1,000,000 µ¢ = 1¢ (see pricing.ts).
@@ -67,8 +95,13 @@ export interface Account {
   /** "YYYY-MM-DD" in UTC — which day `chatCount` counts. */
   chatDay: string;
   chatCount: number;
-  /** Set by hand by the owner. Answers `email_blocked`. */
-  blocked?: true;
+  /** Set by the owner. Answers `account_blocked`, and does so before any
+   *  provider call — even for someone holding a key of their own. */
+  blocked?: boolean;
+  /** The last few sign-ins, NEWEST FIRST, at most `SIGNIN_HISTORY`. Absent on
+   *  every record written before this field existed, which is why every reader
+   *  must treat "no key" as "no history" rather than as a broken file. */
+  signins?: SigninEntry[];
 }
 
 /** The lookup maps plus the retired list. Rewritten whole on every change — it
@@ -388,11 +421,44 @@ export function findOrCreateAccount(profile: SignInProfile, grantMicros: number)
 }
 
 /**
+ * Note one sign-in on this account: when, from which hashed address, into which
+ * session. Newest first, the oldest dropped past `SIGNIN_HISTORY`.
+ *
+ * UNDER THE ACCOUNT LOCK, because this is a read-modify-write of the same file
+ * every charge and every chat count touches. Two browsers finishing a sign-in at
+ * once would otherwise each prepend to the list they read, and the second write
+ * would lose the first entry — and, worse, would also write back a `spentMicros`
+ * from before whatever charge landed in between.
+ *
+ * RETURNS VOID, AND SWALLOWS ITS OWN FAILURES. The caller is an OAuth callback
+ * that has already bound the session: a history that cannot be written is a
+ * worse record, not a failed sign-in, and turning it into one would lock people
+ * out of an account they are entitled to over a full disk. The refusal is logged
+ * once per account so a real problem is still visible in the log.
+ *
+ * An account that is not there is a no-op — the record may have been deleted
+ * between the bind and this write, and there is nothing to resurrect.
+ */
+export function recordSignin(accountId: string, entry: { ipHash: string; sid: string }): void {
+  void withAccountLock(accountId, async () => {
+    const account = getAccount(accountId);
+    if (!account) return;
+    const previous = Array.isArray(account.signins) ? account.signins : [];
+    account.signins = [{ at: Date.now(), ...entry }, ...previous].slice(0, SIGNIN_HISTORY);
+    writeAccount(account);
+  }).catch(() => {
+    warnOnce(`account ${accountId} could not record a sign-in — the sign-in itself stands.`);
+  });
+}
+
+/**
  * Remove an account and retire its email — what "delete my data" does to the
  * person's record (spec §1.5).
  *
  * Both index entries go, every normalised email that pointed at this id joins
- * `retired` (deduped), the file is deleted and the cache entry dropped. The
+ * `retired` (deduped), the file is deleted — WHOLE, so the sign-in history goes
+ * with it and no hashed address outlives the record — and the cache entry
+ * dropped. The
  * retirement is the point: the ledger lines stay (they are the owner's audit
  * trail and name no person), but the 50 cents is spent whether or not the record
  * survives.

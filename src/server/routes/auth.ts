@@ -42,8 +42,8 @@ import { bindAccountToSession, unbindAccountFromSession } from "../session";
 import { isHosted } from "../../main/mode";
 import { centsToMicros } from "../../main/pricing";
 import { EmailRejected, isDisposableDomain, normalizeEmail } from "../../main/accounts/email";
-import { accountExistsFor, findOrCreateAccount, getAccount } from "../../main/accounts/store";
-import { countSignup } from "../../main/accounts/signups";
+import { accountExistsFor, findOrCreateAccount, getAccount, recordSignin } from "../../main/accounts/store";
+import { countSignup, hashIp } from "../../main/accounts/signups";
 import type { MeResponse } from "../../shared/types";
 import { accountView } from "./config";
 import { clearOauthState, readOauthState, startOauthState, statesMatch } from "../oauth/state";
@@ -148,6 +148,7 @@ export function createAuthRouter(cfg: OauthConfig = {}): Router {
       // an account the client cannot see is an account the client cannot
       // explain, and "signed out for no stated reason" is the worse failure.
       bindAccountToSession(req.session!, account.id);
+      noteSignin(req, account.id);
       redirect(res, state.returnTo);
     } catch (err) {
       logAuthFailure(req, err);
@@ -156,6 +157,31 @@ export function createAuthRouter(cfg: OauthConfig = {}): Router {
   });
 
   return router;
+}
+
+/**
+ * Add this sign-in to the account's history — when, from which hashed address,
+ * into which session.
+ *
+ * THE HASH IS SIGNUPS.TS'S, salt and all, so the history and the per-address
+ * signup cap are keyed the same way and the owner can tell that two accounts
+ * signed in from one address without either file ever holding an address.
+ * `clientIp` is the trust-proxy-aware one the rate limiters use, so a hosted
+ * deploy behind Fly hashes the visitor rather than the edge.
+ *
+ * NOTHING HERE MAY FAIL THE SIGN-IN. The session is already bound and the person
+ * is already in; a salt that cannot be written or a full disk must not turn that
+ * into "sign-in didn't complete", which is the one outcome they cannot act on.
+ * `recordSignin` swallows and logs its own write failures, so this guards only
+ * the synchronous half — reading the peer address and hashing it.
+ */
+function noteSignin(req: Request, accountId: string): void {
+  try {
+    recordSignin(accountId, { ipHash: hashIp(clientIp(req)), sid: req.session?.id ?? "" });
+  } catch (err) {
+    // No address in the line: the thing that just failed is the hashing of one.
+    console.error(`[auth] could not record a sign-in for ${accountId}: ${String(err)}`);
+  }
 }
 
 /** `GET /api/me` and `POST /api/auth/signout`. Mounted at `/api` in BOTH modes:

@@ -23,7 +23,7 @@ import { OAUTH_COOKIE, type OauthState } from "../oauth/state";
 import { OauthError, type OauthProvider, type RawProfile } from "../oauth/index";
 import { resetConfigForTests } from "../../main/config";
 import { resetAccountsForTests } from "../../main/accounts/store";
-import { resetSignupsForTests } from "../../main/accounts/signups";
+import { hashIp, resetSignupsForTests } from "../../main/accounts/signups";
 import { resetMeterForTests } from "../../main/accounts/meter";
 import type { MeResponse } from "../../shared/types";
 
@@ -603,6 +603,82 @@ test("signing out is a POST defended by the ordinary cross-origin guard", async 
     assert.equal(resp.status, 403);
     assert.equal((JSON.parse(body) as { code?: string }).code, "cross_origin");
     assert.equal((await me(h.base, s.session)).signedIn, true, "a cross-site POST signed the visitor out");
+  } finally {
+    await h.close();
+  }
+});
+
+// ── the sign-in history ──────────────────────────────────────────────────────
+
+/** The account record, read fresh off disk. */
+function accountOnDisk(root: string, id: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(root, "accounts", "by-id", id), "utf8")) as Record<string, unknown>;
+}
+
+interface Signin { at: number; ipHash: string; sid: string }
+
+/** `recordSignin` is fire-and-forget under the account lock, so the 302 can beat
+ *  the write by a tick. Poll rather than sleep a fixed amount. */
+async function signinsOnDisk(root: string, id: string, want: number): Promise<Signin[]> {
+  for (let i = 0; i < 200; i += 1) {
+    const found = accountOnDisk(root, id).signins;
+    if (Array.isArray(found) && found.length >= want) return found as Signin[];
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`the account never recorded ${want} sign-in(s)`);
+}
+
+/** The session id inside a signed `__Host-slicely_sid` cookie. */
+function sidOf(cookie: string): string {
+  return decodeURIComponent(cookie.split("=")[1].split(".")[0]);
+}
+
+test("a completed sign-in records one entry: a hashed address and the session it happened in", async () => {
+  const h = await harness();
+  try {
+    const s = await start(h.base);
+    await callback(h.base, s);
+    const ids = accountIds(h.root);
+    assert.equal(ids.length, 1);
+    const [entry] = await signinsOnDisk(h.root, ids[0], 1);
+
+    assert.equal(entry.sid, sidOf(s.session), "the session the sign-in happened in");
+    assert.ok(/^[0-9a-f]{32}$/.test(entry.ipHash), `ipHash is not a hash: ${entry.ipHash}`);
+    assert.ok(Number.isSafeInteger(entry.at) && entry.at > 0);
+
+    // THE HASH IS THE SAME ONE THE SIGNUP CAP USES — same salt, same function.
+    // The loopback peer address has three plausible spellings, so match any.
+    const local = ["127.0.0.1", "::ffff:127.0.0.1", "::1"];
+    assert.ok(local.some((ip) => hashIp(ip) === entry.ipHash), "not signups.ts's hashIp of the peer address");
+
+    // AND THE RAW ADDRESS IS NOWHERE IN THE RECORD.
+    const raw = readFileSync(join(h.root, "accounts", "by-id", ids[0]), "utf8");
+    for (const ip of [...local, "ip:"]) {
+      assert.ok(!raw.includes(ip), `${ip} reached an account file`);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+test("a second sign-in appends rather than replaces, newest first", async () => {
+  const h = await harness();
+  try {
+    const first = await start(h.base);
+    await callback(h.base, first);
+    const ids = accountIds(h.root);
+    await signinsOnDisk(h.root, ids[0], 1);
+
+    // A different browser for the same person: one account, two sign-ins.
+    const second = await start(h.base);
+    await callback(h.base, second);
+    const history = await signinsOnDisk(h.root, ids[0], 2);
+
+    assert.equal(accountIds(h.root).length, 1, "still one account");
+    assert.equal(history.length, 2);
+    assert.equal(history[0].sid, sidOf(second.session), "the newest is first");
+    assert.equal(history[1].sid, sidOf(first.session));
+    assert.notEqual(history[0].sid, history[1].sid);
   } finally {
     await h.close();
   }

@@ -196,15 +196,47 @@ test("an empty balance is 402 credit_exhausted", async () => {
   });
 });
 
-test("a blocked account is 403 email_blocked", async () => {
+test("a blocked account is 409 account_blocked", async () => {
   await fresh(() => {
     process.env.ANTHROPIC_API_KEY = OWNER_ANTHROPIC;
     const account = signedIn();
     account.blocked = true;
     writeAccount(account);
     const err = wireThrown(() => resolveTurnFunding({ accountId: account.id, oauthConfigured: true }));
-    assert.equal(err.status, 403);
-    assert.equal(err.code, "email_blocked");
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "account_blocked");
+    assert.equal(err.message, "This account can't use Slicely.");
+  });
+});
+
+test("a blocked account holding its OWN key is refused too — blocked means blocked", async () => {
+  await fresh(() => {
+    // The own-key branch is normally the first and last word on who pays, and it
+    // never consults the account at all. A block has to be asked BEFORE it, or
+    // the one thing the owner can do about an abusive account is undone by the
+    // abuser pasting a key of their own.
+    process.env.ANTHROPIC_API_KEY = OWNER_ANTHROPIC;
+    setUserApiKey("anthropic", USER_ANTHROPIC);
+    assert.equal(getUserApiKey("anthropic"), USER_ANTHROPIC, "the key really is there");
+    const account = signedIn();
+    account.blocked = true;
+    writeAccount(account);
+    const err = wireThrown(() => resolveTurnFunding({ accountId: account.id, oauthConfigured: true }));
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "account_blocked");
+  });
+});
+
+test("a blocked account is refused even when the free tier is off entirely", async () => {
+  await fresh(() => {
+    // No owner key, no free tier: the ordinary answer here is `no_key`. The
+    // block still comes first, so the person is told the true reason.
+    const account = signedIn();
+    account.blocked = true;
+    writeAccount(account);
+    const err = wireThrown(() => resolveTurnFunding({ accountId: account.id, oauthConfigured: true }));
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "account_blocked");
   });
 });
 

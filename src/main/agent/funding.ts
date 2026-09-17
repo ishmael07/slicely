@@ -10,6 +10,12 @@
 //
 // THE ORDER OF THE CHECKS IS THE POLICY (spec §10.4) and it is deliberate:
 //
+//   0. A BLOCKED ACCOUNT IS REFUSED BEFORE ANYTHING ELSE — 409 `account_blocked`.
+//      It is not a question about who pays, which is why it sits outside the
+//      three below rather than inside step 3: an own key would otherwise walk
+//      straight past it at step 1, and blocking is the only lever the owner has.
+//      Signing in stays allowed, so the person sees the sentence and the record
+//      (and its sign-in history) is still there to look at.
 //   1. THE USER'S OWN KEY WINS, ALWAYS — FOR ANY PROVIDER. Someone who pasted
 //      their own key is paying their own bill: they are never metered, never
 //      capped, never told about credit. Checking this first is also what keeps
@@ -23,9 +29,9 @@
 //      exists for people who have none.
 //   2. NO FREE TIER AND NO KEY is today's product, unchanged — `NoApiKeyError`,
 //      409 `no_key`, "connect a key". Desktop always lands here.
-//   3. THEN, AND ONLY THEN, the account: signed in, not blocked, the day not
-//      spent globally, chats left today, credit left. Five refusals, five codes,
-//      five different sentences, because each has a different fix.
+//   3. THEN, AND ONLY THEN, the account: signed in, the day not spent globally,
+//      chats left today, credit left. Four refusals, four codes, four different
+//      sentences, because each has a different fix.
 //
 // THE MODEL COMES FROM HERE, NOT FROM SETTINGS. A visitor who chose
 // `gpt-6-astra` while they had an OpenAI key, then disconnected it, would
@@ -204,6 +210,21 @@ export interface FundingContext {
  * comparisons.
  */
 export function resolveTurnFunding(ctx: FundingContext): TurnFunding {
+  // BLOCKED IS ASKED FIRST — BEFORE THE OWN-KEY BRANCH, BEFORE ANY PROVIDER CALL.
+  //
+  // It is the one check that is not about who pays, so it does not belong in the
+  // ordered three below. Blocking is the only lever the owner has over an
+  // abusive account, and every branch after this one has a way past it: an own
+  // key bypasses the account entirely (step 1), and with no free tier
+  // configured the answer would be `no_key` — a sentence that invites exactly
+  // the key that would then work. So: blocked means blocked, whoever is paying.
+  //
+  // SIGN-IN ITSELF STAYS ALLOWED (routes/auth.ts binds a blocked account on
+  // purpose). That is what makes this refusal reachable: the person is signed in,
+  // so they see the sentence rather than a silent dead end, and the record — with
+  // its sign-in history — is still there for the owner to look at.
+  refuseIfBlocked(ctx.accountId);
+
   const settings = getSettings();
   const active = providerForModel(settings.model);
   const own = ownKeyForTurn(settings.model);
@@ -226,9 +247,6 @@ export function resolveTurnFunding(ctx: FundingContext): TurnFunding {
   if (!account) {
     throw new WireError(401, "Sign in again to keep going.", "signin_required");
   }
-  if (account.blocked) {
-    throw new WireError(403, "This account can't use Slicely. Get in touch if that's wrong.", "email_blocked");
-  }
   if (freeTierPaused()) {
     throw new WireError(503, "Free usage is busy today — add your own key or try tomorrow.", "free_tier_paused");
   }
@@ -244,6 +262,26 @@ export function resolveTurnFunding(ctx: FundingContext): TurnFunding {
     throw new WireError(402, "You've used your free credit. Add your own API key to keep going.", "credit_exhausted");
   }
   return freeFunding(account, free);
+}
+
+/**
+ * Throw `account_blocked` when the bound account is blocked. A no-op with no
+ * account id at all, which is every desktop request — accounts are hosted-only,
+ * and desktop behaviour must stay byte-identical.
+ *
+ * 409, NOT 403. A 403 in this app is the CSRF and desktop-token family — "this
+ * request was not allowed", a thing about the request. This is a 409 like
+ * `no_key` is: the request was fine, the account it is for is in a state that
+ * cannot chat, and nothing about retrying changes that.
+ *
+ * ONE SENTENCE AND NO MORE. The wire copy is the whole of what a blocked person
+ * is told; why they are blocked is not a fact this refusal should guess at.
+ */
+function refuseIfBlocked(accountId: string | undefined): void {
+  if (!accountId) return;
+  if (getAccount(accountId)?.blocked) {
+    throw new WireError(409, "This account can't use Slicely.", "account_blocked");
+  }
 }
 
 /**

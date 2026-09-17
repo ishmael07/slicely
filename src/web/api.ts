@@ -132,10 +132,10 @@ const CODE_COPY: Record<string, string> = {
 
   // ── accounts and the free tier ─────────────────────────────────────────────
   //
-  // Seven codes, seven sentences, and each one says what happened and what the
-  // reader can do next — never how the meter works and never a number the
-  // header pill is already showing. They are pinned to the design spec by
-  // account-copy.test.ts so the client's words and the server's words cannot
+  // Eight codes, eight sentences, and each one says what happened and — where
+  // there is one to offer — what the reader can do next, never how the meter
+  // works and never a number the header pill is already showing. They are pinned
+  // by account-copy.test.ts so the client's words and the server's words cannot
   // drift apart.
   signin_required: "Sign in to start — you get free credit to try Slicely.",
   credit_exhausted: "You've used your free credit. Add your own API key to keep going.",
@@ -146,6 +146,9 @@ const CODE_COPY: Record<string, string> = {
   email_unverified:
     "That account has no verified email address. Verify one with your provider, or try the other button.",
   email_blocked: "That email address can't be used here. Try another, or use your own API key.",
+  // The ACCOUNT, not the address — and unlike every other line here it offers no
+  // way out, because there isn't one the reader can take on their own.
+  account_blocked: "This account can't use Slicely.",
   oauth_failed: "That sign-in didn't complete. Try again.",
   // Not a chat code: the waitlist route's own 400, shown under the email field.
   email_invalid: "That doesn't look like an email address.",

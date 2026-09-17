@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// account-copy.test.ts — the sentences the client says for the seven account
+// account-copy.test.ts — the sentences the client says for the eight account
 // codes.
 //
 // A `code` is the contractually stable half of a wire error, and the client
@@ -8,7 +8,7 @@
 // user who is told two different things about the same refusal, depending on
 // which door it came through, has found a real bug.
 //
-// So this file pins all seven to the design spec, verbatim
+// So this file pins them to the design spec, verbatim
 // (docs/superpowers/specs/2026-09-15-accounts-free-tier-design.md §10.5 and the
 // plan's Task C1), and pins the house rules for any sentence a user reads: short
 // enough to take in at a glance, no jargon, no machine unit, no path, and never
@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { codeMessage } from "./api.js";
 
-/** The seven new stable codes and the exact sentence each must read as. Copied
+/** The eight new stable codes and the exact sentence each must read as. Copied
  *  from the spec, not from the implementation — a test that reads the source it
  *  checks proves nothing. */
 const ACCOUNT_CODE_COPY: Record<string, string> = {
@@ -35,6 +35,12 @@ const ACCOUNT_CODE_COPY: Record<string, string> = {
     "That account has no verified email address. Verify one with your provider, or try the other button.",
   email_blocked: "That email address can't be used here. Try another, or use your own API key.",
   oauth_failed: "That sign-in didn't complete. Try again.",
+  // The eighth, added after the spec was written: a blocked ACCOUNT, refused by
+  // funding.ts before any provider call and before the own-key branch. It is the
+  // one sentence here that offers no way out, because there is none the reader
+  // can take alone — and it must not hint at one, or a blocked person spends the
+  // afternoon pasting keys.
+  account_blocked: "This account can't use Slicely.",
 };
 
 test("every new account code has the spec's sentence, to the byte", () => {
@@ -62,7 +68,7 @@ test("no sentence is long, jargon, a path, or calls itself an error", () => {
 });
 
 test("the codes that were already stable still read the way they did", () => {
-  // The seven additions must not disturb what the existing failures say.
+  // The additions must not disturb what the existing failures say.
   assert.equal(codeMessage("key_rejected"), "Your API key was rejected — update it in Settings.");
   assert.equal(codeMessage("no_session"), "Reload Slicely to start a new session.");
   assert.equal(codeMessage("rate_limited"), "Slow down a little — try again in a few seconds");

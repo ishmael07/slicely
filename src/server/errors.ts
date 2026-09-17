@@ -8,13 +8,17 @@
 //     thing — show the "connect your key" card, offer a retry — instead of
 //     painting an arbitrary sentence red and leaving the user to guess.
 //
-//     THE ACCOUNTS AND FREE-TIER CODES, and there are exactly seven:
+//     THE ACCOUNTS AND FREE-TIER CODES, and there are exactly eight:
 //       `signin_required`   — hosted, no account: sign in to spend free credit
 //       `credit_exhausted`  — the grant is spent; add your own key
 //       `free_tier_paused`  — the whole day's global spend cap is reached
 //       `signup_limited`    — too many new accounts from one address today
 //       `email_unverified`  — the provider has not verified the address
-//       `email_blocked`     — a disposable domain, or an account blocked by hand
+//       `email_blocked`     — a disposable domain: that ADDRESS cannot be used
+//       `account_blocked`   — 409, this ACCOUNT cannot chat, whoever is paying.
+//                             Refused before any provider call and before the
+//                             own-key branch (main/agent/funding.ts); signing in
+//                             is still allowed, so the person sees the sentence
 //       `oauth_failed`      — anything else about a sign-in, and a visitor can
 //                             only retry, so everything else folds into it
 //     Each gets a sentence in `CODE_COPY` (src/web/api.ts) so the client's copy
