@@ -2364,11 +2364,22 @@ button.menu-item:disabled {
   margin-top: var(--sp-1);
 }
 .signin-buttons .btn {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   padding: 11px 12px;
   font-size: var(--fs);
   text-align: center;
   text-decoration: none;
+}
+/* The provider's mark, inline in the TS (no third-party request), sized to
+   the label. The GitHub mark takes the button's text colour; Google's keeps
+   its own four colours, which is how that mark is meant to be shown. */
+.signin-buttons .btn .provider-mark {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
 }
 /* The way out for someone who never wanted an account: quiet, but a real
    sentence at a real size — the point of this screen is that both doors are
@@ -2764,6 +2775,20 @@ button.menu-item:disabled {
    app.ts only when window.slicely exists, so the browser is unaffected. */
 body.is-desktop #titlebar {
   -webkit-app-region: drag;
+  /* Room for the traffic lights, which float over the header's left edge. */
+  padding-left: 78px;
+}
+/* The page is the window. The browser gets the floating 720px card above
+   760px because it sits in a wide tab; the Mac app's window is already the
+   size the user chose, so the card's max-width, margins and frame would only
+   put a black border around it. */
+body.is-desktop #app {
+  height: 100dvh;
+  max-width: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 body.is-desktop #titlebar button,
 body.is-desktop #titlebar .pill {

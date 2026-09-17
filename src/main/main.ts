@@ -34,10 +34,13 @@ let store: SessionStore | null = null;
 
 function createWindow(url: string): void {
   win = new BrowserWindow({
-    width: 1100,
-    height: 760,
-    minWidth: 420,
-    minHeight: 600,
+    // Chat proportions: a tall, narrow column the way a messaging window is,
+    // not a browser-sized canvas with the page floating in it. Resizable, and
+    // the page fills whatever size it is given (styles.css, `body.is-desktop`).
+    width: 480,
+    height: 820,
+    minWidth: 380,
+    minHeight: 560,
     // The client draws its own header (see styles.css's `body.is-desktop`), so
     // the traffic lights float over it instead of sitting in a title bar.
     titleBarStyle: "hiddenInset",
