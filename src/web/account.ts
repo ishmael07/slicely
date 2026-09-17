@@ -13,7 +13,16 @@
 // third-party logo file to load — the buttons are plain words in the app's own
 // type, like every other button here.
 // ─────────────────────────────────────────────────────────────────────────────
-import { ApiError, account, codeMessage, errorMessage, postJson, refreshAccount, setAccount } from "./api.js";
+import {
+  ApiError,
+  account,
+  codeMessage,
+  errorMessage,
+  onAccountChange,
+  postJson,
+  refreshAccount,
+  setAccount,
+} from "./api.js";
 import { buildConnectCard, config } from "./onboarding.js";
 import { byId, make, menu, openSheet, toast } from "./ui.js";
 
@@ -314,6 +323,23 @@ export function buildSigninCard(): HTMLElement {
   return buildConnectCard();
 }
 
+/**
+ * The card for a turn refused because the account itself is blocked.
+ *
+ * Reuses the credit card's calm panel — nothing broke, so it is not the red
+ * error card — but drops the actions row: unlike a spent balance, there is
+ * nothing to add a key or wait for, and the sentence must not imply otherwise.
+ */
+export function buildBlockedCard(): HTMLElement {
+  const card = make("div", "credit-card blocked-card");
+  card.setAttribute("role", "group");
+  const title = make("h3", "credit-title", codeMessage("account_blocked") ?? "This account can't use Slicely.");
+  title.id = "blockedCardTitle";
+  card.setAttribute("aria-labelledby", "blockedCardTitle");
+  card.appendChild(title);
+  return card;
+}
+
 /** A `credit` frame at the end of a metered turn. No fetch: the server has just
  *  told us the new balance, so the pill repaints from that. */
 export function applyCreditEvent(e: {
@@ -471,4 +497,33 @@ export function hasFreeCredit(): boolean {
 export function creditExhausted(): boolean {
   const me = account();
   return Boolean(me.signedIn && me.account?.exhausted);
+}
+
+// ── the account, blocked ──────────────────────────────────────────────────
+//
+// funding.ts refuses a blocked account before anything else — 409
+// `account_blocked` — whether or not it holds a key or free credit of its own.
+// `/api/me` carries no field for this (blocking is an admin action, not a
+// balance the boot call reports), so the client remembers the refusal itself
+// the first time a turn hits it, rather than waiting on a field that would
+// only ever arrive after the fact.
+//
+// Cleared the moment the store says nobody is signed in — sign-out, or a boot
+// that finds no session — so a different account signing in next gets its own
+// answer, never this one's.
+let blocked = false;
+onAccountChange((me) => {
+  if (!me.signedIn) blocked = false;
+});
+
+/** A turn (or the stream carrying it) came back 409 `account_blocked`. Sticky
+ *  until sign-out. */
+export function markBlocked(): void {
+  blocked = true;
+}
+
+/** The one refusal with no fix: chat stays refused — searches still work —
+ *  until a different account signs in. */
+export function accountBlocked(): boolean {
+  return blocked;
 }

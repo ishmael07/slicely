@@ -23,9 +23,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { routeComposerSubmit, SEARCH_ONLY_PLACEHOLDER, type ComposerRoute } from "./chat.js";
+import { canSendChat, routeComposerSubmit, SEARCH_ONLY_PLACEHOLDER, type ComposerRoute } from "./chat.js";
 import { emptyStateKind } from "./onboarding.js";
-import { creditExhausted, hasFreeCredit } from "./account.js";
+import { accountBlocked, creditExhausted, hasFreeCredit, markBlocked } from "./account.js";
 import { resetSession, setAccount } from "./api.js";
 
 /** The composer as a stranger sees it: no key, no credit, an empty transcript. */
@@ -117,5 +117,45 @@ test("the account store puts a signed-in, spent-out visitor in exactly that stat
     emptyStateKind({ hasKey: false, freeCredit: hasFreeCredit(), exhausted: creditExhausted() }),
     "exhausted",
   );
+  resetSession();
+});
+
+test("a blocked account cannot chat even holding a key or free credit — blocking overrides either", () => {
+  resetSession();
+  assert.equal(accountBlocked(), false, "nothing marked it yet");
+  assert.equal(canSendChat(true), true, "a key or credit alone is enough before any refusal lands");
+
+  markBlocked();
+  assert.equal(accountBlocked(), true);
+  assert.equal(canSendChat(true), false, "blocked overrides a key or credit that would otherwise pay for the turn");
+  assert.equal(canSendChat(false), false);
+
+  // A conversation is refused client-side rather than sent for the server to
+  // refuse again, but a bare search — no model, no money — is untouched.
+  assert.equal(kind(routeComposerSubmit({ ...strangerMid, text: "hello", canChat: canSendChat(true) })), "refuse");
+  assert.equal(
+    kind(routeComposerSubmit({ ...strangerMid, text: "find me a phone stand", canChat: canSendChat(true) })),
+    "search",
+    "a bare search still reaches /api/find while blocked",
+  );
+
+  // Leave the flag as this test found it, so it cannot leak into another test
+  // that shares this module instance.
+  setAccount({ signedIn: false });
+  resetSession();
+});
+
+test("signing out clears the blocked flag, so a different account gets its own answer", () => {
+  resetSession();
+  markBlocked();
+  assert.equal(accountBlocked(), true);
+
+  // signOut() itself just forgets the account the same way — this pins the
+  // underlying rule (cleared the moment the store says nobody is signed in)
+  // without touching the DOM signOut() also updates.
+  setAccount({ signedIn: false });
+  assert.equal(accountBlocked(), false, "a fresh sign-in must not inherit the last account's refusal");
+  assert.equal(canSendChat(true), true);
+
   resetSession();
 });

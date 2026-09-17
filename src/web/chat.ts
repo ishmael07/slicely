@@ -29,10 +29,13 @@ import {
 } from "./cards.js";
 import { byId, closeSheets, confirmDialog, errorCard, externalLink, make, skeleton, toast } from "./ui.js";
 import {
+  accountBlocked,
   applyCreditEvent,
+  buildBlockedCard,
   buildCreditCard,
   buildSigninCard,
   creditExhausted,
+  markBlocked,
   markExhausted,
   type CreditState,
 } from "./account.js";
@@ -348,6 +351,17 @@ function renderAccountRefusal(code: string | undefined): boolean {
     updateSendEnabled();
     return true;
   }
+  if (code === "account_blocked") {
+    endBotBubble();
+    markBlocked();
+    // Same one-card rule as the credit card above (it shares the class): a
+    // second refusal replaces whatever calm card was already up rather than
+    // piling on.
+    messagesEl.querySelectorAll(".credit-card").forEach((el) => el.remove());
+    mount(buildBlockedCard());
+    updateSendEnabled();
+    return true;
+  }
   if (code === "signin_required") {
     endBotBubble();
     // Both doors, never one: the card picks no provider for the user.
@@ -555,6 +569,20 @@ function setBusy(b: boolean): void {
 export const SEARCH_ONLY_PLACEHOLDER = "Search for something to print…";
 
 /**
+ * Whether a line that needs the model may actually be sent: there is a key or
+ * free credit to pay with, AND the account itself isn't blocked.
+ *
+ * Blocking overrides either, because funding.ts's step 0 does — a blocked
+ * account is refused before the key/credit question is even asked, so this
+ * checks it client-side too rather than sending a turn the server will only
+ * refuse. Pure (given the account store), so it can be pinned without a DOM —
+ * see composer-gate.test.ts.
+ */
+export function canSendChat(canPay: boolean): boolean {
+  return canPay && !accountBlocked();
+}
+
+/**
  * The composer's enabled state, and the one line that explains it.
  *
  * THE BOX IS NEVER SWITCHED OFF. A free search needs no key and no credit (spec
@@ -565,11 +593,20 @@ export const SEARCH_ONLY_PLACEHOLDER = "Search for something to print…";
  * need a turn to act on them, so those two buttons still follow `canChat`.
  */
 export function updateSendEnabled(): void {
-  const canChat = deps.canChat();
+  const blocked = accountBlocked();
+  const canChat = canSendChat(deps.canChat());
   sendBtn.disabled = busy || (inputEl.value.trim().length === 0 && stagedFiles.length === 0);
   inputEl.disabled = false;
   inputEl.placeholder = canChat ? chatPlaceholder : SEARCH_ONLY_PLACEHOLDER;
   for (const id of ["attachBtn", "linkBtn"]) byId<HTMLButtonElement>(id).disabled = !canChat;
+  if (blocked) {
+    // Unlike a spent balance, there is nothing to add a key or wait for, so
+    // this line stays up for as long as the account is blocked — card visible
+    // or scrolled out of view, it never goes quiet.
+    composerNote.classList.remove("hidden");
+    renderBlockedNote();
+    return;
+  }
   // The card on screen — the sign-in card, the connect card, the exhausted card
   // — already says this, louder and with the buttons attached. The one exception
   // is a spent balance: spec §1.2.4 promises that sentence above the composer on
@@ -600,11 +637,21 @@ function renderComposerNote(spent: boolean): void {
   composerNote.appendChild(connect);
 }
 
-/** Send was pressed on a line that needs the model, with no key and no credit.
- *  Nothing goes to the server: the line the composer already has is shown, even
- *  if a card is up, because a press with no visible answer reads as broken. */
+/** The composer note for a blocked account: the sentence and nothing else —
+ *  no Connect button, because there is no provider that would fix this. */
+function renderBlockedNote(): void {
+  composerNote.replaceChildren(
+    make("span", "", codeMessage("account_blocked") ?? "This account can't use Slicely."),
+  );
+}
+
+/** Send was pressed on a line that needs the model, with no way to pay for one
+ *  (no key, no credit) or an account that is blocked outright. Nothing goes to
+ *  the server: the line the composer already has is shown, even if a card is
+ *  up, because a press with no visible answer reads as broken. */
 function refuseChat(): void {
-  renderComposerNote(creditExhausted());
+  if (accountBlocked()) renderBlockedNote();
+  else renderComposerNote(creditExhausted());
   composerNote.classList.remove("hidden");
 }
 
@@ -618,7 +665,7 @@ function reportKeyProblem(code: string, message?: string): void {
 
 async function runTurn(instruction: string): Promise<void> {
   if (busy) return;
-  if (!deps.canChat()) return;
+  if (!canSendChat(deps.canChat())) return;
   setBusy(true);
   endBotBubble();
   currentAbort = new AbortController();
@@ -845,7 +892,7 @@ function submitComposer(): void {
     text,
     hasFiles: files.length > 0,
     opening: !messagesEl.querySelector(".msg"),
-    canChat: deps.canChat(),
+    canChat: canSendChat(deps.canChat()),
   });
   if (route.kind === "empty") return;
   if (route.kind === "search") {
