@@ -44,6 +44,11 @@ function createWindow(url: string): void {
     // The client draws its own header (see styles.css's `body.is-desktop`), so
     // the traffic lights float over it instead of sitting in a title bar.
     titleBarStyle: "hiddenInset",
+    // Where the traffic lights sit, stated rather than left to macOS: the
+    // page's header is 51px tall and its brand starts 92px in (styles.css,
+    // `body.is-desktop #titlebar`), so the three lights (12px, 20px apart,
+    // ending at x=66) are centred on that row with clear air before the mark.
+    trafficLightPosition: { x: 14, y: 19 },
     backgroundColor: "#0b0b0c",
     webPreferences: {
       preload: join(__dirname, "preload.js"),

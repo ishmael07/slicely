@@ -2802,8 +2802,15 @@ button.menu-item:disabled {
    app.ts only when window.slicely exists, so the browser is unaffected. */
 body.is-desktop #titlebar {
   -webkit-app-region: drag;
-  /* Room for the traffic lights, which float over the header's left edge. */
-  padding-left: 78px;
+  /* Room for the traffic lights, which main.ts places at x=14..66 on this
+     row; the mark starts well clear of them rather than touching. */
+  padding-left: 92px;
+}
+/* Sheets overlay the transcript, not the header: in the browser they may
+   cover the title bar, but here the traffic lights live on that row and would
+   sit on top of the sheet's own title. */
+body.is-desktop .sheet {
+  top: 60px;
 }
 /* The page is the window. The browser gets the floating 720px card above
    760px because it sits in a wide tab; the Mac app's window is already the
