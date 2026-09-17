@@ -220,6 +220,7 @@ which. Setup steps and the exact callback URLs are in [`docs/DEPLOY.md`](docs/DE
 | `SLICELY_FREE_CREDIT_CENTS` | | `50` | The one-time grant per person, in cents. Granted once per normalised email address and never regranted — signing out, deleting the session, or coming back on the other provider does not mint a second one. |
 | `SLICELY_DAILY_SPEND_CAP_CENTS` | | `500` | Spent across **everyone** per UTC day. The global kill switch: `0` turns free credit off for everybody without taking the sign-in buttons away, which is what you want if a bill surprises you at 3am. |
 | `SLICELY_FREE_CHATS_PER_DAY` | | `40` | Turns one account may start per UTC day. |
+| `SLICELY_ADMIN_EMAILS` | — | Comma-separated e-mails of the accounts that may open **`/admin`** — the owner's dashboard: accounts, spend per day and per model, live sessions, waitlist. They sign in like anyone else and are matched the way sign-up matches addresses. Unset, `/admin` is a 404 for everyone. |
 | `SLICELY_SIGNUPS_PER_IP_PER_DAY` | | `3` | New accounts per hashed address per UTC day. The address is never stored, only `sha256(secret ‖ ip)`. |
 | `SLICELY_FREE_MODEL` | | Sonnet 5 / Luna | Which model free credit runs on. Unset follows whichever owner key is set (Anthropic first). A value that isn't in the catalogue, isn't priced, or has no owner key turns the free tier **off** and says so in the log rather than guessing. |
 | `SLICELY_FREE_MAX_OUTPUT_TOKENS` | | `4000` | Per-call output ceiling on free credit. |

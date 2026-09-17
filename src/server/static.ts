@@ -105,6 +105,10 @@ function table(): Record<string, Servable> {
     // Extension-less, because these are pages a user is linked to (Settings →
     // About, the onboarding card), not files. The `.html` spellings answer too,
     // since that is how the marketing site links them.
+    // The owner's dashboard. The PAGE is public and static — an empty shell
+    // that asks /api/admin/summary, which is what actually decides who the
+    // owner is (routes/admin.ts, 404 for everyone else).
+    "/admin": { file: ["src", "web", "admin.html"], type: HTML, cache: REVALIDATE },
     "/terms": { file: ["site", "terms.html"], type: HTML, cache: PAGE_CACHE },
     "/terms.html": { file: ["site", "terms.html"], type: HTML, cache: PAGE_CACHE },
     "/privacy": { file: ["site", "privacy.html"], type: HTML, cache: PAGE_CACHE },

@@ -48,6 +48,7 @@ import { createKeyRouter, type KeyValidator } from "./routes/key";
 import { createSessionRouter } from "./routes/session";
 import { createAuthRouter, createMeRouter } from "./routes/auth";
 import { createWaitlistRouter } from "./routes/waitlist";
+import { createAdminRouter } from "./routes/admin";
 import { signInProviders, type OauthConfig } from "./oauth/index";
 import { loadPrintersApi } from "./facades";
 import type { SourcingApi } from "./facades";
@@ -213,6 +214,9 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   // POST /api/waitlist. Hosted only — there is no paid plan to wait for on
   // somebody's own Mac — and `heavy`, because every call appends to a file.
   if (isHosted()) api.use(createWaitlistRouter({ limit: heavyLimit }));
+  // The owner's dashboard data. Hosted only; the route itself answers 404 to
+  // anyone who is not a signed-in address from SLICELY_ADMIN_EMAILS.
+  if (isHosted()) api.use(createAdminRouter({ sessions: () => store.count() }));
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
   api.use(createModelsRouter(opts.sourcingApi, { limit: heavyLimit }));
   // POST /api/find — the deterministic search path, which costs a visitor no AI
