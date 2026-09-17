@@ -25,8 +25,24 @@ const DAY_MS = 86_400_000;
 /** How far back the spend/usage series goes. Two weeks reads on one screen. */
 export const SUMMARY_DAYS = 14;
 
+/** One sign-in as store.ts records it (peer-owned field; absent on old records). */
+export interface Signin {
+  at: number;
+  ipHash: string;
+  sid: string;
+}
+
+/** Accounts that share a browser session or a sign-in address. */
+export interface AdminDuplicateGroup {
+  ids: string[];
+  emails: string[];
+  via: "browser" | "address" | "both";
+}
+
 export interface AdminAccountRow {
   id: string;
+  /** Ids of other accounts this one is linked to (see `duplicates`). */
+  linkedTo: string[];
   email: string;
   provider: AccountProvider;
   name?: string;
@@ -85,6 +101,9 @@ export interface AdminSummary {
   sessions: number;
   waitlist: { count: number; entries: Array<Pick<WaitlistEntry, "ts" | "email" | "name">> };
   accounts: AdminAccountRow[];
+  /** Possible one-person-many-accounts, for the owner to judge — nothing is
+   *  acted on automatically. */
+  duplicates: AdminDuplicateGroup[];
 }
 
 /** One ledger line as meter.ts writes it. Anything else is skipped. */
@@ -267,6 +286,77 @@ export function resetDownloadsCacheForTests(): void {
   downloadsCache = undefined;
 }
 
+/** The account's recorded sign-ins, tolerating records written before the
+ *  field existed and anything malformed. */
+export function signinsOf(account: Account): Signin[] {
+  const raw = (account as Account & { signins?: unknown }).signins;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (x): x is Signin =>
+      typeof x === "object" && x !== null &&
+      typeof (x as Signin).at === "number" &&
+      typeof (x as Signin).ipHash === "string" &&
+      typeof (x as Signin).sid === "string",
+  );
+}
+
+/**
+ * Group accounts that share a browser session id or a sign-in address hash.
+ * Union–find over the shared keys; each group says which kind of link tied it
+ * together. Pure, so the shape can be tested without disk.
+ */
+export function findDuplicates(accounts: Account[]): AdminDuplicateGroup[] {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(x, r);
+    return r;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const a of accounts) parent.set(a.id, a.id);
+
+  const bySid = new Map<string, string[]>();
+  const byIp = new Map<string, string[]>();
+  for (const a of accounts) {
+    for (const s of signinsOf(a)) {
+      if (s.sid) (bySid.get(s.sid) ?? bySid.set(s.sid, []).get(s.sid)!).push(a.id);
+      if (s.ipHash) (byIp.get(s.ipHash) ?? byIp.set(s.ipHash, []).get(s.ipHash)!).push(a.id);
+    }
+  }
+  const viaBrowser = new Set<string>();
+  const viaAddress = new Set<string>();
+  const link = (buckets: Map<string, string[]>, mark: Set<string>) => {
+    for (const ids of buckets.values()) {
+      const distinct = [...new Set(ids)];
+      if (distinct.length < 2) continue;
+      for (const id of distinct) mark.add(id);
+      for (let i = 1; i < distinct.length; i++) union(distinct[0], distinct[i]);
+    }
+  };
+  link(bySid, viaBrowser);
+  link(byIp, viaAddress);
+
+  const groups = new Map<string, Account[]>();
+  for (const a of accounts) {
+    const root = find(a.id);
+    (groups.get(root) ?? groups.set(root, []).get(root)!).push(a);
+  }
+  const out: AdminDuplicateGroup[] = [];
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const ids = members.map((m) => m.id);
+    const b = ids.some((id) => viaBrowser.has(id));
+    const i = ids.some((id) => viaAddress.has(id));
+    out.push({ ids, emails: members.map((m) => m.email), via: b && i ? "both" : b ? "browser" : "address" });
+  }
+  return out.sort((x, y) => y.ids.length - x.ids.length);
+}
+
 /** The last `count` UTC days ending today, oldest first. */
 export function lastDays(count: number, now = Date.now()): string[] {
   const days: string[] = [];
@@ -284,9 +374,13 @@ export function adminSummary(
   const week = new Set(days.slice(-7));
 
   const accounts = listAccounts();
+  const duplicates = findDuplicates(accounts);
+  const linked = new Map<string, string[]>();
+  for (const g of duplicates) for (const id of g.ids) linked.set(id, g.ids.filter((x) => x !== id));
   const rows: AdminAccountRow[] = accounts
     .map((a) => ({
       id: a.id,
+      linkedTo: linked.get(a.id) ?? [],
       email: a.email,
       provider: a.provider,
       ...(a.name ? { name: a.name } : {}),
@@ -352,5 +446,6 @@ export function adminSummary(
     sessions,
     waitlist: { count: waitlist.length, entries: waitlist },
     accounts: rows,
+    duplicates,
   };
 }

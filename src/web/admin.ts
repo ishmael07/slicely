@@ -4,6 +4,10 @@
 import type { AdminSummary } from "../main/accounts/admin-summary";
 
 const root = document.getElementById("admin") as HTMLElement;
+const REFRESH_MS = 30_000;
+let lastLoaded = 0;
+let timer: number | undefined;
+let stamp: HTMLElement | undefined;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -92,10 +96,14 @@ function render(s: AdminSummary): void {
   const head = el("div", "adm-head");
   const h1 = el("h1");
   h1.append(el("span", "logo", "◆"), document.createTextNode("Slicely admin"));
-  const meta = el("div", "when", `as of ${new Date(s.generatedAt).toLocaleTimeString()} · UTC day ${s.today}`);
+  const meta = el("div", "when");
+  stamp = el("span", "", "updated just now");
+  const refresh = el("button", "adm-refresh", "Refresh");
+  refresh.type = "button";
+  refresh.addEventListener("click", () => void load());
   const back = el("a", "", "open the app →");
   back.href = "/";
-  meta.append(back);
+  meta.append(stamp, refresh, back);
   head.append(h1, meta);
   root.append(head);
 
@@ -151,9 +159,15 @@ function render(s: AdminSummary): void {
   root.append(
     s.accounts.length
       ? table(
-          ["Email", "Via", "Name", "Joined", "Last seen", "Spent", "Left", "Chats today", ""],
+          ["Email", "Via", "Name", "Joined", "Last seen", "Spent", "Left", "Chats today", "", ""],
           s.accounts.map((a) => {
-            const tag = el("span", `tag${a.blocked ? " blocked" : ""}`, a.blocked ? "blocked" : "");
+            const flags = el("span");
+            if (a.blocked) flags.append(el("span", "tag blocked", "blocked"));
+            if (a.linkedTo.length) {
+              const t = el("span", "tag linked", `⚠ ${n(a.linkedTo.length, "link")}`);
+              t.title = "shares a browser or an address with another account — see Possible duplicates";
+              flags.append(t);
+            }
             return [
               a.email,
               a.provider,
@@ -163,12 +177,26 @@ function render(s: AdminSummary): void {
               usd(a.spentMicros),
               usd(a.balanceMicros),
               String(a.chatsToday),
-              a.blocked ? tag : "",
+              flags,
+              rowMenu(a),
             ];
           }),
           [5, 6, 7],
         )
       : el("div", "adm-empty", "Nobody has signed in yet."),
+  );
+
+  root.append(el("h2", "", "Possible duplicates"));
+  root.append(
+    s.duplicates.length
+      ? table(
+          ["Accounts", "Linked by"],
+          s.duplicates.map((g) => [
+            g.emails.join("  ·  "),
+            g.via === "both" ? "same browser and same address" : g.via === "browser" ? "same browser" : "same address",
+          ]),
+        )
+      : el("div", "adm-empty", "No two accounts share a browser or a sign-in address."),
   );
 
   root.append(el("h2", "", "Waitlist"));
@@ -181,6 +209,119 @@ function render(s: AdminSummary): void {
       : el("div", "adm-empty", "Empty."),
   );
 }
+
+// ── actions ───────────────────────────────────────────────────────────────────
+
+async function act(id: string, action: string, body?: Record<string, unknown>): Promise<string | undefined> {
+  const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (resp.ok) return undefined;
+  try {
+    return ((await resp.json()) as { error?: string }).error ?? `Failed (${resp.status}).`;
+  } catch {
+    return `Failed (${resp.status}).`;
+  }
+}
+
+let openMenu: HTMLElement | undefined;
+function closeMenu(): void {
+  openMenu?.remove();
+  openMenu = undefined;
+}
+document.addEventListener("click", (e) => {
+  if (openMenu && !openMenu.contains(e.target as Node)) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+});
+
+/** The `···` at the end of an account row: four verbs, the destructive two
+ *  asking once more inline rather than with a browser dialog. */
+function rowMenu(a: { id: string; blocked: boolean; email: string }): HTMLElement {
+  const wrap = el("span", "menu-anchor");
+  const btn = el("button", "menu-btn", "···");
+  btn.type = "button";
+  btn.title = `Actions for ${a.email}`;
+  btn.setAttribute("aria-label", `Actions for ${a.email}`);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (openMenu && openMenu.parentElement === wrap) return closeMenu();
+    closeMenu();
+    const menu = el("div", "menu");
+    const item = (label: string, cls: string, run: () => Promise<string | undefined>, confirmLabel?: string) => {
+      const b = el("button", `menu-item ${cls}`, label);
+      b.type = "button";
+      let armed = false;
+      b.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (confirmLabel && !armed) {
+          armed = true;
+          b.textContent = confirmLabel;
+          b.classList.add("armed");
+          window.setTimeout(() => {
+            armed = false;
+            b.textContent = label;
+            b.classList.remove("armed");
+          }, 5000);
+          return;
+        }
+        b.disabled = true;
+        const err = await run();
+        closeMenu();
+        if (err) note(err);
+        await load();
+      });
+      return b;
+    };
+    menu.append(
+      item(a.blocked ? "Unblock" : "Block", "", () => act(a.id, a.blocked ? "unblock" : "block")),
+      item("Add 50¢ credit", "", () => act(a.id, "credit", { cents: 50 })),
+      item("Add custom credit…", "", async () => {
+        const raw = window.prompt("How many cents to add? (1–5000)", "100");
+        if (raw === null) return undefined;
+        const cents = Number.parseInt(raw, 10);
+        if (!Number.isInteger(cents) || cents < 1) return "Enter a whole number of cents.";
+        return act(a.id, "credit", { cents });
+      }),
+      item("Zero the balance", "danger", () => act(a.id, "zero"), "Confirm: zero it"),
+      item("Delete account", "danger", () => act(a.id, "delete"), "Confirm: delete"),
+    );
+    wrap.append(menu);
+    openMenu = menu;
+  });
+  wrap.append(btn);
+  return wrap;
+}
+
+let noteEl: HTMLElement | undefined;
+function note(text: string): void {
+  noteEl?.remove();
+  noteEl = el("div", "adm-note", text);
+  root.prepend(noteEl);
+  window.setTimeout(() => noteEl?.remove(), 6000);
+}
+
+// ── refresh ───────────────────────────────────────────────────────────────────
+
+function tick(): void {
+  if (!stamp || !lastLoaded) return;
+  const s = Math.round((Date.now() - lastLoaded) / 1000);
+  stamp.textContent = s < 5 ? "updated just now" : `updated ${s} s ago`;
+}
+
+function schedule(): void {
+  if (timer !== undefined) window.clearInterval(timer);
+  timer = window.setInterval(() => {
+    tick();
+    if (document.visibilityState === "visible" && Date.now() - lastLoaded >= REFRESH_MS) void load();
+  }, 1000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - lastLoaded >= REFRESH_MS) void load();
+});
 
 /** Signed in or not, as /api/me reports it; false when it cannot be asked. */
 async function signedIn(): Promise<boolean> {
@@ -214,7 +355,13 @@ async function load(): Promise<void> {
   try {
     const resp = await fetch("/api/admin/summary", { headers: { Accept: "application/json" } });
     if (!resp.ok) return gate();
+    const y = window.scrollY;
+    closeMenu();
     render((await resp.json()) as AdminSummary);
+    window.scrollTo(0, y);
+    lastLoaded = Date.now();
+    tick();
+    schedule();
   } catch {
     await gate();
   }

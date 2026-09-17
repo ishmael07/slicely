@@ -12,7 +12,8 @@ import { findOrCreateAccount, resetAccountsForTests } from "./store";
 import { addToWaitlist, resetWaitlistForTests } from "./waitlist";
 import { utcDay } from "./paths";
 import { normalizeEmail } from "./email";
-import { adminSummary, countDownloads, countSessionDirs, lastDays, parseGithubRepo, readLedger, readSpend } from "./admin-summary";
+import { adminSummary, countDownloads, countSessionDirs, findDuplicates, lastDays, parseGithubRepo, readLedger, readSpend } from "./admin-summary";
+import type { Account } from "./store";
 
 process.env.SLICELY_MODE = "hosted";
 
@@ -152,4 +153,24 @@ test("downloads sum the .dmg assets of published releases; junk is unknown", () 
   assert.deepEqual(parseGithubRepo("https://github.com/ishmael07/slicely"), { owner: "ishmael07", repo: "slicely" });
   assert.deepEqual(parseGithubRepo("https://github.com/ishmael07/slicely.git/"), { owner: "ishmael07", repo: "slicely" });
   assert.equal(parseGithubRepo("https://example.com/x/y"), undefined);
+});
+
+test("accounts sharing a browser session or an address hash are grouped, others are not", () => {
+  const acct = (id: string, email: string, signins: Array<{ at: number; ipHash: string; sid: string }>): Account =>
+    ({
+      version: 1, id, provider: "github", providerUserId: id, email, normalizedEmail: email, createdAt: 1, lastSeenAt: 1,
+      grantedMicros: 0, spentMicros: 0, chatDay: "2026-01-01", chatCount: 0, signins,
+    }) as unknown as Account;
+  const groups = findDuplicates([
+    acct("a", "a@x", [{ at: 1, ipHash: "ip1", sid: "s1" }]),
+    acct("b", "b@x", [{ at: 2, ipHash: "ip2", sid: "s1" }]),          // same browser as a
+    acct("c", "c@x", [{ at: 3, ipHash: "ip2", sid: "s9" }]),          // same address as b
+    acct("d", "d@x", [{ at: 4, ipHash: "ip7", sid: "s7" }]),          // alone
+    acct("e", "e@x", []),                                              // old record, no field
+  ]);
+  assert.equal(groups.length, 1);
+  assert.deepEqual([...groups[0].ids].sort(), ["a", "b", "c"]);
+  assert.equal(groups[0].via, "both");
+  const s = adminSummary(0);
+  assert.deepEqual(s.duplicates, []);
 });

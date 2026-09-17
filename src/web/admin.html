@@ -59,6 +59,20 @@
       td .tag.blocked { color: var(--err); border-color: rgba(248, 113, 113, 0.35); }
       .table-wrap { overflow-x: auto; }
       .adm-empty { padding: 14px; color: var(--text-dim); font-size: 13px; background: var(--panel); border: 0.5px solid var(--border); border-radius: var(--radius-sm); }
+      .adm-refresh { font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--panel); border: 0.5px solid var(--border); border-radius: 999px; padding: 4px 11px; margin-left: 12px; cursor: pointer; }
+      .adm-refresh:hover { background: var(--panel-2); border-color: var(--border-bright); }
+      .adm-note { margin-bottom: 14px; padding: 10px 13px; border-radius: var(--radius-sm); background: rgba(248, 113, 113, 0.1); border: 0.5px solid rgba(248, 113, 113, 0.35); color: var(--err); font-size: 13px; }
+      td .tag.linked { color: var(--warn); border-color: rgba(251, 191, 36, 0.35); }
+      td .tag + .tag { margin-left: 6px; }
+      .menu-anchor { position: relative; display: inline-block; }
+      .menu-btn { font: inherit; font-size: 15px; line-height: 1; letter-spacing: 1px; color: var(--text-dim); background: var(--panel-2); border: 0.5px solid var(--border); border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+      .menu-btn:hover { color: var(--text); border-color: var(--border-bright); }
+      .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 190px; display: flex; flex-direction: column; padding: 4px; border-radius: var(--radius-sm); background: linear-gradient(175deg, var(--bg-1), var(--bg-0)); border: 0.5px solid var(--border-bright); box-shadow: var(--shadow); }
+      .menu-item { font: inherit; font-size: 13px; text-align: left; color: var(--text); background: none; border: 0; border-radius: 7px; padding: 8px 10px; cursor: pointer; white-space: nowrap; }
+      .menu-item:hover { background: var(--panel-2); }
+      .menu-item.danger { color: var(--err); }
+      .menu-item.armed { background: rgba(248, 113, 113, 0.14); font-weight: 600; }
+      .menu-item:disabled { opacity: 0.5; cursor: default; }
       .gate { max-width: 440px; margin: 18vh auto; text-align: center; color: var(--text-dim); font-size: 14px; line-height: 1.6; }
       .gate .big { font-size: 40px; display: block; margin-bottom: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
       .gate a { color: var(--accent-2); }

@@ -174,3 +174,56 @@ test("the page itself is served, and is only a shell", async () => {
     await h.close();
   }
 });
+
+test("the owner can block, top up, zero and delete another account — but not act on their own", async () => {
+  const h = await harness();
+  try {
+    process.env.SLICELY_ADMIN_EMAILS = "ownerperson@gmail.com";
+    const owner = await signIn(h.base);
+    // A second person signs in from another browser.
+    who = { providerUserId: "u2", email: "other@example.com", emailVerified: true, name: "Other" };
+    const otherSession = await signIn(h.base);
+    who = { providerUserId: "u1", email: "Owner.Person@gmail.com", emailVerified: true, name: "Owner" };
+
+    const summary = async () =>
+      (await (await fetch(`${h.base}/api/admin/summary`, { headers: { cookie: owner } })).json()) as {
+        accounts: Array<{ id: string; email: string; blocked: boolean; balanceMicros: number }>;
+      };
+    const post = (id: string, action: string, body: unknown = {}, cookie = owner) =>
+      fetch(`${h.base}/api/admin/accounts/${id}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+
+    const before = await summary();
+    const other = before.accounts.find((a) => a.email === "other@example.com");
+    const me = before.accounts.find((a) => a.email === "Owner.Person@gmail.com");
+    assert.ok(other && me);
+
+    assert.equal((await post(other.id, "block")).status, 200);
+    assert.equal((await summary()).accounts.find((a) => a.id === other.id)?.blocked, true);
+    assert.equal((await post(other.id, "unblock")).status, 200);
+    assert.equal((await summary()).accounts.find((a) => a.id === other.id)?.blocked, false);
+
+    assert.equal((await post(other.id, "credit", { cents: 25 })).status, 200);
+    assert.equal((await summary()).accounts.find((a) => a.id === other.id)?.balanceMicros, other.balanceMicros + 25_000_000);
+    assert.equal((await post(other.id, "credit", { cents: "lots" })).status, 400);
+    assert.equal((await post(other.id, "credit", { cents: 999_999 })).status, 400);
+
+    assert.equal((await post(other.id, "zero")).status, 200);
+    assert.equal((await summary()).accounts.find((a) => a.id === other.id)?.balanceMicros, 0);
+
+    assert.equal((await post(me.id, "block")).status, 400, "not on your own account");
+    assert.equal((await post(me.id, "credit", { cents: 1 })).status, 200, "except a top-up");
+
+    assert.equal((await post(other.id, "delete", {}, otherSession)).status, 404, "a non-owner sees nothing");
+    assert.equal((await post(other.id, "explode")).status, 404, "an unknown verb is nothing");
+    assert.equal((await post("not-an-id", "block")).status, 404);
+    assert.equal((await post(other.id, "delete")).status, 200);
+    assert.equal((await summary()).accounts.some((a) => a.id === other.id), false);
+    assert.equal((await post(other.id, "block")).status, 404, "gone");
+  } finally {
+    await h.close();
+  }
+});
