@@ -6,6 +6,11 @@
  * with no JavaScript at all; this file is what you edit. Keep the two in step —
  * main.js warns in the console when they disagree, naming both values.
  *
+ * DOWNLOAD_URL is the DMG itself, not the release page: GitHub serves
+ * releases/latest/download/<asset> as an attachment, so the button downloads.
+ * The asset name is stable because package.json's build.mac.artifactName says
+ * so; a release built under another name breaks this link.
+ *
  * APP_URL is the Railway deployment. If the app ever moves (a custom domain, say),
  * change it here AND in the href attributes in index.html.
  *
@@ -19,7 +24,7 @@
  */
 window.SLICELY_SITE = {
   APP_URL: "https://slicely-production.up.railway.app",
-  DOWNLOAD_URL: "https://github.com/ishmael07/slicely/releases/latest",
+  DOWNLOAD_URL: "https://github.com/ishmael07/slicely/releases/latest/download/Slicely-mac-universal.dmg",
   REPO_URL: "https://github.com/ishmael07/slicely",
   CONTACT_EMAIL: "{{CONTACT_EMAIL}}",
 };

@@ -1,7 +1,7 @@
 {
   "name": "slicely",
   "version": "0.2.0",
-  "description": "Slicely — an AI agent that finds free 3D-printable models online and drives PrusaSlicer for you. macOS chat-bar app.",
+  "description": "Slicely \u2014 an AI agent that finds free 3D-printable models online and drives PrusaSlicer for you. macOS chat-bar app.",
   "main": "dist/main/main.js",
   "author": "ishmael07",
   "license": "MIT",
@@ -89,7 +89,8 @@
           "from": "build/How to open.txt",
           "to": "How to open.txt"
         }
-      ]
+      ],
+      "artifactName": "Slicely-mac-universal.${ext}"
     },
     "dmg": {
       "contents": [
