@@ -730,24 +730,51 @@ a {
   color: var(--text);
 }
 .empty .examples {
-  margin-top: 16px;
+  margin-top: 18px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
+  width: 100%;
 }
+/* Each line rises in on its own beat (the delay is set inline per line), and
+   lifts a little under the pointer. Centred, like the sentence above it. */
 .ex {
   font-size: var(--fs-sm);
-  padding: 10px 12px;
-  border-radius: 10px;
+  padding: 11px 14px;
+  border-radius: 12px;
   background: var(--panel);
   border: 0.5px solid var(--border);
   cursor: pointer;
   color: var(--text);
-  text-align: left;
+  text-align: center;
+  line-height: 1.4;
+  opacity: 0;
+  animation: ex-in 0.55s var(--ease) both;
+  transition: background 0.15s, border-color 0.15s, transform 0.2s var(--ease);
 }
 .ex:hover {
   background: var(--panel-2);
   border-color: var(--border-bright);
+  transform: translateY(-1px);
+}
+.ex:active {
+  transform: translateY(0) scale(0.99);
+}
+@keyframes ex-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ex {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .msg {

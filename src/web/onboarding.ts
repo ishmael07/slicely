@@ -495,11 +495,45 @@ function forgetKey(id: ProviderId): void {
 
 // ── the empty state ──────────────────────────────────────────────────────────
 
-const EXAMPLE_PROMPTS = [
+// A pool, not a list: three are drawn at random on every open, so two people
+// (or one person twice) see different ways in — a search, a file, a link, a
+// job, a colour, a printer — rather than the same three lines every time. Each
+// line is one thing Slicely actually does, phrased as somebody would type it.
+export const EXAMPLE_POOL: readonly string[] = [
   "Find me a phone stand I can print today",
-  "Slice this for strength, PETG, my Ender 3",
   "Show me a cable clip for a desk",
+  "Find a headphone hook I can screw to a wall",
+  "Search for a raspberry pi 5 case with fan mount",
+  "Find a low-poly planter, nothing over 6 hours",
+  "Show me some fidget toys that print in one piece",
+  "Find a tiny desk organizer for pens",
+  "Slice this for strength, PETG, my Ender 3",
+  "Slice this as fast as possible, draft quality",
+  "Slice this at 0.12 mm for detail, PLA",
+  "Which way up should this print? Explain the trade-off",
+  "Print 4 of these, two red and two blue",
+  "Split this into its parts so each gets its own colour",
+  "Print all the parts in this GitHub repo on as few plates as you can",
+  "Scale this to 80% and slice it for my Prusa MK4",
+  "Slice it and send it to my printer",
+  "How much filament will this take?",
+  "Find a replacement knob for a Bambu A1 spool holder",
 ];
+
+/**
+ * Three distinct lines from the pool, chosen by `random` (Math.random by
+ * default; tests pass their own). A partial Fisher–Yates: the first `count`
+ * positions are settled, the rest untouched.
+ */
+export function pickExamples(count = 3, random: () => number = Math.random): string[] {
+  const pool = [...EXAMPLE_POOL];
+  const n = Math.min(count, pool.length);
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(random() * (pool.length - i));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
+}
 
 export type EmptyStateKind =
   /** Type something — a key is connected, or there is credit to spend. */
@@ -552,12 +586,15 @@ export function buildEmptyState(onExample: (prompt: string) => void, credit: Cre
   p.appendChild(document.createTextNode(", slice it, and print. Right from your phone."));
   empty.appendChild(p);
   const examples = make("div", "examples");
-  for (const ex of EXAMPLE_PROMPTS) {
+  pickExamples().forEach((ex, i) => {
     const b = make("button", "ex", ex);
     b.type = "button";
+    // Staggered entrance (styles.css `.ex`): each line lands a beat after the
+    // one above, so the three read as arriving, not as a block that was there.
+    b.style.animationDelay = `${120 + i * 90}ms`;
     b.onclick = () => onExample(ex);
     examples.appendChild(b);
-  }
+  });
   empty.appendChild(examples);
   return empty;
 }
