@@ -248,9 +248,15 @@ function rowMenu(a: { id: string; blocked: boolean; email: string }): HTMLElemen
   btn.setAttribute("aria-label", `Actions for ${a.email}`);
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (openMenu && openMenu.parentElement === wrap) return closeMenu();
+    if (openMenu && openMenu.dataset.for === a.id) return closeMenu();
     closeMenu();
+    // Fixed and appended to <body>, not inside the row: the table clips its
+    // overflow for the rounded corners, and would cut the menu off.
     const menu = el("div", "menu");
+    menu.dataset.for = a.id;
+    const r = btn.getBoundingClientRect();
+    menu.style.top = `${Math.round(r.bottom + 4)}px`;
+    menu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
     const item = (label: string, cls: string, run: () => Promise<string | undefined>, confirmLabel?: string) => {
       const b = el("button", `menu-item ${cls}`, label);
       b.type = "button";
@@ -289,12 +295,15 @@ function rowMenu(a: { id: string; blocked: boolean; email: string }): HTMLElemen
       item("Zero the balance", "danger", () => act(a.id, "zero"), "Confirm: zero it"),
       item("Delete account", "danger", () => act(a.id, "delete"), "Confirm: delete"),
     );
-    wrap.append(menu);
+    document.body.append(menu);
     openMenu = menu;
   });
   wrap.append(btn);
   return wrap;
 }
+// A menu pinned to the viewport must not drift from its button.
+window.addEventListener("scroll", closeMenu, { passive: true });
+window.addEventListener("resize", closeMenu);
 
 let noteEl: HTMLElement | undefined;
 function note(text: string): void {
