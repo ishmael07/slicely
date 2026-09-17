@@ -1,6 +1,6 @@
 {
   "name": "slicely",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Slicely — an AI agent that finds free 3D-printable models online and drives PrusaSlicer for you. macOS chat-bar app.",
   "main": "dist/main/main.js",
   "author": "ishmael07",

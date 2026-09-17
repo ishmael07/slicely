@@ -15,7 +15,7 @@
 //   • and the handful of native actions the preload bridge exposes (Task E2).
 // ─────────────────────────────────────────────────────────────────────────────
 import "./desktop-env"; // FIRST: sets SLICELY_MODE / SLICELY_WORKDIR (see the file)
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } from "electron";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { startServer } from "../server/index";
@@ -206,7 +206,20 @@ async function boot(): Promise<void> {
   createWindow(serverUrl);
 }
 
+// The packaged app carries its name and icon in its bundle (package.json
+// `build`: productName, build/icon.icns). A dev run (`npm start`) is the bare
+// Electron binary, whose menu bar says "Electron" and whose Dock tile is
+// Electron's — so the name and Dock icon are set here too, and the
+// application menu is built from roles so its first title follows app.name.
+app.name = "Slicely";
+
 app.whenReady().then(async () => {
+  if (process.platform === "darwin" && !app.isPackaged) {
+    app.dock?.setIcon(join(__dirname, "..", "..", "build", "icon.png"));
+  }
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }]),
+  );
   try {
     registerNativeIpc();
     await boot();
