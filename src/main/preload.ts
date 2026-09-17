@@ -28,8 +28,20 @@
 // here are Electron's own renderer-side APIs, which is exactly enough.
 // ─────────────────────────────────────────────────────────────────────────────
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import { IPC } from "../shared/types";
 import type { SlicelyDesktopApi } from "../shared/types";
+
+// The channel names are spelled out here rather than imported from
+// ../shared/types: this preload runs SANDBOXED (main.ts sets `sandbox: true`),
+// and a sandboxed preload's `require` reaches only Electron's own modules. A
+// require of a project file throws before `exposeInMainWorld` runs, the page
+// never gets `window.slicely`, and the Mac app silently behaves like a browser
+// tab — no native open, no draggable header. preload-channels.test.ts holds
+// these three strings to the `IPC` object so they cannot drift apart.
+const IPC = {
+  openGcode: "slicely:openGcode",
+  revealGcode: "slicely:revealGcode",
+  pickFiles: "slicely:pickFiles",
+} as const;
 
 const api: SlicelyDesktopApi = {
   openGcode: (token) => ipcRenderer.invoke(IPC.openGcode, token),
