@@ -14,7 +14,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { isHosted } from "../../main/mode";
-import { adminSummary } from "../../main/accounts/admin-summary";
+import { adminSummary, releaseDownloads, type AdminDownloads } from "../../main/accounts/admin-summary";
 import { normalizeEmail } from "../../main/accounts/email";
 import { getAccount } from "../../main/accounts/store";
 import { sendError, WireError } from "../errors";
@@ -35,9 +35,13 @@ export function adminEmails(raw: string | undefined = process.env.SLICELY_ADMIN_
   return out;
 }
 
+const DEFAULT_REPO_URL = "https://github.com/ishmael07/slicely";
+
 export interface AdminRouterOptions {
   /** Live sessions in this process, for the "right now" figure. */
   sessions: () => number;
+  /** Mac download counts; the default asks GitHub (cached). Tests inject. */
+  downloads?: () => Promise<AdminDownloads>;
 }
 
 export function createAdminRouter(opts: AdminRouterOptions): Router {
@@ -53,8 +57,18 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     const account = getAccount(id);
     if (!account || !admins.has(account.normalizedEmail)) return notFound();
 
-    res.setHeader("Cache-Control", "no-store");
-    res.json(adminSummary(opts.sessions()));
+    const downloads =
+      opts.downloads ?? (() => releaseDownloads(process.env.SLICELY_REPO_URL?.trim() || DEFAULT_REPO_URL));
+    void downloads().then(
+      (d) => {
+        res.setHeader("Cache-Control", "no-store");
+        res.json(adminSummary(opts.sessions(), Date.now(), d));
+      },
+      () => {
+        res.setHeader("Cache-Control", "no-store");
+        res.json(adminSummary(opts.sessions()));
+      },
+    );
   });
 
   return r;

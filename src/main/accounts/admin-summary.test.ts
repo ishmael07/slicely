@@ -12,7 +12,7 @@ import { findOrCreateAccount, resetAccountsForTests } from "./store";
 import { addToWaitlist, resetWaitlistForTests } from "./waitlist";
 import { utcDay } from "./paths";
 import { normalizeEmail } from "./email";
-import { adminSummary, lastDays, readLedger, readSpend } from "./admin-summary";
+import { adminSummary, countDownloads, countSessionDirs, lastDays, parseGithubRepo, readLedger, readSpend } from "./admin-summary";
 
 process.env.SLICELY_MODE = "hosted";
 
@@ -123,4 +123,33 @@ test("an empty deployment summarises to zeros without creating errors", () => {
   } finally {
     f.close();
   }
+});
+
+test("visitors are the session directories on disk", () => {
+  const f = fresh();
+  try {
+    assert.equal(countSessionDirs(join(f.root, "sessions")), 0);
+    mkdirSync(join(f.root, "sessions", "a1"), { recursive: true });
+    mkdirSync(join(f.root, "sessions", "b2"), { recursive: true });
+    writeFileSync(join(f.root, "sessions", "stray.txt"), "");
+    assert.equal(countSessionDirs(join(f.root, "sessions")), 2);
+    assert.equal(adminSummary(0).visitors, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test("downloads sum the .dmg assets of published releases; junk is unknown", () => {
+  const releases = [
+    { tag_name: "v0.2.1", assets: [{ name: "Slicely-mac-universal.dmg", download_count: 12 }, { name: "latest-mac.yml", download_count: 99 }] },
+    { tag_name: "v0.2.0", assets: [{ name: "Slicely-0.2.0-universal.dmg", download_count: 5 }, { name: "Slicely-mac-universal.dmg", download_count: 2 }] },
+    { tag_name: "v9", draft: true, assets: [{ name: "x.dmg", download_count: 1000 }] },
+  ];
+  const d = countDownloads(releases, 1);
+  assert.equal(d.total, 19);
+  assert.deepEqual(d.byRelease, [{ tag: "v0.2.1", count: 12 }, { tag: "v0.2.0", count: 7 }]);
+  assert.equal(countDownloads({ message: "rate limited" }).total, null);
+  assert.deepEqual(parseGithubRepo("https://github.com/ishmael07/slicely"), { owner: "ishmael07", repo: "slicely" });
+  assert.deepEqual(parseGithubRepo("https://github.com/ishmael07/slicely.git/"), { owner: "ishmael07", repo: "slicely" });
+  assert.equal(parseGithubRepo("https://example.com/x/y"), undefined);
 });

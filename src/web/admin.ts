@@ -103,8 +103,16 @@ function render(s: AdminSummary): void {
   root.append(
     tiles([
       tile("Accounts", String(s.users.total), `${s.users.newToday} today · ${s.users.new7d} this week`, true),
+      tile("Visitors", s.visitors.toLocaleString(), "browsers seen in the last 30 days"),
       tile("Active 24 h", String(s.users.active24h)),
-      tile("Live sessions", String(s.sessions), "signed in or not"),
+      tile("Live sessions", String(s.sessions), "right now, signed in or not"),
+      tile(
+        "Mac downloads",
+        s.downloads.total === null ? "unknown" : s.downloads.total.toLocaleString(),
+        s.downloads.total === null
+          ? "GitHub didn't answer"
+          : s.downloads.byRelease.map((r) => `${r.tag} ${r.count}`).join(" · ") || "no releases yet",
+      ),
       tile("Waitlist", String(s.waitlist.count), "asked for a paid plan"),
       tile("Blocked", String(s.users.blocked)),
     ]),

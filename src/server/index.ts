@@ -55,6 +55,8 @@ import type { SourcingApi } from "./facades";
 import type { PrinterTestResult, ResolvedPrinter } from "../shared/printers";
 
 export interface CreateAppOptions {
+  /** The admin page's Mac download counter; tests inject one so nothing asks GitHub. */
+  adminDownloads?: () => Promise<import("../main/accounts/admin-summary").AdminDownloads>;
   /** Inject a session store (tests use a temp-dir-backed one with a short
    *  idle timeout instead of the real `~/Slicely/sessions`). */
   sessionStore?: SessionStore;
@@ -216,7 +218,7 @@ export function createApp(opts: CreateAppOptions = {}): Express {
   if (isHosted()) api.use(createWaitlistRouter({ limit: heavyLimit }));
   // The owner's dashboard data. Hosted only; the route itself answers 404 to
   // anyone who is not a signed-in address from SLICELY_ADMIN_EMAILS.
-  if (isHosted()) api.use(createAdminRouter({ sessions: () => store.count() }));
+  if (isHosted()) api.use(createAdminRouter({ sessions: () => store.count(), downloads: opts.adminDownloads }));
   api.use(createChatRouter(opts.chatAgentFactory, { limit: chatLimit }));
   api.use(createModelsRouter(opts.sourcingApi, { limit: heavyLimit }));
   // POST /api/find — the deterministic search path, which costs a visitor no AI

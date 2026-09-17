@@ -14,7 +14,9 @@
 // paths creates its folder, so desktop code must never call `adminSummary()`.
 // ─────────────────────────────────────────────────────────────────────────────
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getConfig } from "../config";
+import { fetchJson } from "../sourcing/net";
 import { byIdDir, spendFile, usageFile, utcDay, waitlistFile } from "./paths";
 import { balanceMicros, getAccount, safeGrantedMicros, safeSpentMicros, type Account, type AccountProvider } from "./store";
 import type { WaitlistEntry } from "./waitlist";
@@ -55,9 +57,21 @@ export interface AdminModelRow {
   micros: number;
 }
 
+/** Mac DMG downloads, as GitHub counts them per release asset. */
+export interface AdminDownloads {
+  /** `null` when GitHub could not be asked (offline, rate-limited, no releases). */
+  total: number | null;
+  byRelease: Array<{ tag: string; count: number }>;
+  fetchedAt: number;
+}
+
 export interface AdminSummary {
   generatedAt: number;
   today: string;
+  /** Session workspaces on disk — every browser that opened the app in the
+   *  retention window (30 days idle), signed in or not. */
+  visitors: number;
+  downloads: AdminDownloads;
   users: { total: number; newToday: number; new7d: number; active24h: number; blocked: number };
   credit: {
     grantedMicros: number;
@@ -183,6 +197,76 @@ export function readWaitlist(): WaitlistEntry[] {
   return out;
 }
 
+/** Session directories under the workdir: one per browser that ever started
+ *  a session and has not been swept (30 days idle). Missing dir = 0. */
+export function countSessionDirs(root: string = join(getConfig().workdir, "sessions")): number {
+  try {
+    return readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).length;
+  } catch {
+    return 0;
+  }
+}
+
+interface GithubRelease {
+  tag_name?: unknown;
+  draft?: unknown;
+  assets?: Array<{ name?: unknown; download_count?: unknown }>;
+}
+
+/** Sum the DMG download counts GitHub reports, per published release. Pure. */
+export function countDownloads(releases: unknown, now = Date.now()): AdminDownloads {
+  const byRelease: Array<{ tag: string; count: number }> = [];
+  if (!Array.isArray(releases)) return { total: null, byRelease, fetchedAt: now };
+  for (const r of releases as GithubRelease[]) {
+    if (r.draft === true || typeof r.tag_name !== "string") continue;
+    let count = 0;
+    for (const a of r.assets ?? []) {
+      if (typeof a.name === "string" && a.name.endsWith(".dmg")) count += num(a.download_count);
+    }
+    byRelease.push({ tag: r.tag_name, count });
+  }
+  return { total: byRelease.reduce((s, r) => s + r.count, 0), byRelease, fetchedAt: now };
+}
+
+/** "https://github.com/owner/repo[...]" → { owner, repo }, or undefined. */
+export function parseGithubRepo(url: string): { owner: string; repo: string } | undefined {
+  const m = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url.trim());
+  return m ? { owner: m[1], repo: m[2] } : undefined;
+}
+
+const DOWNLOADS_TTL_MS = 10 * 60_000;
+const DOWNLOADS_RETRY_MS = 60_000;
+let downloadsCache: { until: number; value: AdminDownloads } | undefined;
+
+/**
+ * Download counts from GitHub's public releases API, cached ten minutes (one
+ * minute after a failure) so the page can be refreshed freely without
+ * spending the 60-per-hour anonymous quota. Never throws: an unreachable
+ * GitHub is "unknown", which the page says as such.
+ */
+export async function releaseDownloads(repoUrl: string, now = Date.now()): Promise<AdminDownloads> {
+  if (downloadsCache && downloadsCache.until > now) return downloadsCache.value;
+  const repo = parseGithubRepo(repoUrl);
+  let value: AdminDownloads;
+  try {
+    if (!repo) throw new Error("not a github.com repository url");
+    const releases = await fetchJson<unknown>(
+      `https://api.github.com/repos/${repo.owner}/${repo.repo}/releases?per_page=30`,
+      { headers: { Accept: "application/vnd.github+json" } },
+      5000,
+    );
+    value = countDownloads(releases, now);
+  } catch {
+    value = { total: null, byRelease: [], fetchedAt: now };
+  }
+  downloadsCache = { until: now + (value.total === null ? DOWNLOADS_RETRY_MS : DOWNLOADS_TTL_MS), value };
+  return value;
+}
+
+export function resetDownloadsCacheForTests(): void {
+  downloadsCache = undefined;
+}
+
 /** The last `count` UTC days ending today, oldest first. */
 export function lastDays(count: number, now = Date.now()): string[] {
   const days: string[] = [];
@@ -190,7 +274,11 @@ export function lastDays(count: number, now = Date.now()): string[] {
   return days;
 }
 
-export function adminSummary(sessions: number, now = Date.now()): AdminSummary {
+export function adminSummary(
+  sessions: number,
+  now = Date.now(),
+  downloads: AdminDownloads = { total: null, byRelease: [], fetchedAt: now },
+): AdminSummary {
   const today = utcDay(now);
   const days = lastDays(SUMMARY_DAYS, now);
   const week = new Set(days.slice(-7));
@@ -246,6 +334,8 @@ export function adminSummary(sessions: number, now = Date.now()): AdminSummary {
   return {
     generatedAt: now,
     today,
+    visitors: countSessionDirs(),
+    downloads,
     users,
     credit: {
       grantedMicros: rows.reduce((s, r) => s + r.grantedMicros, 0),

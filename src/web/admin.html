@@ -16,7 +16,9 @@
     <style>
       /* The owner's page: the app's palette, its own layout. One column of
          stat tiles, then tables. Everything is filled in by admin.ts. */
-      html, body { height: auto; overflow: auto; }
+      /* app.css pins html/body to the viewport with overflow hidden (the app
+         scrolls its transcript, not the page). This page IS the scroller. */
+      html, body { height: auto !important; min-height: 100%; overflow: auto !important; overscroll-behavior: auto; }
       body { background: var(--bg-0); }
       .adm { max-width: 1080px; margin: 0 auto; padding: 28px 20px 64px; }
       .adm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }

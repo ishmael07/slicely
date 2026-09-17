@@ -58,7 +58,13 @@ async function harness(): Promise<{ base: string; close: () => Promise<void> }> 
   resetAccountsForTests();
   const store = new SessionStore({ sessionsRoot: join(root, "sessions"), secretDir: root, sweepIntervalMs: 0 });
   const { base, close } = await listen(
-    createApp({ sessionStore: store, chatAgentFactory: stubAgent, keyValidator: async () => "ok", oauth: { providers: [fake] } }),
+    createApp({
+      sessionStore: store,
+      chatAgentFactory: stubAgent,
+      keyValidator: async () => "ok",
+      oauth: { providers: [fake] },
+      adminDownloads: async () => ({ total: 7, byRelease: [{ tag: "v0.2.1", count: 7 }], fetchedAt: 0 }),
+    }),
   );
   return {
     base,
@@ -136,9 +142,17 @@ test("the listed owner gets the summary, uncacheable, and sees their own account
     const resp = await fetch(`${h.base}/api/admin/summary`, { headers: { cookie: session } });
     assert.equal(resp.status, 200);
     assert.equal(resp.headers.get("cache-control"), "no-store");
-    const body = (await resp.json()) as { users: { total: number }; sessions: number; accounts: Array<{ email: string }> };
+    const body = (await resp.json()) as {
+      users: { total: number };
+      sessions: number;
+      visitors: number;
+      downloads: { total: number | null };
+      accounts: Array<{ email: string }>;
+    };
     assert.equal(body.users.total, 1);
     assert.ok(body.sessions >= 1);
+    assert.ok(body.visitors >= 1, "the signed-in browser's session is on disk");
+    assert.equal(body.downloads.total, 7, "the injected counter, not GitHub");
     assert.equal(body.accounts[0].email, "Owner.Person@gmail.com");
   } finally {
     await h.close();
