@@ -37,6 +37,9 @@ import {
   type CreditState,
 } from "./account.js";
 import { renderMarkdownLite } from "./markdown.js";
+// Only for `mode`: hosted Slicely's slicer is on a server, which changes what a
+// button can honestly claim to do. account.ts already reads config() the same way.
+import { config } from "./onboarding.js";
 
 export interface ChatDeps {
   /** Live job panels, owned by jobs.ts and injected so the two transcript
@@ -357,11 +360,31 @@ function renderAccountRefusal(code: string | undefined): boolean {
 
 // ── AgentEvent handling ──────────────────────────────────────────────────────
 
+/**
+ * What a hand-over button is CALLED, which depends on where the slicer runs.
+ *
+ * Hosted, it runs on a server: pressing this downloads a file, and nothing
+ * appears on the visitor's screen. "Open in PrusaSlicer" promised a window that
+ * could never open — the same lie the tool results used to tell. Desktop keeps
+ * the old wording, because there the file really does open in the app.
+ *
+ * Exported and pure so it can be tested without a DOM (see action-label.test.ts)
+ * and shared with the job panel's plate rows.
+ */
+export function downloadLabel(what: "project" | "gcode", hosted: boolean): string {
+  if (what === "project") return hosted ? "Download .3mf" : "Open in PrusaSlicer";
+  return hosted ? "Download G-code" : "G-code";
+}
+
 function renderAgentAction(action: { label: string; kind: string; href?: string; hint?: string }): void {
   endBotBubble();
   if (!action.href) return;
   const row = make("div", "action-row enter");
-  const btn = externalLink(action.href, action.label);
+  const label =
+    action.kind === "open-project"
+      ? downloadLabel("project", config().mode === "hosted")
+      : action.label;
+  const btn = externalLink(action.href, label);
   btn.className = "btn primary small";
   if (action.kind === "open-project") {
     // A download, not a navigation — keep the tab the user is working in.

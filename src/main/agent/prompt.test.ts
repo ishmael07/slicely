@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TOOLS } from "./tools";
-import { SYSTEM_PROMPT, estimateTokens, staticPrefixTokens } from "./prompt";
+import { SYSTEM_PROMPT, buildSystemPrompt, estimateTokens, staticPrefixTokens } from "./prompt";
 
 const CACHE_FLOOR = 1024; // claude-sonnet-5 will not cache a shorter prefix
 const CEILING = 6000; // our budget — see the spec's worked example
@@ -28,6 +28,38 @@ test("the system prompt fits in 7 KB and the tool descriptions in 5 KB", () => {
   assert.ok(Buffer.byteLength(SYSTEM_PROMPT) <= 7_000, `prompt is ${Buffer.byteLength(SYSTEM_PROMPT)} bytes`);
   const descriptions = TOOLS.map((t) => t.description).join("");
   assert.ok(Buffer.byteLength(descriptions) <= 5_000, `descriptions are ${Buffer.byteLength(descriptions)} bytes`);
+});
+
+test("BOTH modes stay inside the window, and share their cached bytes", () => {
+  // The prompt differs by mode now, and each deployment pays for its own
+  // variant — so the budget is a property of both, not of whichever one this
+  // test process happens to be running as.
+  const hosted = buildSystemPrompt("hosted");
+  const desktop = buildSystemPrompt("desktop");
+  for (const [mode, prompt] of [["hosted", hosted], ["desktop", desktop]] as const) {
+    const n = estimateTokens(prompt + JSON.stringify(TOOLS));
+    assert.ok(n >= CACHE_FLOOR, `${mode} prefix is ${n} tokens — under ${CACHE_FLOOR} it will not cache`);
+    assert.ok(n <= CEILING, `${mode} prefix is ${n} tokens — over budget`);
+    assert.ok(Buffer.byteLength(prompt) <= 7_000, `${mode} prompt is ${Buffer.byteLength(prompt)} bytes`);
+  }
+  // A SUFFIX, so the two variants are the same bytes up to the difference — and
+  // so a mode note can never quietly rewrite a rule stated above it.
+  assert.ok(hosted.startsWith(desktop), "the hosted prompt must be the desktop one plus a suffix");
+  assert.ok(hosted.length > desktop.length, "hosted must actually say the extra thing");
+});
+
+test("hosted tells the model it has no screen to open anything on", () => {
+  // The bug this pins: a browser user was told three times in one turn that
+  // PrusaSlicer was now open in front of them. The tools no longer say it; the
+  // prompt is what stops the model saying it unprompted.
+  const hosted = buildSystemPrompt("hosted");
+  assert.match(hosted, /server/i, "it must say where it runs");
+  assert.match(hosted, /never say you opened|cannot open|can open/i, "it must say what it cannot do");
+  assert.match(hosted, /\.3mf/, "and what open_in_slicer really produces there");
+  assert.ok(
+    !/YOU ARE RUNNING ON A SERVER/.test(buildSystemPrompt("desktop")),
+    "the Mac app must not be told it is a server",
+  );
 });
 
 test("trimming did not throw away anything the product depends on", () => {

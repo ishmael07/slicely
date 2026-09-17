@@ -40,6 +40,7 @@ import { getPreferences, printerGeometry, updatePreferences } from "../settings"
 import { sessionState } from "./state";
 import { colourRequest, type ColourRequest } from "./colourRequest";
 import { workspaceRef } from "../session-context";
+import { isHosted } from "../mode";
 import type { ToolSpec } from "./provider";
 import { stripPaths } from "../../server/errors";
 import { join } from "node:path";
@@ -56,6 +57,23 @@ const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 
 /** Mesh formats PrusaSlicer slices directly (STEP is GUI-import only). */
 const SLICEABLE_PART_EXTS = new Set([".stl", ".3mf", ".obj", ".amf"]);
+
+// ── "Open it" on a server ────────────────────────────────────────────────────
+//
+// HOSTED SLICELY HAS NO SCREEN. The slicer runs on the server under xvfb, so
+// launching its GUI creates a window nobody can see and a detached process
+// nobody ever closes — and the words that came back ("Opened plate 1 … in
+// PrusaSlicer", "press Slice", "run PrusaSlicer's first-time setup") were read
+// out to browser users as though something had appeared in front of them.
+//
+// What is actually true there: a file was prepared, and the action button hands
+// it over. These two sentences are the model-facing version of that, and they
+// deliberately end by offering the thing the server CAN do — slice, and send.
+const HOSTED_OPEN_ADVICE =
+  ` Use the Download button and open it in PrusaSlicer on your computer — or say "slice it" ` +
+  `and I'll slice here and give you the G-code or send it to your printer.`;
+const HOSTED_SLICED_ADVICE =
+  ` Sliced it here. Use the Download button for the G-code, or say "send it" to print.`;
 
 function extLower(p: string): string {
   const i = p.lastIndexOf(".");
@@ -615,7 +633,17 @@ export async function executeTool(
       // are sliced and revealable.)
       const firstPlate = slice.job.plates[0];
       let openNote: string;
-      if (firstPlate?.gcodePath) {
+      if (isHosted()) {
+        // No viewer to open, and no second button to emit: the metrics event
+        // this slice already sent carries the G-code, which the chat route turns
+        // into a session-scoped download — so the panel on screen has the
+        // Download button this sentence points at.
+        openNote =
+          HOSTED_SLICED_ADVICE +
+          (slice.job.plates.length > 1
+            ? ` All ${slice.job.plates.length} plates are sliced; each panel has its own download.`
+            : "");
+      } else if (firstPlate?.gcodePath) {
         try {
           await openGcodeInGui(firstPlate.gcodePath);
           openNote =
@@ -657,9 +685,14 @@ export async function executeTool(
           // workspace today, so passing the raw one on to the slicer and to the
           // client would be trusting a check we then threw away.
           const projectPath = assertWorkspacePath(projects[0]);
-          await openModelInEditorSliced(projectPath, sessionState.lastConfigIni);
-          // Slicely opened it on the machine running the server. For a browser
-          // anywhere else that did nothing visible, so hand over the file too.
+          // The GUI is for the DESKTOP app, where the window is the whole point.
+          // Hosted, see HOSTED_OPEN_ADVICE: nothing can appear on the visitor's
+          // screen, so launching it would only leak an xvfb process.
+          if (!isHosted()) {
+            await openModelInEditorSliced(projectPath, sessionState.lastConfigIni);
+          }
+          // Either way, hand the file over: a browser on another machine can do
+          // nothing with a window on the server, but it can download the plate.
           emit({
             type: "action",
             label: "Open in PrusaSlicer",
@@ -667,13 +700,15 @@ export async function executeTool(
             filePath: projectPath,
             hint: "Downloads the plate as a .3mf project — arranged, oriented and coloured as planned.",
           });
-          return (
-            `Opened plate 1 of "${job?.name ?? "the job"}" in PrusaSlicer — parts arranged, ` +
-            `oriented and coloured as planned.` +
-            (projects.length > 1
+          const arranged = `parts arranged, oriented and coloured as planned.`;
+          const platesNote =
+            projects.length > 1
               ? ` This job has ${projects.length} plates; ask to open another by number.`
-              : "")
-          );
+              : "";
+          const plateName = `plate 1 of "${job?.name ?? "the job"}"`;
+          return isHosted()
+            ? `Prepared ${plateName} as a .3mf — ${arranged}${HOSTED_OPEN_ADVICE}${platesNote}`
+            : `Opened ${plateName} in PrusaSlicer — ${arranged}${platesNote}`;
         }
       }
       const paths =
@@ -742,7 +777,10 @@ export async function executeTool(
         rotateDeg: params.rotateDeg,
         colourChanges,
       }).catch(() => undefined);
-      const opened = await openModelInEditorSliced(project ?? paths, guiConfig);
+      // Hosted: prepare and hand over, never launch. See HOSTED_OPEN_ADVICE.
+      const opened = isHosted()
+        ? undefined
+        : await openModelInEditorSliced(project ?? paths, guiConfig);
       if (project) {
         emit({
           type: "action",
@@ -755,6 +793,29 @@ export async function executeTool(
 
       const n = Array.isArray(paths) ? paths.length : 1;
       const applied = guiConfig ? " with your slicing settings applied" : "";
+      const colourNote = colourChanges.length
+        ? ` It changes filament at ${colourChanges
+            .map((c) => `${c.atZ} mm (${c.colourHex.toUpperCase()})`)
+            .join(", ")} — the changes are in the project, so you can see and move them in Preview.`
+        : "";
+
+      if (!opened) {
+        // A .3mf that was never written is nothing to download, and the one
+        // thing this server CAN still do is slice — so say that instead of
+        // offering a button that isn't there.
+        if (!project) {
+          return (
+            `I couldn't prepare a .3mf for ${n > 1 ? "those parts" : workspaceRef(primary)}. ` +
+            `Ask me to slice it instead and I'll give you the G-code.`
+          );
+        }
+        const prepared =
+          n > 1
+            ? `Prepared ${n} parts as one arranged plate in a .3mf${applied}.`
+            : `Prepared ${workspaceRef(primary)} as a .3mf${applied}.`;
+        return prepared + colourNote + HOSTED_OPEN_ADVICE;
+      }
+
       // Honest guidance about the Preview/Slice step, based on what we could set.
       const previewNote = opened.preSliced
         ? " It'll slice in the background as it loads — click the Preview tab to see the finished toolpaths (no need to press Slice)."
@@ -767,11 +828,6 @@ export async function executeTool(
         n > 1
           ? `Opened ${n} parts as one arranged plate in PrusaSlicer${applied}.`
           : `Opened ${workspaceRef(primary)} in PrusaSlicer${applied}.`;
-      const colourNote = colourChanges.length
-        ? ` It changes filament at ${colourChanges
-            .map((c) => `${c.atZ} mm (${c.colourHex.toUpperCase()})`)
-            .join(", ")} — the changes are in the project, so you can see and move them in Preview.`
-        : "";
       return lead + colourNote + previewNote;
     }
 

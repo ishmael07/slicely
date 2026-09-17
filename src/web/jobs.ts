@@ -11,7 +11,8 @@ import type { JobPlate, PrintJob } from "../shared/jobs";
 import { getJson, postJson, streamSse } from "./api.js";
 import { addMetric, attachViewer, errorBlock, formatMinutes, panelHead, type SendMount } from "./cards.js";
 import { byId, closeSheets, errorCard, make, skeleton } from "./ui.js";
-import { clearEmptyState, endBotBubble, mount, renderError, scrollToBottom } from "./chat.js";
+import { clearEmptyState, downloadLabel, endBotBubble, mount, renderError, scrollToBottom } from "./chat.js";
+import { config } from "./onboarding.js";
 
 /** Wire-level widening: routes/jobs.ts attaches a `gcodeId` to each plate (on
  *  job_planned/job_done) or to the event itself (on plate_done) once it has
@@ -103,14 +104,15 @@ function buildPlateRow(plate: JobPlate, gcodeId: string | undefined, projectId?:
   row.appendChild(label);
   if (gcodeId) {
     const btns = make("div", "btns");
-    const dl = make("a", "btn small", "G-code");
+    const hosted = config().mode === "hosted";
+    const dl = make("a", "btn small", downloadLabel("gcode", hosted));
     dl.href = `/api/gcode/${encodeURIComponent(gcodeId)}`;
     btns.appendChild(dl);
     if (projectId) {
-      // Opens in PrusaSlicer showing the arrangement, orientations and colours
-      // as planned — a browser cannot launch the app, but it can hand over the
-      // project that does.
-      const proj = make("a", "btn small", "Open in PrusaSlicer");
+      // Both of these are downloads. On the desktop the .3mf then opens in
+      // PrusaSlicer, so the button says so; hosted, the download IS the outcome
+      // and a button promising a window would be promising one on the server.
+      const proj = make("a", "btn small", downloadLabel("project", hosted));
       proj.title = "Download the .3mf project — arranged, oriented and coloured as planned";
       proj.href = `/api/gcode/${encodeURIComponent(projectId)}`;
       btns.appendChild(proj);
