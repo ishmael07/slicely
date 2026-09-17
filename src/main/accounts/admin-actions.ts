@@ -37,7 +37,7 @@ function mustGet(id: string): Account {
   return account;
 }
 
-/** Block (the sign-in path answers `email_blocked`) or unblock. */
+/** Block (a blocked account may still sign in, but every chat turn answers 409 `account_blocked`) or unblock. */
 export function setBlocked(id: string, blocked: boolean): Promise<Account> {
   return withAccountLock(id, async () => {
     const account = mustGet(id);
