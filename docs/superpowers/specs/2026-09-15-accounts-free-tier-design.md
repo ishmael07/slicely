@@ -180,7 +180,8 @@ export interface Account {
   spentMicros: number;           // monotonic. balance = granted − spent, floored at 0
   chatDay: string;               // "YYYY-MM-DD" in UTC
   chatCount: number;             // turns started on this UTC day
-  blocked?: true;                // set by hand by the owner; answers `email_blocked`
+  blocked?: boolean;             // set from the admin page (or by hand); chat answers `account_blocked`
+  signins?: Array<{ at: number; ipHash: string; sid: string }>; // newest first, max 20; one-way IP hash + session id, for duplicate detection
 }
 ```
 
@@ -288,7 +289,7 @@ only constrains `fetch`. Nothing in `CSP_STRING` moves.
 4. Always answer **302** to the validated `return_to`. On success, plain. On failure,
    `return_to + "#auth_error=<code>"` — a fragment, so the code never reaches a server log or a
    `Referer`, and the client can turn it into a sentence. Codes: `oauth_failed`,
-   `email_unverified`, `email_blocked`, `signup_limited`.
+   `email_unverified`, `email_blocked`, `signup_limited`, `account_blocked`.
 
 ### 3.2 Google (OIDC, PKCE, S256)
 
@@ -478,7 +479,7 @@ display and on the next `guard()`. Overshoot is bounded by one call's `max_outpu
 | Chats per account per day | `SLICELY_FREE_CHATS_PER_DAY=40` | `chatDay`/`chatCount` on the account | `rate_limited` |
 | Per-session burst | unchanged | the existing `chat` tier, 6 burst / 1 per 20s | `rate_limited` |
 | Per-account burst | unchanged tiers | the chat limiter's `keyFn` returns `acct:<id>` when signed in, so many tabs share one bucket | `rate_limited` |
-| Manual block | — | `"blocked": true` in the account JSON, by hand | `email_blocked` |
+| Manual block | — | `"blocked": true` in the account JSON, set from the admin page | `account_blocked` (at chat time; sign-in still allowed so the person sees the message) |
 
 The signup IP counter stores a **salted hash**, never the address. The privacy policy already
 says server logs keep IPs for 14 days; an accounts file holding raw addresses indefinitely would
@@ -783,7 +784,7 @@ The pre-flight checks run **before any SSE header**, in this order, and each ans
 | empty message | 400 | — |
 | session already streaming | 409 | `busy` |
 | accounts enabled, no own key for the active provider, not signed in | 401 | `signin_required` |
-| the account is blocked | 403 | `email_blocked` |
+| the account is blocked | 409 | `account_blocked` — checked first, before the own-key branch, so a pasted key does not bypass it |
 | the global daily cap is spent | 503 | `free_tier_paused` |
 | the account's daily chat cap is spent | 429 | `rate_limited` (+ `Retry-After` to the next UTC midnight) |
 | the balance is zero | 402 | `credit_exhausted` |
@@ -802,9 +803,9 @@ not need to poll:
 ### 10.5 New stable codes
 
 `signin_required` · `credit_exhausted` · `free_tier_paused` · `signup_limited` ·
-`email_unverified` · `email_blocked` · `oauth_failed`
+`email_unverified` · `email_blocked` · `oauth_failed` · `account_blocked`
 
-All seven get a sentence in `CODE_COPY` (`src/web/api.ts`) so the client's copy and the server's
+All eight get a sentence in `CODE_COPY` (`src/web/api.ts`) so the client's copy and the server's
 copy cannot drift. `email_invalid` is a 400 on the waitlist route only and is not a chat code.
 
 ---
@@ -867,7 +868,7 @@ from `.env.example`, the README and the code, and a test asserts that a hosted s
   shows 50¢); a tampered `state`; a missing cookie; an unverified email; a disposable domain; the
   fourth signup from one IP; a second sign-in that finds the existing account and grants nothing;
   the same human on Google then GitHub resolving to one account.
-- **Chat gating:** each of the seven pre-flight rows answers its status and code before any SSE
+- **Chat gating:** each of the eight pre-flight rows answers its status and code before any SSE
   header, and a hosted server with `ANTHROPIC_API_KEY` set never spends it for a stranger.
 - **Metering end to end:** a stub provider reporting a known `TurnUsage` moves the balance by
   exactly the expected µ¢, writes exactly one ledger line, and emits one `credit` event.
