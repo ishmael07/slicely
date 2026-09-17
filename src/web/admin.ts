@@ -20,8 +20,8 @@ function usd(micros: number | null): string {
   return `$${dollars.toLocaleString(undefined, { minimumFractionDigits: places, maximumFractionDigits: places })}`;
 }
 
-function n(count: number, noun: string): string {
-  return `${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"}`;
+function n(count: number, noun: string, plural = `${noun}s`): string {
+  return `${count.toLocaleString()} ${count === 1 ? noun : plural}`;
 }
 
 function when(ts: number): string {
@@ -102,7 +102,12 @@ function render(s: AdminSummary): void {
   root.append(el("h2", "", "Users"));
   root.append(
     tiles([
-      tile("Accounts", String(s.users.total), `${s.users.newToday} today · ${s.users.new7d} this week`, true),
+      tile(
+        "Accounts",
+        String(s.users.total),
+        `${s.users.newToday} today · ${s.users.new7d} this week${s.users.blocked ? ` · ${n(s.users.blocked, "blocked", "blocked")}` : ""}`,
+        true,
+      ),
       tile("Visitors", s.visitors.toLocaleString(), "browsers seen in the last 30 days"),
       tile("Active 24 h", String(s.users.active24h)),
       tile("Live sessions", String(s.sessions), "right now, signed in or not"),
@@ -114,7 +119,6 @@ function render(s: AdminSummary): void {
           : s.downloads.byRelease.map((r) => `${r.tag} ${r.count}`).join(" · ") || "no releases yet",
       ),
       tile("Waitlist", String(s.waitlist.count), "asked for a paid plan"),
-      tile("Blocked", String(s.users.blocked)),
     ]),
   );
 
