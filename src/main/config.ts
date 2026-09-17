@@ -3,7 +3,8 @@
 import { config as loadDotenv } from "dotenv";
 import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 loadDotenv();
 
@@ -88,6 +89,52 @@ export interface SlicelyConfig {
   publicUrl: string;
 }
 
+/** The binary inside a PrusaSlicer.app bundle. */
+const MAC_BUNDLE_BIN = join("Contents", "MacOS", "PrusaSlicer");
+
+/**
+ * Where PrusaSlicer might be on a Mac when nobody told us. In order: the
+ * plain install, then Prusa's own driver package — which puts the app in
+ * "/Applications/Original Prusa Drivers/", the case that made the shipped
+ * app say "not installed" on a Mac that had been slicing all week — each
+ * also under ~/Applications; then Spotlight, by bundle id, for anywhere else.
+ */
+export function prusaSlicerCandidates(home = homedir()): string[] {
+  const roots = ["/Applications", join(home, "Applications")];
+  const names = ["PrusaSlicer.app", join("Original Prusa Drivers", "PrusaSlicer.app")];
+  return roots.flatMap((r) => names.map((n) => join(r, n, MAC_BUNDLE_BIN)));
+}
+
+/** Ask Spotlight for PrusaSlicer bundles; empty on any failure or off macOS. */
+function spotlightPrusaSlicer(): string[] {
+  if (process.platform !== "darwin") return [];
+  try {
+    const out = execFileSync("mdfind", ["kMDItemCFBundleIdentifier == 'com.prusa3d.slic3r'"], {
+      timeout: 3000,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.endsWith(".app"))
+      .map((app) => join(app, MAC_BUNDLE_BIN));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The first candidate that exists, else the conventional path — so an error
+ * message can still name somewhere sensible. Pure given `exists`, for tests.
+ */
+export function discoverPrusaSlicer(
+  candidates: string[] = [...prusaSlicerCandidates(), ...spotlightPrusaSlicer()],
+  exists: (p: string) => boolean = existsSync,
+): string {
+  return candidates.find((c) => exists(c)) ?? DEFAULT_PRUSA_MAC;
+}
+
 let cached: SlicelyConfig | null = null;
 
 export function getConfig(): SlicelyConfig {
@@ -114,7 +161,7 @@ export function getConfig(): SlicelyConfig {
     thingiverseToken: envStr("THINGIVERSE_APP_TOKEN"),
     model: envStr("SLICELY_MODEL", "claude-opus-4-8"),
     effort: envStr("SLICELY_EFFORT", "high"),
-    prusaSlicerPath: envStr("PRUSASLICER_PATH", DEFAULT_PRUSA_MAC),
+    prusaSlicerPath: envStr("PRUSASLICER_PATH") || discoverPrusaSlicer(),
     prusaConfigIni: envStr("PRUSASLICER_CONFIG_INI"),
     maxSlices: envInt("SLICELY_MAX_SLICES", 2),
     freeCreditCents: envInt("SLICELY_FREE_CREDIT_CENTS", 50, 0),   // 0 is a real value: the kill switch
