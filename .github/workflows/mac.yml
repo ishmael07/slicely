@@ -8,11 +8,22 @@
 # So no identity is imported here and CSC_IDENTITY_AUTO_DISCOVERY is off, which
 # is what keeps electron-builder from hunting for a certificate in the keychain
 # and failing the build when it finds none.
+#
+# The DMG is PUBLISHED, not just kept as an artifact: electron-builder uploads
+# it to a DRAFT GitHub Release named v<package.json version> (creating the
+# release, and the tag if it does not exist), with the workflow's own token.
+# A draft is invisible to visitors and to `releases/latest` — the landing
+# page's "Download for Mac" — until somebody presses Publish on it, which is
+# the moment to write the notes (docs/RELEASING.md step 5). Run it from a
+# branch or a tag; the version comes from package.json either way.
 # ─────────────────────────────────────────────────────────────────────────────
 name: mac
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   dmg:
@@ -30,10 +41,14 @@ jobs:
 
       # `dist:mac` runs the build itself, then electron-builder with
       # scripts/electron-builder.config.cjs (universal dmg, notarize: false).
-      - name: npm run dist:mac
+      # `--publish always` (passed through npm's `--`) uploads to the draft
+      # release whatever ref this ran on; without it electron-builder only
+      # publishes on a tag, and without GH_TOKEN it fails AFTER building.
+      - name: npm run dist:mac -- --publish always
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist:mac
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:mac -- --publish always
 
       - name: What landed in release/
         run: ls -lh release/ || true
