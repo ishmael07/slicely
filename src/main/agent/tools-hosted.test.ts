@@ -203,3 +203,55 @@ test("desktop: open_in_slicer still opens the editor, and still says it did", as
     h.cleanup();
   }
 });
+
+test("hosted: slice_model's STEP refusal tells the user what to do, not to open a GUI they don't have", async () => {
+  const h = harness("hosted", "dddd");
+  try {
+    await h.inSession(async () => {
+      const step = join(h.sessionDir, "uploads", "flange.step");
+      writeFileSync(step, "ISO-10303-21;\n");
+      await assert.rejects(
+        () => executeTool("slice_model", { path: "uploads/flange.step" }, () => {}),
+        (err: unknown) => {
+          const msg = (err as Error).message;
+          assert.match(msg, /uploads\/flange\.step/, "still names the file, workspace-relative");
+          assert.match(msg, /aren't supported on the web version/i, "plain words, not a GUI instruction");
+          assert.match(msg, /STL or 3MF/i, "and a way forward the web version can act on");
+          assert.ok(
+            !/open it in PrusaSlicer \(open_in_slicer\)/.test(msg),
+            `hosted has no GUI to open it in:\n${msg}`,
+          );
+          assert.ok(!msg.includes(h.sessionDir), "and never a server path");
+          return true;
+        },
+      );
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("desktop: slice_model's STEP refusal still points at open_in_slicer", async () => {
+  const h = harness("desktop", "eeee");
+  try {
+    await h.inSession(async () => {
+      const step = join(h.sessionDir, "uploads", "flange.step");
+      writeFileSync(step, "ISO-10303-21;\n");
+      await assert.rejects(
+        () => executeTool("slice_model", { path: "uploads/flange.step" }, () => {}),
+        (err: unknown) => {
+          const msg = (err as Error).message;
+          assert.match(msg, /uploads\/flange\.step/);
+          assert.match(
+            msg,
+            /open it in PrusaSlicer \(open_in_slicer\) to convert it first/,
+            "desktop wording is unchanged",
+          );
+          return true;
+        },
+      );
+    });
+  } finally {
+    h.cleanup();
+  }
+});

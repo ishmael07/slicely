@@ -74,6 +74,12 @@ const HOSTED_OPEN_ADVICE =
   `and I'll slice here and give you the G-code or send it to your printer.`;
 const HOSTED_SLICED_ADVICE =
   ` Sliced it here. Use the Download button for the G-code, or say "send it" to print.`;
+// STEP is GUI-import-only even on desktop (see SLICEABLE_PART_EXTS above), and
+// desktop's fix is "open it in PrusaSlicer to convert it first" — but hosted
+// has no GUI to open it in, so that instruction is impossible to follow there.
+const HOSTED_STEP_ADVICE =
+  ` STEP files aren't supported on the web version — export an STL or 3MF ` +
+  `from your CAD tool, or use the Mac app, which can convert it through PrusaSlicer.`;
 
 function extLower(p: string): string {
   const i = p.lastIndexOf(".");
@@ -1059,10 +1065,15 @@ async function runSlice(
       : [path];
 
   // Guard: a STEP/STP file can't be sliced headlessly (it's GUI-import-only).
-  // Steer the caller to open_in_slicer instead of failing deep in PrusaSlicer.
+  // Desktop: steer the caller to open_in_slicer instead of failing deep in
+  // PrusaSlicer. Hosted: there's no GUI to open it in, so that instruction is
+  // impossible — tell the user plainly what to do instead (see HOSTED_STEP_ADVICE).
   if (!SLICEABLE_PART_EXTS.has(extLower(allParts[0]))) {
+    const ref = workspaceRef(allParts[0]);
     throw new Error(
-      `"${workspaceRef(allParts[0])}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
+      isHosted()
+        ? `"${ref}" is a CAD file that can't be measured or sliced headlessly.${HOSTED_STEP_ADVICE}`
+        : `"${ref}" is a CAD file that can't be measured or sliced headlessly — open it in PrusaSlicer (open_in_slicer) to convert it first.`,
     );
   }
 
