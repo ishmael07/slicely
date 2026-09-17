@@ -370,7 +370,9 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "slice_and_open",
     description:
-      "Slice headlessly for accurate metrics, then open the FINISHED G-code in PrusaSlicer's read-only viewer. Only when the user explicitly wants to see the finished result or the toolpaths — a plain \"open it\" is open_in_slicer. Same settings as slice_model. For a multi-plate job it opens plate 1; the other plates are sliced too and open from their own panels.",
+      isHosted()
+        ? "Slice headlessly for accurate metrics and hand the user the finished G-code to download. Same settings as slice_model. Nothing opens on their screen — this server has no display."
+        : "Slice headlessly for accurate metrics, then open the FINISHED G-code in PrusaSlicer's read-only viewer. Only when the user explicitly wants to see the finished result or the toolpaths — a plain \"open it\" is open_in_slicer. Same settings as slice_model. For a multi-plate job it opens plate 1; the other plates are sliced too and open from their own panels.",
     schema: {
       type: "object",
       properties: SLICE_PROPERTIES,
@@ -379,7 +381,9 @@ const V1_TOOLS: ToolSpec[] = [
   {
     name: "open_in_slicer",
     description:
-      "Open a model in the EDITABLE PrusaSlicer editor with settings already applied — the default for \"open it\", \"let me tweak it\", \"take over manually\". For the read-only finished G-code, use slice_and_open.",
+      isHosted()
+        ? "Prepare a .3mf with settings already applied for the user to download and open in PrusaSlicer on their own computer — the closest thing to \"open it\" on the web version. Nothing opens here."
+        : "Open a model in the EDITABLE PrusaSlicer editor with settings already applied — the default for \"open it\", \"let me tweak it\", \"take over manually\". For the read-only finished G-code, use slice_and_open.",
     schema: {
       type: "object",
       properties: {
