@@ -2790,6 +2790,35 @@ body.is-desktop #app {
   border-radius: 0;
   box-shadow: none;
 }
+/* One line, always. The window is a narrow column, so the header's right-hand
+   cluster must not wrap under the brand (it did, at 480px, once the
+   traffic-light inset took its share). The pills give way first — their text
+   truncates — and below 600px the slicer pill goes, as it does on phones; the
+   banner still says when PrusaSlicer is missing. */
+body.is-desktop .title-right {
+  flex-wrap: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+body.is-desktop .title-right .pill {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+body.is-desktop #printerLabel,
+body.is-desktop #statusText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.is-desktop .brand {
+  flex: 0 0 auto;
+}
+@media (max-width: 599px) {
+  body.is-desktop #slicerStatus {
+    display: none;
+  }
+}
 body.is-desktop #titlebar button,
 body.is-desktop #titlebar .pill {
   -webkit-app-region: no-drag;
