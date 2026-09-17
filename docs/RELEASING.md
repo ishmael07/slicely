@@ -56,6 +56,14 @@ How to cut and ship a Slicely `.dmg`. Web/Docker deploys are a separate thing �
    "Open in PrusaSlicer", no file-drop shortcut. `src/main/preload-channels.test.ts`
    guards this in CI, but only a real launch proves the packaged binary.
 
+4c. **Or let CI build it.** `slicely-v3` is the repository's default branch, so
+   **Actions → "Mac build" → Run workflow** builds the universal DMG on a macOS runner and
+   uploads it to a **draft** release named `v<version>`; publishing the draft is the manual
+   step (review the notes, then "Publish release"). electron-builder sometimes races itself
+   and leaves TWO drafts for the same tag (one holding the `.blockmap`, one the `.dmg`) —
+   before publishing, check the drafts list and delete the stray so `releases/latest`
+   resolves to the one with the DMG.
+
 5. **Write the GitHub Release notes.** Use this template:
 
    ```markdown
